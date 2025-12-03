@@ -876,6 +876,7 @@ function Invoke-SecurityAudit {
     # Smart BitLocker Logic
     $BitLockerSel = "Select..."
     $BitLockerStatus = "Unknown"
+    $BitLockerReason = ""
 
     if ($BitLocker -and ($BitLocker | Where-Object ProtectionStatus -eq 'On')) {
         $BitLockerSel = "Yes"
@@ -887,18 +888,39 @@ function Invoke-SecurityAudit {
         # Physical machine, no bitlocker
         $BitLockerSel = "No"
         $BitLockerStatus = "Not Encrypted (Physical Drive)"
+        $BitLockerReason = "Physical Drive - Not Encrypted"
     }
 
     # 4. Firewall & RDP
     Log-Output "[-] Auditing Network & RDP..."
     $Firewall = Get-NetFirewallProfile | Where-Object Enabled -eq True
     $RDPReg = Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server" -Name "fDenyTSConnections" -ErrorAction SilentlyContinue
-    $RDPStatus = if ($RDPReg.fDenyTSConnections -eq 0) { "<span class='warning'>Enabled (Open)</span>" } else { "<span class='good'>Disabled</span>" }
+    
+    # RDP Variables
+    $RDPAnyoneSel = "Select..."
+    $RDPVPNSel = "Select..."
+    $RDPMFASel = "Select..."
+    $RDPExternalSel = "Select..."
+    $RDPFailSel = "Select..."
+
+    $RDPStatus = if ($RDPReg.fDenyTSConnections -eq 0) { 
+        "<span class='warning'>Enabled (Open)</span>" 
+    } else { 
+        # RDP Disabled Logic
+        $RDPAnyoneSel = "No"
+        $RDPVPNSel = "N/A"
+        $RDPMFASel = "N/A"
+        $RDPExternalSel = "N/A"
+        $RDPFailSel = "N/A"
+        "<span class='good'>Disabled</span>" 
+    }
 
     # RDP Failure Scan (Security Log ID 4625)
     $RDPFailures = Get-WinEvent -FilterHashtable @{LogName='Security'; Id=4625; StartTime=(Get-Date).AddDays(-30)} -ErrorAction SilentlyContinue
     $RDPFailCount = if ($RDPFailures) { $RDPFailures.Count } else { 0 }
-    $RDPFailSel = if ($RDPFailCount -gt 0) { "Yes" } else { "No" }
+    if ($RDPFailSel -eq "Select...") {
+        $RDPFailSel = if ($RDPFailCount -gt 0) { "Yes" } else { "No" }
+    }
 
     # RDP Users Scan (New Feature)
     $RDPUsers = @()
@@ -914,6 +936,14 @@ function Invoke-SecurityAudit {
         $OpenPorts = Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty LocalPort -Unique | Sort-Object { [int]$_ }
         if ($OpenPorts) { $OpenPortsStr = "Open Ports: " + ($OpenPorts -join ", ") }
     } catch {}
+
+    # Ninja Extra Data Integration
+    $ClientNameVal = ""
+    if ($global:NinjaDeviceData) {
+        if ($global:NinjaDeviceData.organizationId) { $ClientNameVal = "Ninja Org ID: $($global:NinjaDeviceData.organizationId)" }
+        if ($global:NinjaDeviceData.locationId) { $LocationDefault += " (Ninja Loc: $($global:NinjaDeviceData.locationId))" }
+        if ($global:NinjaDeviceData.publicIP) { $OpenPortsStr += " [Public IP: $($global:NinjaDeviceData.publicIP)]" }
+    }
 
     # 5. Logs & Hardware
     Log-Output "[-] Analyzing Logs & Health..."
@@ -940,7 +970,7 @@ function Invoke-SecurityAudit {
             <div>
                 <h1>Internal Server Security & Backup Audit Form</h1>
                 <div class='meta-info'>
-                    <span>Client: $(Get-HtmlInput "Client Name")</span>
+                    <span>Client: $(Get-HtmlInput "Client Name" -Value $ClientNameVal)</span>
                     <span style='margin-left:20px;'>Audit Month: $(Get-HtmlInput "e.g. October" -Value "$(Get-Date -Format 'MMMM')")</span>
                     <span style='margin-left:20px;'>Completed By: $env:USERNAME</span>
                 </div>
@@ -1035,7 +1065,7 @@ function Invoke-SecurityAudit {
         </td></tr>
         <tr><th>Encryption status</th><td>$(Get-HtmlInput "e.g. Encrypted" -Value $BitLockerStatus)</td></tr>
         <tr><th>TPM present/enabled</th><td>$(if($TPM.TpmPresent){"Yes"}else{"No"})</td></tr>
-        <tr><th>If not encrypted, reason why</th><td>$(Get-HtmlInput "Reason...")</td></tr>
+        <tr><th>If not encrypted, reason why</th><td>$(Get-HtmlInput "Reason..." -Value $BitLockerReason)</td></tr>
     </table>
     <h3>B. Data Encryption</h3>
     <table>
@@ -1052,10 +1082,10 @@ function Invoke-SecurityAudit {
     </table>
     <h3>B. Remote Access</h3>
     <table>
-        <tr><th>Does anyone RDP to the server?</th><td>Config Status: $RDPStatus $(Get-HtmlSelect)<br><small>Allowed Users: $RDPUserList</small></td></tr>
-        <tr><th>Is RDP protected by VPN?</th><td>$(Get-HtmlSelect)</td></tr>
-        <tr><th>MFA required?</th><td>$(Get-HtmlSelect)</td></tr>
-        <tr><th>External RDP open to internet?</th><td>$(Get-HtmlSelect) (Should be No)</td></tr>
+        <tr><th>Does anyone RDP to the server?</th><td>Config Status: $RDPStatus $(Get-HtmlSelect @("Select...", "Yes", "No", "N/A") -SelectedValue $RDPAnyoneSel)<br><small>Allowed Users: $RDPUserList</small></td></tr>
+        <tr><th>Is RDP protected by VPN?</th><td>$(Get-HtmlSelect @("Select...", "Yes", "No", "N/A") -SelectedValue $RDPVPNSel)</td></tr>
+        <tr><th>MFA required?</th><td>$(Get-HtmlSelect @("Select...", "Yes", "No", "N/A") -SelectedValue $RDPMFASel)</td></tr>
+        <tr><th>External RDP open to internet?</th><td>$(Get-HtmlSelect @("Select...", "Yes", "No", "N/A") -SelectedValue $RDPExternalSel) (Should be No)</td></tr>
         <tr><th>Any failed RDP attempts this month?</th><td>$(Get-HtmlSelect @("Select...", "Yes", "No", "N/A") -SelectedValue $RDPFailSel) <small>(Detected: $RDPFailCount)</small></td></tr>
     </table>
 
