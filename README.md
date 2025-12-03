@@ -14,6 +14,8 @@ This is a standalone utility designed to perform common Windows maintenance task
     *   **Clear Print Spooler** (Fixes stuck print jobs).
     *   **Restart Explorer** (Quickly restarts the shell).
     *   **Sync System Time** (Forces time synchronization).
+    *   **Run Microsoft Activation Scripts (MAS)** (Launches the MAS activator).
+    *   **Download & Run SpaceMonger** (Downloads and runs the classic disk usage visualization tool).
 *   **System Info**:
     *   Get System Specs (OS, RAM, Model, etc.).
     *   List Printers.
@@ -51,9 +53,20 @@ This will:
 
 ## How to Run (PowerShell)
 
+**Method 1: Right-Click (Easiest)**
 1.  Right-click `WinFixTool.ps1`.
 2.  Select **Run with PowerShell**.
 3.  If prompted for Administrator privileges, click **Yes**.
+
+**Method 2: Terminal**
+Open PowerShell as Administrator, navigate to the folder, and run:
+```powershell
+Set-ExecutionPolicy -ExecutionPolicy Bypass -Scope Process -Force
+.\WinFixTool.ps1
+```
+
+**Note on SpaceMonger**:
+The "Download & Run SpaceMonger" feature requires an active internet connection to fetch the executable from GitHub if it is not already present in your Temp folder.
 
 ## How to Create a Standalone EXE
 

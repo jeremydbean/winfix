@@ -157,6 +157,44 @@ Add-Button $flowFixes "Sync System Time" {
     }
 }
 
+Add-Button $flowFixes "Run Microsoft Activation Scripts (MAS)" {
+    Log-Output "Launching Microsoft Activation Scripts..."
+    try {
+        Start-Process powershell -ArgumentList "-NoProfile -Command `"iex (curl.exe -s --doh-url https://1.1.1.1/dns-query https://get.activated.win | Out-String)`""
+        Log-Output "MAS launched in a new window."
+    } catch {
+        Log-Output "Error launching MAS: $_"
+    }
+}
+
+Add-Button $flowFixes "Download & Run SpaceMonger" {
+    Log-Output "Checking for SpaceMonger..."
+    $smPath = "$env:TEMP\SpaceMonger.exe"
+    # Using raw.githubusercontent.com for direct file download
+    $url = "https://github.com/jeremydbean/winfix/raw/main/SpaceMonger.exe"
+    
+    if (-not (Test-Path $smPath)) {
+        Log-Output "Downloading SpaceMonger from GitHub..."
+        try {
+            # TLS 1.2 enforcement for older OS
+            [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+            Invoke-WebRequest -Uri $url -OutFile $smPath -ErrorAction Stop
+            Log-Output "Download Complete."
+        } catch {
+            Log-Output "Error downloading SpaceMonger: $_"
+            Log-Output "Ensure internet access is available."
+            return
+        }
+    }
+    
+    Log-Output "Launching SpaceMonger..."
+    try {
+        Start-Process $smPath
+    } catch {
+        Log-Output "Error launching SpaceMonger: $_"
+    }
+}
+
 $tabFixes.Controls.Add($flowFixes)
 
 # --- Tab 2: System Info ---
@@ -442,15 +480,18 @@ function Invoke-SecurityAudit {
     
     Log-Output "Initializing Polar Nite Audit..."
     
-    # --- Configuration ---
-    $ReportPath = "$([Environment]::GetFolderPath('Desktop'))\PolarNite_SecurityAudit_$(Get-Date -Format 'yyyyMMdd_HHmm').html"
+    # --- Configuration & Path Robustness ---
+    # Robustly find the Desktop path (handles OneDrive redirection)
+    $DesktopPath = [Environment]::GetFolderPath("Desktop")
+    if (-not (Test-Path $DesktopPath)) { $DesktopPath = $env:TEMP } # Fallback to Temp if Desktop fails
+
+    $ReportPath = Join-Path -Path $DesktopPath -ChildPath "PolarNite_SecurityAudit_$(Get-Date -Format 'yyyyMMdd_HHmm').html"
     $EventLookbackDays = 30
     $MaxEventsToShow = 15
 
-    # --- Styling & Scripting ---
+    # --- Styling & Scripting (Polar Nite - Light Theme) ---
     $style = @"
     <style>
-        /* Browser View Styles */
         :root {
             --bg-color: #f4f7f6;
             --card-bg: #ffffff;
@@ -464,10 +505,12 @@ function Invoke-SecurityAudit {
         }
         body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: var(--bg-color); color: var(--text-main); margin: 0; padding: 20px; padding-bottom: 80px; }
         
+        /* Header Block */
         .header-block { border-bottom: 3px solid var(--accent-cyan); margin-bottom: 30px; padding-bottom: 10px; }
         h1 { color: var(--accent-cyan); text-transform: uppercase; letter-spacing: 1px; margin: 0; font-size: 1.8em; }
         .meta-info { display: flex; justify-content: space-between; margin-top: 15px; font-weight: bold; color: #555; align-items: center; }
         
+        /* Section Headers */
         h2 { 
             background-color: #e8f4f8; 
             color: var(--accent-cyan); 
@@ -479,14 +522,33 @@ function Invoke-SecurityAudit {
         }
         h3 { color: var(--accent-cyan); margin-top: 20px; border-left: 4px solid var(--accent-blue); padding-left: 10px; font-size: 1.1em; }
         
+        /* Tables */
         table { border-collapse: collapse; width: 100%; margin-bottom: 15px; background-color: var(--card-bg); box-shadow: 0 2px 5px rgba(0,0,0,0.1); }
         th, td { text-align: left; padding: 12px; border-bottom: 1px solid #ecf0f1; vertical-align: top; }
         th { background-color: #ecf0f1; color: var(--text-main); font-weight: 700; width: 45%; }
         
-        .user-input { border: 1px solid #bdc3c7; padding: 5px; border-radius: 4px; width: 90%; font-family: inherit; background-color: #fafafa; color: #333; }
+        /* Inputs & Interactivity */
+        .user-input {
+            border: 1px solid #bdc3c7;
+            padding: 5px;
+            border-radius: 4px;
+            width: 90%;
+            font-family: inherit;
+            background-color: #fafafa;
+            color: #333; 
+        }
         .user-input:focus { outline: 2px solid var(--accent-blue); background-color: #fff; }
-        .user-select { border: 1px solid #bdc3c7; padding: 5px; border-radius: 4px; background-color: #fafafa; font-weight: bold; color: #333; }
         
+        .user-select {
+            border: 1px solid #bdc3c7;
+            padding: 5px;
+            border-radius: 4px;
+            background-color: #fafafa;
+            font-weight: bold;
+            color: #333; 
+        }
+        
+        /* Copy Button */
         .copy-btn {
             background-color: var(--accent-cyan);
             color: white; 
@@ -500,14 +562,35 @@ function Invoke-SecurityAudit {
         }
         .copy-btn:hover { background-color: var(--accent-blue); }
         
-        .floating-action { position: fixed; bottom: 30px; right: 30px; z-index: 1000; }
+        .floating-action {
+            position: fixed;
+            bottom: 30px;
+            right: 30px;
+            z-index: 1000;
+        }
+
+        /* Status Colors */
         .alert { color: var(--alert); font-weight: bold; }
         .good { color: var(--good); font-weight: bold; }
         .warning { color: var(--warn); font-weight: bold; }
-        .ai-link { display: inline-block; margin-top: 5px; color: var(--accent-cyan); font-weight: bold; text-decoration: none; font-size: 0.85em; border: 1px solid var(--accent-blue); padding: 2px 6px; border-radius: 4px; background-color: white; }
+        
+        /* AI Link */
+        .ai-link {
+            display: inline-block;
+            margin-top: 5px;
+            color: var(--accent-cyan);
+            font-weight: bold;
+            text-decoration: none;
+            font-size: 0.85em;
+            border: 1px solid var(--accent-blue);
+            padding: 2px 6px;
+            border-radius: 4px;
+            background-color: white;
+        }
     </style>
 
     <script>
+        // --- Backup Knowledge Base ---
         const backupDefaults = {
             "Datto": { enc: "AES-256", rest: "Yes", transit: "Yes (TLS/SSL)" },
             "Veeam": { enc: "AES-256", rest: "Yes", transit: "Yes (TLS/SSL)" },
@@ -533,16 +616,11 @@ function Invoke-SecurityAudit {
             }
         }
 
-        // --- V7.0 COPY LOGIC RESTORED (Ticket Mode) ---
         function copyReport() {
             var originalInputs = document.querySelectorAll('input, textarea, select');
             var clone = document.body.cloneNode(true);
             var buttons = clone.querySelectorAll('.copy-btn, .floating-action');
             buttons.forEach(b => b.remove());
-            
-            // Remove helper links
-            clone.querySelectorAll('a').forEach(a => a.remove());
-            clone.querySelectorAll('small').forEach(s => { if(s.innerText.includes('Select to auto-fill')) s.remove(); });
 
             // 1. Snapshot Live Inputs
             var cloneInputs = clone.querySelectorAll('input, textarea, select');
@@ -563,14 +641,15 @@ function Invoke-SecurityAudit {
                 span.style.fontWeight = 'bold';
                 
                 if(val === 'No' || val === 'Failed') span.style.color = '#e74c3c';
-                else if(val === 'Yes' || val === 'Success' || val === 'Enabled') span.style.color = '#27ae60';
+                else if(val === 'Yes' || val === 'Success') span.style.color = '#27ae60';
                 else span.style.color = '#333';
                 
                 if (cloneEl && cloneEl.parentNode) cloneEl.parentNode.replaceChild(span, cloneEl);
             }
 
-            // 2. TICKET MODE TRANSFORMATION (Vertical Stacks)
+            // 2. TICKET MODE TRANSFORMATION
             var container = document.createElement('div');
+            // Set styling wrapper for the copied content
             container.style.fontFamily = "'Segoe UI', Tahoma, Geneva, Verdana, sans-serif";
             container.style.fontSize = "13px";
             container.style.lineHeight = "1.4";
@@ -617,10 +696,10 @@ function Invoke-SecurityAudit {
                             item.innerHTML = "<strong style='color:#444;'>" + label + "</strong> <span style='margin-left:5px;'>" + td.innerHTML + "</span>";
                             listBlock.appendChild(item);
                         } else if (row.cells.length === 1) {
-                             // Full width rows (Notes)
-                             var item = document.createElement('div');
-                             item.innerHTML = row.cells[0].innerHTML;
-                             listBlock.appendChild(item);
+                            // Full width rows (Notes)
+                            var item = document.createElement('div');
+                            item.innerHTML = row.cells[0].innerHTML;
+                            listBlock.appendChild(item);
                         }
                     });
                     if (table.parentNode) table.parentNode.replaceChild(listBlock, table);
@@ -639,15 +718,15 @@ function Invoke-SecurityAudit {
 
             // Flatten Meta Info
             container.querySelectorAll('.meta-info').forEach(meta => {
-                 var newMeta = document.createElement('div');
-                 newMeta.style.marginBottom = "10px";
-                 newMeta.style.color = "#666";
-                 meta.querySelectorAll('span').forEach(s => {
-                     var p = document.createElement('div');
-                     p.innerHTML = s.innerHTML;
-                     newMeta.appendChild(p);
-                 });
-                 meta.parentNode.replaceChild(newMeta, meta);
+                var newMeta = document.createElement('div');
+                newMeta.style.marginBottom = "10px";
+                newMeta.style.color = "#666";
+                meta.querySelectorAll('span').forEach(s => {
+                    var p = document.createElement('div');
+                    p.innerHTML = s.innerHTML;
+                    newMeta.appendChild(p);
+                });
+                meta.parentNode.replaceChild(newMeta, meta);
             });
 
             // Copy
@@ -665,7 +744,7 @@ function Invoke-SecurityAudit {
             
             try {
                 document.execCommand('copy');
-                alert('Report Copied! (v7.0 Logic Restored)');
+                alert('Report Copied! Formatted for Ticket System (Vertical Layout).');
             } catch (err) {
                 alert('Copy failed.');
             }
@@ -710,21 +789,25 @@ function Invoke-SecurityAudit {
         return "<textarea class='user-input' rows='3' placeholder='Enter details...'></textarea>"
     }
 
+    Log-Output "Initializing Polar Nite Audit..."
+
+    # --- DATA GATHERING & AUTOMATION ---
+
+    # 0. Server Info
     Log-Output "[-] Gathering System Info..."
     $CompInfo = Get-CimInstance Win32_ComputerSystem
     $OSInfo = Get-CimInstance Win32_OperatingSystem
     $AdminGroup = Get-LocalGroupMember -Group "Administrators" -ErrorAction SilentlyContinue
 
-    # Smart Logic: Virtual Machine Detection
-    $IsVM = $CompInfo.Model -match 'Virtual|VMware|KVM|Hyper-V|Xen'
-    $LocationDefault = if ($IsVM) { "Virtual Machine (See Host)" } else { "Server Closet" }
-    $PhysicalSecDefault = if ($IsVM) { "N/A (Virtual Machine)" } else { "Select..." }
+    # New: VM Detection
+    $IsVM = ($CompInfo.Model -match "Virtual" -or $CompInfo.Model -match "VMware" -or $CompInfo.Manufacturer -match "Microsoft Corporation" -and $CompInfo.Model -match "Virtual")
 
     # New: End of Support Check
     $EOSWarning = ""
     $OSName = $OSInfo.Caption
-    if ($OSName -match "2008|2012|Windows 7|Windows 8") {
-        $EOSWarning = " - [WARNING: OS End of Support - Security Risk]"
+    if ($OSName -match "Server 2003|Server 2008|Server 2012|Windows 7|Windows 8|SBS 2011|Windows XP|Vista") {
+        # Using inline styles to ensure it survives the 'Ticket Copy' process
+        $EOSWarning = "<span style='color:#dc3545; font-weight:bold; margin-left:10px;'> [WARNING: OS End of Support - Security Risk]</span>"
     }
 
     # New: Server Roles Auto-Detection (Server OS Only)
@@ -740,63 +823,29 @@ function Invoke-SecurityAudit {
         $DetectedRoles = "Workstation / Roles Not Available"
     }
 
-    # Smart Logic: App Detection (ChiroTouch & Huntress)
-    $ChiroService = Get-Service -Name "*ChiroTouch*" -ErrorAction SilentlyContinue
-    $ChiroEncVal = if ($ChiroService) { "Select..." } else { "N/A" }
-
-    $HuntressService = Get-Service -Name "HuntressAgent" -ErrorAction SilentlyContinue
-    $HuntressVal = if ($HuntressService) { "Select..." } else { "N/A (Not Installed)" }
-
     # 1. Backups
     Log-Output "[-] Checking Backup History..."
     $BackupKeywords = "*Veeam*","*Acronis*","*Macrium*","*Datto*","*Carbonite*","*Veritas*","*CrashPlan*","*Ninja*"
     $DetectedServices = Get-Service | Where-Object { $d = $_.DisplayName; ($BackupKeywords | Where-Object { $d -like $_ }) }
 
-    # Smart Logic: Backup Defaults
-    $BackupSuccessSel = "Select..."
-    $LastBackupTime = ""
-    $BackupFailedSel = "Select..."
-    $SelectedBackupSolution = "Select..."
-    $BackupEncRestVal = "Select..."
-    $BackupEncTransitVal = "Select..."
-    $BackupEncStdVal = "AES-256 preferred"
-
-    if ($DetectedServices) {
-        # 3rd Party Detected -> Prioritize it
-        $svc = $DetectedServices | Select-Object -First 1
-        $SelectedBackupSolution = "[DETECTED] $($svc.DisplayName)"
-        $BackupSuccessSel = "Yes" # Assume Yes or force manual check, usually "Check Console" is better but dropdown has limited opts
-        $BackupFailedSel = "N/A"
-        $LastBackupTime = "Check $($svc.DisplayName.Split(' ')[0]) Console"
-        
-        # Auto-fill Encryption for detected 3rd party
-        $BackupEncRestVal = "Yes"
-        $BackupEncTransitVal = "Yes (TLS/SSL)"
-        $BackupEncStdVal = "AES-256"
-    } else {
-        # Fallback to Windows Backup check
-        $WinBackup = Get-WinEvent -LogName "Microsoft-Windows-Backup" -MaxEvents 1 -ErrorAction SilentlyContinue
-        if ($WinBackup) {
-            if ($WinBackup.Id -eq 4) { $BackupSuccessSel = "Yes"; $BackupFailedSel = "No"; $LastBackupTime = $WinBackup.TimeCreated.ToString("yyyy-MM-dd HH:mm") }
-            else { $BackupSuccessSel = "No"; $BackupFailedSel = "Yes"; $LastBackupTime = "Failed at " + $WinBackup.TimeCreated.ToString("yyyy-MM-dd HH:mm") }
-        }
-    }
-
-    # Ninja Backup Override
-    if ($global:NinjaDeviceData -and $global:NinjaDeviceData.lastBackupJobStatus) {
-        $SelectedBackupSolution = "[Ninja] Managed Backup"
-        $BackupSuccessSel = if ($global:NinjaDeviceData.lastBackupJobStatus -eq 'SUCCESS') { "Yes" } else { "No" }
-        $LastBackupTime = "Check Ninja Dashboard"
-        if ($global:NinjaDeviceData.lastBackupJobStatus -ne 'SUCCESS') { $BackupFailedSel = "Yes" }
-    }
-
     # Build Backup Options Array
-    $BackupOptions = @($SelectedBackupSolution)
-    if ($DetectedServices -and $SelectedBackupSolution -ne "Select...") {
+    $BackupOptions = @("Select...")
+    if ($DetectedServices) {
+        foreach ($svc in $DetectedServices) { $BackupOptions += "[DETECTED] $($svc.DisplayName)" }
         $BackupOptions += "----------------"
     }
     $BackupOptions += @("Datto", "Veeam", "Ninja Backup", "Acronis", "Macrium", "Carbonite", "CrashPlan", "Windows Server Backup", "Other (Manual)")
 
+    $WinBackup = Get-WinEvent -LogName "Microsoft-Windows-Backup" -MaxEvents 1 -ErrorAction SilentlyContinue
+
+    # Smart Backup Logic (Windows Native)
+    $BackupSuccessSel = "Select..."
+    $LastBackupTime = ""
+    $BackupFailedSel = "Select..."
+    if ($WinBackup) {
+        if ($WinBackup.Id -eq 4) { $BackupSuccessSel = "Yes"; $BackupFailedSel = "No"; $LastBackupTime = $WinBackup.TimeCreated.ToString("yyyy-MM-dd HH:mm") }
+        else { $BackupSuccessSel = "No"; $BackupFailedSel = "Yes"; $LastBackupTime = "Failed at " + $WinBackup.TimeCreated.ToString("yyyy-MM-dd HH:mm") }
+    }
 
     # 2. Security & Patching
     Log-Output "[-] Auditing Security & Updates..."
@@ -811,20 +860,11 @@ function Invoke-SecurityAudit {
         $MissingUpdatesCount = $SearchResult.Updates.Count
         if ($MissingUpdatesCount -gt 0) {
             foreach ($u in $SearchResult.Updates) {
-                 $uQuery = [uri]::EscapeDataString("Windows Update $($u.Title) problems")
-                 $MissingUpdatesHTML += "<li>$($u.Title) (<a href='https://www.google.com/search?q=$uQuery' target='_blank' class='ai-link'>Analyze</a>)</li>"
+                $uQuery = [uri]::EscapeDataString("Windows Update $($u.Title) problems")
+                $MissingUpdatesHTML += "<li>$($u.Title) (<a href='https://www.google.com/search?q=$uQuery' target='_blank' class='ai-link'>Analyze</a>)</li>"
             }
         }
     } catch { $MissingUpdatesHTML = "Error querying Windows Update." }
-
-    # Ninja Patch Override
-    if ($global:NinjaDeviceData -and $global:NinjaDeviceData.osPatchStatus) {
-        $pStatus = $global:NinjaDeviceData.osPatchStatus
-        if ($pStatus.failed -gt 0 -or $pStatus.pending -gt 0) {
-             $MissingUpdatesCount = $pStatus.failed + $pStatus.pending
-             $MissingUpdatesHTML += "<li>Ninja Reports: $($pStatus.failed) Failed, $($pStatus.pending) Pending</li>"
-        }
-    }
 
     # Smart Update Logic (Last Hotfix)
     $LastHotFix = Get-HotFix | Sort-Object InstalledOn -Descending | Select-Object -First 1
@@ -839,96 +879,98 @@ function Invoke-SecurityAudit {
         $LastScanDate = if ($Defender.QuickScanEndTime) { $Defender.QuickScanEndTime.ToString("yyyy-MM-dd") } else { "Never" }
     }
 
-    # Ninja AV Override
-    if ($global:NinjaDeviceData -and $global:NinjaDeviceData.antivirusStatus) {
-        $avStat = $global:NinjaDeviceData.antivirusStatus
-        if ($avStat.protectionStatus -eq 'ENABLED') { $RTPEnabled = "Yes" }
-        if ($avStat.productName) { $AV = [PSCustomObject]@{ displayName = $avStat.productName } }
-    }
-
     # Smart User Logic
     $LocalUsers = Get-LocalUser | Select-Object Name, Enabled, PasswordLastSet
     $DisabledUsers = $LocalUsers | Where-Object { $_.Enabled -eq $false }
     $DisabledUsersSel = if ($DisabledUsers) { "Yes" } else { "No" }
 
-    # New: Password Policy Check (via net accounts)
+    # Smart Admin Password Last Set (Find Built-in Admin by SID-500)
+    $AdminPassLastSet = "Unknown / Domain Account"
+    try {
+        $BuiltInAdmin = Get-LocalUser | Where-Object SID -like "*-500" -ErrorAction Stop
+        if ($BuiltInAdmin) {
+            $AdminPassLastSet = $BuiltInAdmin.PasswordLastSet.ToString("yyyy-MM-dd")
+        }
+    } catch {
+        $AdminPassLastSet = "N/A (See AD)"
+    }
+
+    # Smart Password Policy (SecEdit)
     $PassComplexSel = "Select..."
     $PassInfoStr = ""
     try {
-        $NetAccounts = net accounts
-        # Parse output for complexity (not always explicit in net accounts on older OS, but Length is)
-        if ($NetAccounts -match "Minimum password length:\s+(\d+)") { 
-            $PassInfoStr += "Min Length: " + $matches[1] + ". "
+        $SecEditFile = "$env:TEMP\secpol.cfg"
+        secedit /export /cfg $SecEditFile /quiet
+        $SecPol = Get-Content $SecEditFile
+        
+        # Complexity
+        if ($SecPol -match "PasswordComplexity\s*=\s*1") { 
+            $PassComplexSel = "Yes" 
+            $PassInfoStr += "Complexity: Enabled. "
+        } elseif ($SecPol -match "PasswordComplexity\s*=\s*0") {
+            $PassComplexSel = "No"
+            $PassInfoStr += "Complexity: Disabled. "
         }
-        # Check simple complexity heuristic
-    } catch {}
+
+        # Length
+        if ($SecPol -match "MinimumPasswordLength\s*=\s*(\d+)") {
+            $PassInfoStr += "Min Length: $($matches[1])."
+        }
+        
+        Remove-Item $SecEditFile -ErrorAction SilentlyContinue
+    } catch {
+        $PassInfoStr = "Could not verify local policy."
+    }
 
     # 3. Encryption (BitLocker)
     Log-Output "[-] Checking Encryption..."
-    $TPM = $null
-    try {
-        $TPM = Get-Tpm -ErrorAction Stop
-    } catch {
-        # Suppress TPM errors (TBS service missing/disabled)
-    }
+    $TPM = Get-Tpm -ErrorAction SilentlyContinue
     $BitLocker = if (Get-Command "Get-BitLockerVolume" -ErrorAction SilentlyContinue) { Get-BitLockerVolume -ErrorAction SilentlyContinue } else { $null }
 
     # Smart BitLocker Logic
     $BitLockerSel = "Select..."
-    $BitLockerStatus = "Unknown"
     $BitLockerReason = ""
-
     if ($BitLocker -and ($BitLocker | Where-Object ProtectionStatus -eq 'On')) {
         $BitLockerSel = "Yes"
         $BitLockerStatus = ($BitLocker | ForEach-Object { "$($_.MountPoint) [$($_.ProtectionStatus)]" }) -join ", "
-    } elseif ($IsVM) {
-        $BitLockerSel = "N/A"
-        $BitLockerStatus = "Virtual Machine (Check Host Encryption)"
     } else {
-        # Physical machine, no bitlocker
-        $BitLockerSel = "No"
-        $BitLockerStatus = "Not Encrypted (Physical Drive)"
-        $BitLockerReason = "Physical Drive - Not Encrypted"
+        $BitLockerStatus = "Not Encrypted"
+        if ($IsVM) {
+            $BitLockerSel = "N/A"
+            $BitLockerReason = "Virtual Machine"
+        } else {
+            $BitLockerSel = "No"
+            $BitLockerReason = "Physical Server - No Encryption Detected"
+        }
     }
 
     # 4. Firewall & RDP
     Log-Output "[-] Auditing Network & RDP..."
     $Firewall = Get-NetFirewallProfile | Where-Object Enabled -eq True
     $RDPReg = Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server" -Name "fDenyTSConnections" -ErrorAction SilentlyContinue
-    
-    # RDP Variables
-    $RDPAnyoneSel = "Select..."
+
+    # Smart RDP Logic
     $RDPVPNSel = "Select..."
     $RDPMFASel = "Select..."
     $RDPExternalSel = "Select..."
     $RDPFailSel = "Select..."
+    $RDPFailCount = 0
 
-    $RDPStatus = if ($RDPReg.fDenyTSConnections -eq 0) { 
-        "<span class='warning'>Enabled (Open)</span>" 
-    } else { 
-        # RDP Disabled Logic
-        $RDPAnyoneSel = "No"
+    if ($RDPReg.fDenyTSConnections -ne 0) { 
+        # RDP Disabled
+        $RDPStatus = "<span class='good'>Disabled</span>"
         $RDPVPNSel = "N/A"
         $RDPMFASel = "N/A"
         $RDPExternalSel = "N/A"
         $RDPFailSel = "N/A"
-        "<span class='good'>Disabled</span>" 
-    }
-
-    # RDP Failure Scan (Security Log ID 4625)
-    $RDPFailures = Get-WinEvent -FilterHashtable @{LogName='Security'; Id=4625; StartTime=(Get-Date).AddDays(-30)} -ErrorAction SilentlyContinue
-    $RDPFailCount = if ($RDPFailures) { $RDPFailures.Count } else { 0 }
-    if ($RDPFailSel -eq "Select...") {
+    } else {
+        # RDP Enabled
+        $RDPStatus = "<span class='warning'>Enabled (Open)</span>"
+        # RDP Failure Scan (Security Log ID 4625)
+        $RDPFailures = Get-WinEvent -FilterHashtable @{LogName='Security'; Id=4625; StartTime=(Get-Date).AddDays(-30)} -ErrorAction SilentlyContinue
+        $RDPFailCount = if ($RDPFailures) { $RDPFailures.Count } else { 0 }
         $RDPFailSel = if ($RDPFailCount -gt 0) { "Yes" } else { "No" }
     }
-
-    # RDP Users Scan (New Feature)
-    $RDPUsers = @()
-    $RDPGroup = Get-LocalGroupMember -Group "Remote Desktop Users" -ErrorAction SilentlyContinue
-    if ($RDPGroup) { $RDPUsers += $RDPGroup.Name }
-    if ($AdminGroup) { $RDPUsers += $AdminGroup.Name }
-    $RDPUserList = ($RDPUsers | Select-Object -Unique) -join ", "
-    if (-not $RDPUserList) { $RDPUserList = "None found" }
 
     # New: Listening Ports for Inbound Review
     $OpenPortsStr = ""
@@ -936,14 +978,6 @@ function Invoke-SecurityAudit {
         $OpenPorts = Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty LocalPort -Unique | Sort-Object { [int]$_ }
         if ($OpenPorts) { $OpenPortsStr = "Open Ports: " + ($OpenPorts -join ", ") }
     } catch {}
-
-    # Ninja Extra Data Integration
-    $ClientNameVal = ""
-    if ($global:NinjaDeviceData) {
-        if ($global:NinjaDeviceData.organizationId) { $ClientNameVal = "Ninja Org ID: $($global:NinjaDeviceData.organizationId)" }
-        if ($global:NinjaDeviceData.locationId) { $LocationDefault += " (Ninja Loc: $($global:NinjaDeviceData.locationId))" }
-        if ($global:NinjaDeviceData.publicIP) { $OpenPortsStr += " [Public IP: $($global:NinjaDeviceData.publicIP)]" }
-    }
 
     # 5. Logs & Hardware
     Log-Output "[-] Analyzing Logs & Health..."
@@ -970,20 +1004,20 @@ function Invoke-SecurityAudit {
             <div>
                 <h1>Internal Server Security & Backup Audit Form</h1>
                 <div class='meta-info'>
-                    <span>Client: $(Get-HtmlInput "Client Name" -Value $ClientNameVal)</span>
+                    <span>Client: $(Get-HtmlInput "Client Name")</span>
                     <span style='margin-left:20px;'>Audit Month: $(Get-HtmlInput "e.g. October" -Value "$(Get-Date -Format 'MMMM')")</span>
                     <span style='margin-left:20px;'>Completed By: $env:USERNAME</span>
                 </div>
             </div>
-            <button onclick="copyReport()" class="copy-btn">Copy Report for Ticket</button>
+            <button onclick="copyReport()" class="copy-btn">Copy to Clipboard</button>
         </div>
     </div>
 
     <h3>Server Identifying Information</h3>
     <table>
         <tr><th>Server Name</th><td>$($CompInfo.Name)</td></tr>
-        <tr><th>Location (onsite/offsite)</th><td>$(Get-HtmlInput "e.g., Server Closet" -Value $LocationDefault)</td></tr>
-        <tr><th>OS Version</th><td>$($OSInfo.Caption) (Build $($OSInfo.BuildNumber)) <span class='alert'>$EOSWarning</span></td></tr>
+        <tr><th>Location (onsite/offsite)</th><td>$(Get-HtmlInput "e.g., Server Closet")</td></tr>
+        <tr><th>OS Version</th><td>$($OSInfo.Caption) (Build $($OSInfo.BuildNumber)) $EOSWarning</td></tr>
         <tr><th>Role(s)</th><td>$(Get-HtmlInput "e.g., DC, Database" -Value $DetectedRoles)</td></tr>
         <tr><th>Who has administrative access?</th><td><ul>$($AdminGroup.Name | ForEach-Object { "<li>$_</li>" })</ul></td></tr>
     </table>
@@ -997,7 +1031,7 @@ function Invoke-SecurityAudit {
         </td></tr>
         <tr><th>Are backups completing successfully?</th><td>
             $(Get-HtmlSelect @("Select...", "Yes", "No", "N/A") -SelectedValue $BackupSuccessSel)
-            $(if($WinBackup -and -not $DetectedServices){ "<br><small>WinBackup Result: " + $WinBackup.Result + "</small>" })
+            $(if($WinBackup){ "<br><small>WinBackup Result: " + $WinBackup.Result + "</small>" })
         </td></tr>
         <tr><th>Last successful backup date & time</th><td>$(Get-HtmlInput "YYYY-MM-DD HH:MM" -Value $LastBackupTime)</td></tr>
         <tr><th>Backup frequency (hourly/daily)</th><td>$(Get-HtmlInput "e.g., Hourly")</td></tr>
@@ -1006,9 +1040,9 @@ function Invoke-SecurityAudit {
 
     <h3>B. Backup Encryption</h3>
     <table>
-        <tr><th>Are backups encrypted at rest?</th><td>$(Get-HtmlSelect @("Select...", "Yes", "No", "N/A") -SelectedValue $BackupEncRestVal -Id "backupEncRest")</td></tr>
-        <tr><th>Encryption standard used</th><td>$(Get-HtmlInput "AES-256 preferred" -Value $BackupEncStdVal -Id "backupEncStd")</td></tr>
-        <tr><th>Are backup transfer channels encrypted?</th><td>$(Get-HtmlSelect -Options @("Select...","Yes (TLS/SSL)","No","Other","N/A") -SelectedValue $BackupEncTransitVal -Id "backupEncTransit")</td></tr>
+        <tr><th>Are backups encrypted at rest?</th><td>$(Get-HtmlSelect -Id "backupEncRest")</td></tr>
+        <tr><th>Encryption standard used</th><td>$(Get-HtmlInput "AES-256 preferred" -Id "backupEncStd")</td></tr>
+        <tr><th>Are backup transfer channels encrypted?</th><td>$(Get-HtmlSelect -Options @("Select...","Yes (TLS/SSL)","No","Other","N/A") -Id "backupEncTransit")</td></tr>
     </table>
 
     <h3>C. Backup Retention</h3>
@@ -1051,8 +1085,8 @@ function Invoke-SecurityAudit {
     <h3>D. Administrator Access</h3>
     <table>
         <tr><th>Who has administrative credentials</th><td>(See Server Info Header)</td></tr>
-        <tr><th>Are admin passwords changed regularly?</th><td>$(Get-HtmlSelect) <br><small>Last Set: $(($LocalUsers | Where Name -eq 'Administrator').PasswordLastSet)</small></td></tr>
-        <tr><th>Is password complexity enforced?</th><td>$(Get-HtmlSelect) <small>$PassInfoStr</small></td></tr>
+        <tr><th>Are admin passwords changed regularly?</th><td>$(Get-HtmlSelect) <br><small>Last Set: $AdminPassLastSet</small></td></tr>
+        <tr><th>Is password complexity enforced?</th><td>$(Get-HtmlSelect @("Select...", "Yes", "No", "N/A") -SelectedValue $PassComplexSel) <small>$PassInfoStr</small></td></tr>
         <tr><th>Are there any shared admin accounts?</th><td>$(Get-HtmlSelect) $(Get-HtmlInput "Document if yes")</td></tr>
     </table>
 
@@ -1069,7 +1103,7 @@ function Invoke-SecurityAudit {
     </table>
     <h3>B. Data Encryption</h3>
     <table>
-        <tr><th>Are ChiroTouch data files stored in encrypted form?</th><td>$(Get-HtmlSelect @("Select...", "Yes", "No", "N/A") -SelectedValue $ChiroEncVal)</td></tr>
+        <tr><th>Are ChiroTouch data files stored in encrypted form?</th><td>$(Get-HtmlSelect)</td></tr>
         <tr><th>Are database backups encrypted?</th><td>$(Get-HtmlSelect)</td></tr>
     </table>
 
@@ -1082,7 +1116,7 @@ function Invoke-SecurityAudit {
     </table>
     <h3>B. Remote Access</h3>
     <table>
-        <tr><th>Does anyone RDP to the server?</th><td>Config Status: $RDPStatus $(Get-HtmlSelect @("Select...", "Yes", "No", "N/A") -SelectedValue $RDPAnyoneSel)<br><small>Allowed Users: $RDPUserList</small></td></tr>
+        <tr><th>Does anyone RDP to the server?</th><td>Config Status: $RDPStatus $(Get-HtmlSelect)</td></tr>
         <tr><th>Is RDP protected by VPN?</th><td>$(Get-HtmlSelect @("Select...", "Yes", "No", "N/A") -SelectedValue $RDPVPNSel)</td></tr>
         <tr><th>MFA required?</th><td>$(Get-HtmlSelect @("Select...", "Yes", "No", "N/A") -SelectedValue $RDPMFASel)</td></tr>
         <tr><th>External RDP open to internet?</th><td>$(Get-HtmlSelect @("Select...", "Yes", "No", "N/A") -SelectedValue $RDPExternalSel) (Should be No)</td></tr>
@@ -1118,10 +1152,10 @@ function Invoke-SecurityAudit {
     <h2>6. Physical Security (HIPAA §164.310)</h2>
     <h3>A. Server Location</h3>
     <table>
-        <tr><th>Where is the server physically located?</th><td>$(Get-HtmlInput "closet, office, rack" -Value $LocationDefault)</td></tr>
-        <tr><th>Is the room locked?</th><td>$(Get-HtmlSelect @("Select...", "Yes", "No", "N/A") -SelectedValue $PhysicalSecDefault)</td></tr>
-        <tr><th>Who has physical access?</th><td>$(Get-HtmlInput "List roles/people" -Value $PhysicalSecDefault)</td></tr>
-        <tr><th>Any environmental risks?</th><td>$(Get-HtmlInput "Heat, water, unlocked room" -Value $PhysicalSecDefault)</td></tr>
+        <tr><th>Where is the server physically located?</th><td>$(Get-HtmlInput "closet, office, rack")</td></tr>
+        <tr><th>Is the room locked?</th><td>$(Get-HtmlSelect)</td></tr>
+        <tr><th>Who has physical access?</th><td>$(Get-HtmlInput "List roles/people")</td></tr>
+        <tr><th>Any environmental risks?</th><td>$(Get-HtmlInput "Heat, water, unlocked room")</td></tr>
     </table>
 
     <h2>7. Contingency & Failover (HIPAA §164.308(a)(7)(ii)(C))</h2>
@@ -1165,7 +1199,7 @@ function Invoke-SecurityAudit {
     <body>
         <div class='container'>
             $HTMLBody
-            <p style='text-align:center; margin-top:50px; font-size:0.8em; color:#95a5a6;'>Polar Nite Audit Tool v9.0 (Reverted to v7.0 Copy Logic)</p>
+            <p style='text-align:center; margin-top:50px; font-size:0.8em; color:#95a5a6;'>Polar Nite Audit Tool v7.0 (Ticket Mode)</p>
         </div>
     </body>
     </html>
