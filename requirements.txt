@@ -1,0 +1,2 @@
+# WinFix - Windows PC Repair Tool
+# No external dependencies required - uses only Python standard library
