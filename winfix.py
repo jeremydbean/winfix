@@ -18,7 +18,7 @@ def is_admin():
     """Check if the script is running with administrator privileges."""
     try:
         return ctypes.windll.shell32.IsUserAnAdmin()
-    except:
+    except (AttributeError, OSError):
         return False
 
 
@@ -45,7 +45,7 @@ def run_command(command, shell=True, capture_output=False):
                 capture_output=True,
                 text=True,
                 encoding='utf-8',
-                errors='ignore'
+                errors='replace'
             )
             return result
         else:
@@ -198,8 +198,8 @@ def clean_disk_space():
                         item.unlink()
                     elif item.is_dir():
                         shutil.rmtree(item, ignore_errors=True)
-                except Exception as e:
-                    # Skip files in use
+                except (PermissionError, OSError) as e:
+                    # Skip files in use or inaccessible
                     pass
             
             # Calculate size after cleaning
@@ -215,8 +215,9 @@ def clean_disk_space():
             log_action(f"Cleaned {description}: {freed_mb:.2f} MB freed")
             
         except Exception as e:
-            print(f"  ⚠ Error cleaning {description}: {e}\n")
-            log_action(f"Error cleaning {description}", "ERROR")
+            error_msg = f"Could not clean {description}"
+            print(f"  ⚠ {error_msg}\n")
+            log_action(f"Error cleaning {description}: {type(e).__name__}", "ERROR")
     
     # Run Windows Disk Cleanup utility
     print("Running Windows Disk Cleanup utility...")
