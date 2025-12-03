@@ -1,2 +1,84 @@
-# winfix
-Performs common Windows fixes
+# WinFix Tool & Security Audit
+
+This is a standalone utility designed to perform common Windows maintenance tasks, gather system information, and generate the "Polar Nite" Monthly Security Audit report.
+
+## Features
+
+*   **Common Fixes**:
+    *   Free up disk space (cleans Temp folders and Recycle Bin).
+    *   Disable Sleep & Hibernate (optimizes power settings for servers/always-on PCs).
+    *   Fix Network (Resets TCP/IP stack, Winsock, and flushes DNS).
+    *   Run System File Checker (SFC).
+    *   **DISM Repair Image** (Restores Windows image health).
+    *   **Reset Windows Update** (Clears cache and restarts services).
+    *   **Clear Print Spooler** (Fixes stuck print jobs).
+    *   **Restart Explorer** (Quickly restarts the shell).
+    *   **Sync System Time** (Forces time synchronization).
+*   **System Info**:
+    *   Get System Specs (OS, RAM, Model, etc.).
+    *   List Printers.
+    *   List Installed Software.
+*   **Network Tools**:
+    *   Show IP Configuration.
+    *   Quick Network Scan (ARP table).
+    *   Test Internet Connection (Ping).
+*   **Security Audit**:
+    *   Generates the interactive HTML report for the Monthly Security Audit.
+*   **Integrations**:
+    *   **NinjaOne API**: Connect to your NinjaOne instance to automatically pull device data (Patch status, AV status, Backup status) into the Security Audit.
+
+## Quick Start (One-Line Install)
+
+You can download, build, and run the tool automatically by pasting this command into PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/jeremydbean/winfix/main/download_and_run.ps1 | iex
+```
+
+This will:
+1.  Create a folder on your Desktop called `WinFix_Build`.
+2.  Download the necessary files.
+3.  Launch the builder (which will ask for Admin privileges to install the compiler).
+4.  Generate `WinFixTool.exe` for you.
+
+## Manual Build & Run
+
+1.  Clone or download this repository.
+2.  Double-click **`Build_and_Run.bat`**.
+3.  Accept the Administrator prompt (required to install the compiler module).
+4.  Wait for the process to finish.
+5.  The tool will launch automatically, and you will find `WinFixTool.exe` in the folder, ready to be uploaded to Google Drive.
+
+## How to Run (PowerShell)
+
+1.  Right-click `WinFixTool.ps1`.
+2.  Select **Run with PowerShell**.
+3.  If prompted for Administrator privileges, click **Yes**.
+
+## How to Create a Standalone EXE
+
+To distribute this tool as a single `.exe` file (e.g., via Google Drive), you can compile the PowerShell script using the popular `PS2EXE` module.
+
+### Step 1: Install PS2EXE
+Open PowerShell as Administrator and run:
+```powershell
+Install-Module -Name ps2exe -Scope CurrentUser
+```
+
+### Step 2: Compile the Script
+Run the following command to create the EXE:
+
+```powershell
+Invoke-PS2EXE -InputFile ".\WinFixTool.ps1" -OutputFile ".\WinFixTool.exe" -Icon "" -Title "WinFix Tool" -Version "1.0" -noConsole
+```
+
+*   `-noConsole`: Hides the background console window so only the GUI appears.
+*   You can add a custom icon by providing a path to an `.ico` file with the `-Icon` parameter.
+
+### Step 3: Distribute
+You can now upload `WinFixTool.exe` to Google Drive or a USB drive. It will run on any modern Windows machine without needing to install scripts or modules.
+
+## Requirements
+*   Windows 10, Windows 11, or Windows Server 2016+.
+*   PowerShell 5.1 (Default on Windows).
+*   **Administrator Privileges** are required for most fixes.
