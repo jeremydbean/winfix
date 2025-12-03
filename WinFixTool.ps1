@@ -230,6 +230,9 @@ $grpNinja.Text = "NinjaOne API Connection"
 $grpNinja.Dock = "Top"
 $grpNinja.Height = 220
 
+# Load Settings
+$savedSettings = Get-NinjaSettings
+
 # Inputs
 $lblUrl = New-Object System.Windows.Forms.Label
 $lblUrl.Text = "Instance URL (e.g. app.ninjarmm.com):"
@@ -239,7 +242,7 @@ $lblUrl.AutoSize = $true
 $txtUrl = New-Object System.Windows.Forms.TextBox
 $txtUrl.Location = New-Object System.Drawing.Point(10, 45)
 $txtUrl.Width = 300
-$txtUrl.Text = "app.ninjarmm.com"
+$txtUrl.Text = if ($savedSettings.Url) { $savedSettings.Url } else { "app.ninjarmm.com" }
 
 $lblCid = New-Object System.Windows.Forms.Label
 $lblCid.Text = "Client ID:"
@@ -249,6 +252,7 @@ $lblCid.AutoSize = $true
 $txtCid = New-Object System.Windows.Forms.TextBox
 $txtCid.Location = New-Object System.Drawing.Point(10, 95)
 $txtCid.Width = 300
+$txtCid.Text = if ($savedSettings.ClientId) { $savedSettings.ClientId } else { "" }
 
 $lblSec = New-Object System.Windows.Forms.Label
 $lblSec.Text = "Client Secret:"
@@ -259,12 +263,14 @@ $txtSec = New-Object System.Windows.Forms.TextBox
 $txtSec.Location = New-Object System.Drawing.Point(10, 145)
 $txtSec.Width = 300
 $txtSec.UseSystemPasswordChar = $true
+$txtSec.Text = if ($savedSettings.ClientSecret) { $savedSettings.ClientSecret } else { "" }
 
 $btnConnect = New-Object System.Windows.Forms.Button
 $btnConnect.Text = "Connect & Sync"
 $btnConnect.Location = New-Object System.Drawing.Point(10, 180)
 $btnConnect.Width = 100
 $btnConnect.Add_Click({
+    Save-NinjaSettings -Url $txtUrl.Text -Id $txtCid.Text -Secret $txtSec.Text
     Connect-NinjaOne -ClientId $txtCid.Text -ClientSecret $txtSec.Text -InstanceUrl $txtUrl.Text
 })
 
@@ -340,6 +346,34 @@ function Log-Output($message) {
 $global:NinjaToken = $null
 $global:NinjaInstance = $null
 $global:NinjaDeviceData = $null
+
+function Get-NinjaSettings {
+    $configDir = "$env:APPDATA\WinFixTool"
+    $configPath = "$configDir\ninja_config.xml"
+    if (Test-Path $configPath) {
+        try {
+            return Import-Clixml $configPath
+        } catch {
+            Log-Output "Could not load saved settings."
+        }
+    }
+    return $null
+}
+
+function Save-NinjaSettings {
+    param($Url, $Id, $Secret)
+    $configDir = "$env:APPDATA\WinFixTool"
+    if (-not (Test-Path $configDir)) { New-Item -ItemType Directory -Path $configDir -Force | Out-Null }
+    $configPath = "$configDir\ninja_config.xml"
+    
+    $settings = [PSCustomObject]@{
+        Url = $Url
+        ClientId = $Id
+        ClientSecret = $Secret
+    }
+    $settings | Export-Clixml -Path $configPath
+    Log-Output "Settings saved securely."
+}
 
 function Connect-NinjaOne {
     param($ClientId, $ClientSecret, $InstanceUrl)
