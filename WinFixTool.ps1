@@ -1131,7 +1131,12 @@ function Invoke-SecurityAudit {
     }
 
     # Smart User Logic
-    $LocalUsers = Get-LocalUser | Select-Object Name, Enabled, PasswordLastSet
+    try {
+        $LocalUsers = Get-LocalUser -ErrorAction Stop | Select-Object Name, Enabled, PasswordLastSet
+    } catch {
+        $LocalUsers = @()
+        Log-Output "Warning: Could not list local users."
+    }
     $DisabledUsers = $LocalUsers | Where-Object { $_.Enabled -eq $false }
     $DisabledUsersSel = if ($DisabledUsers) { "Yes" } else { "No" }
 
@@ -1139,7 +1144,12 @@ function Invoke-SecurityAudit {
     $AdminPassLastSet = "Unknown / Domain Account"
     $AdminPassChangedRegularly = "Select..."
     try {
-        $BuiltInAdmin = Get-LocalUser | Where-Object SID -like "*-500" -ErrorAction Stop
+        $BuiltInAdmin = $LocalUsers | Where-Object SID -like "*-500"
+        if (-not $BuiltInAdmin) { 
+            # Fallback if SID not available in previous select
+            $BuiltInAdmin = Get-LocalUser | Where-Object SID -like "*-500" -ErrorAction Stop 
+        }
+        
         if ($BuiltInAdmin) {
             $AdminPassLastSet = $BuiltInAdmin.PasswordLastSet.ToString("yyyy-MM-dd")
             $DaysSinceChange = (New-TimeSpan -Start $BuiltInAdmin.PasswordLastSet -End (Get-Date)).Days
@@ -1358,7 +1368,7 @@ function Invoke-SecurityAudit {
 
     <h3>C. Local User Accounts</h3>
     <table>
-        <tr><th>List all local server accounts</th><td><ul>$((Get-LocalUser).Name | ForEach-Object{"<li>$_</li>"})</ul></td></tr>
+        <tr><th>List all local server accounts</th><td><ul>$($LocalUsers.Name | ForEach-Object{"<li>$_</li>"})</ul></td></tr>
         <tr><th>Any accounts without MFA?</th><td>$(Get-HtmlSelect)</td></tr>
         <tr><th>Any disabled but unremoved accounts?</th><td>$(Get-HtmlSelect @("Select...", "Yes", "No", "N/A") -SelectedValue $DisabledUsersSel) $(if($DisabledUsers){ "<br><small>Disabled: " + ($DisabledUsers.Name -join ", ") + "</small>" })</td></tr>
         <tr><th>Any unexpected accounts?</th><td>$(Get-HtmlSelect) $(Get-HtmlInput "Document if yes")</td></tr>
@@ -1470,10 +1480,18 @@ function Invoke-SecurityAudit {
     <button onclick="copyReport()" class="copy-btn floating-action">Copy Report for Ticket</button>
 "@
 
+    if ([string]::IsNullOrWhiteSpace($HTMLBody)) { Log-Output "Error: HTML Body is empty!" }
+    
     $HTMLPage = "<html><head><title>Security Audit Report</title>$style</head><body>$HTMLBody</body></html>"
-    $HTMLPage | Out-File -FilePath $ReportPath -Encoding UTF8
-    Log-Output "Interactive Audit Generated. Opening Report..."
-    Invoke-Item $ReportPath
+    
+    try {
+        $HTMLPage | Out-File -FilePath $ReportPath -Encoding UTF8 -ErrorAction Stop
+        Log-Output "Report generated at: $ReportPath"
+        Log-Output "Report Size: $( (Get-Item $ReportPath).Length ) bytes"
+        Invoke-Item $ReportPath
+    } catch {
+        Log-Output "Failed to write report file: $($_.Exception.Message)"
+    }
 }
 
 # --- Show Form ---
