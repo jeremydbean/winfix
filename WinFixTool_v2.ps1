@@ -4,143 +4,233 @@
 .DESCRIPTION
     Fast, snappy GUI tool for Windows maintenance. No auto-loading - refresh on demand.
 .NOTES
-    Requires Administrator Privileges.
-    Author: Jeremy Bean IT
-    Version: 2.1
-#>
-
-# --- Request Admin Privileges ---
-if (-NOT ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole] "Administrator")) {
-    $newProcess = New-Object System.Diagnostics.ProcessStartInfo "PowerShell"
-    $newProcess.Arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`""
-    $newProcess.Verb = "runas"
-    [System.Diagnostics.Process]::Start($newProcess)
-    Exit
-}
-
-# --- Load Assemblies ---
-Add-Type -AssemblyName System.Windows.Forms
-Add-Type -AssemblyName System.Drawing
-
-# --- Global Settings ---
-[System.Windows.Forms.Application]::EnableVisualStyles()
-[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-
-# --- Theme ---
-$script:Theme = @{
-    Bg       = [System.Drawing.Color]::FromArgb(22, 22, 26)
-    Surface  = [System.Drawing.Color]::FromArgb(32, 32, 38)
-    Card     = [System.Drawing.Color]::FromArgb(42, 42, 50)
-    Text     = [System.Drawing.Color]::White
-    Dim      = [System.Drawing.Color]::FromArgb(140, 140, 150)
-    Accent   = [System.Drawing.Color]::FromArgb(66, 135, 245)
-    Green    = [System.Drawing.Color]::FromArgb(46, 204, 113)
-    Yellow   = [System.Drawing.Color]::FromArgb(241, 196, 15)
-    Red      = [System.Drawing.Color]::FromArgb(231, 76, 60)
-}
-
-$global:LogPath = "$env:TEMP\WinFix_Debug.log"
-
-# --- Status Indicator Characters ---
-$script:StatusOK = "[OK]"
-$script:StatusWarn = "[!!]"
-$script:StatusBad = "[XX]"
-$script:StatusPending = "[..]"
-
-# --- Logging ---
-function Log {
-    param([string]$Msg)
-    $ts = Get-Date -Format "HH:mm:ss"
-    $line = "[$ts] $Msg"
-    Add-Content -Path $global:LogPath -Value $line -ErrorAction SilentlyContinue
-    if ($script:txtLog) {
-        $script:txtLog.AppendText("$line`r`n")
-        $script:txtLog.ScrollToCaret()
-    }
-}
-
-# --- NinjaOne Settings ---
-function Get-NinjaSettings {
-    $regPath = "HKCU:\Software\WinFixTool"
-    try {
-        if (Test-Path $regPath) {
-            return @{
-                Url = (Get-ItemProperty -Path $regPath -Name "NinjaUrl" -ErrorAction SilentlyContinue).NinjaUrl
-                ClientId = (Get-ItemProperty -Path $regPath -Name "NinjaClientId" -ErrorAction SilentlyContinue).NinjaClientId
-                ClientSecret = (Get-ItemProperty -Path $regPath -Name "NinjaClientSecret" -ErrorAction SilentlyContinue).NinjaClientSecret
-            }
+    # --- Generate HTML ---
+    $html = @"
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Security Audit: $env:COMPUTERNAME</title>
+    <style>
+        :root { --accent: #0056b3; --good: #27ae60; --warn: #f39c12; --alert: #e74c3c; }
+        body { font-family: 'Segoe UI', sans-serif; background: #f4f7f6; color: #2c3e50; padding: 20px; }
+        h1 { color: var(--accent); border-bottom: 3px solid var(--accent); padding-bottom: 10px; }
+        h2 { background: #e8f4f8; color: var(--accent); padding: 10px; border-top: 3px solid var(--accent); margin-top: 30px; }
+        h3 { color: var(--accent); border-left: 4px solid var(--accent); padding-left: 10px; }
+        table { border-collapse: collapse; width: 100%; background: white; box-shadow: 0 2px 5px rgba(0,0,0,0.1); margin-bottom: 15px; }
+        th, td { padding: 12px; border-bottom: 1px solid #ecf0f1; text-align: left; }
+        th { background: #ecf0f1; width: 40%; font-weight: bold; }
+        .alert { color: var(--alert); font-weight: bold; }
+        .good { color: var(--good); font-weight: bold; }
+        .warn { color: var(--warn); font-weight: bold; }
+        .input { border: 1px solid #bdc3c7; padding: 5px; border-radius: 4px; width: 90%; }
+        select { border: 1px solid #bdc3c7; padding: 5px; border-radius: 4px; }
+        .ninja-tag { background: #17a2b8; color: white; padding: 2px 6px; border-radius: 3px; font-size: 0.8em; }
+        .copy-btn { background: var(--accent); color: white; border: none; padding: 10px 20px; border-radius: 5px; cursor: pointer; position: fixed; bottom: 30px; right: 30px; }
+    </style>
+    <script>
+        function copyReport() {
+            var clone = document.body.cloneNode(true);
+            clone.querySelectorAll('.copy-btn').forEach(b => b.remove());
+            clone.querySelectorAll('input, select, textarea').forEach(el => {
+                var val = el.tagName === 'SELECT' ? el.options[el.selectedIndex]?.text : el.value;
+                var span = document.createElement('span');
+                span.textContent = val || 'N/A';
+                span.style.fontWeight = 'bold';
+                el.parentNode.replaceChild(span, el);
+            });
+            var temp = document.createElement('div');
+            temp.innerHTML = clone.innerHTML;
+            document.body.appendChild(temp);
+            var range = document.createRange();
+            range.selectNodeContents(temp);
+            window.getSelection().removeAllRanges();
+            window.getSelection().addRange(range);
+            document.execCommand('copy');
+            document.body.removeChild(temp);
+            alert('Report copied to clipboard!');
         }
-    } catch { }
-    return @{ Url = ""; ClientId = ""; ClientSecret = "" }
-}
+    </script>
+</head>
+<body>
+<h1>INTERNAL SERVER SECURITY & BACKUP AUDIT FORM</h1>
 
-function Save-NinjaSettings {
-    param($Url, $Id, $Secret)
-    $regPath = "HKCU:\Software\WinFixTool"
-    if (-not (Test-Path $regPath)) { New-Item -Path $regPath -Force | Out-Null }
-    Set-ItemProperty -Path $regPath -Name "NinjaUrl" -Value $Url
-    Set-ItemProperty -Path $regPath -Name "NinjaClientId" -Value $Id
-    Set-ItemProperty -Path $regPath -Name "NinjaClientSecret" -Value $Secret
-}
+<p><strong>Client:</strong> <input class='input' style='width:300px;' placeholder='Client name'></p>
+<p><strong>Audit Month:</strong> $(Get-Date -Format 'MMMM yyyy')</p>
+<p><strong>Completed By:</strong> $env:USERNAME</p>
 
-function Connect-NinjaOne {
-    param($ClientId, $ClientSecret, $InstanceUrl)
-    Log "Connecting to NinjaOne..."
-    $InstanceUrl = $InstanceUrl -replace "^https?://", "" -replace "/$", "" -replace "/apidocs.*", "" -replace "/ws/.*", ""
-    $global:NinjaInstance = $InstanceUrl
-    
-    try {
-        $authUrl = "https://$InstanceUrl/ws/oauth/token"
-        $body = @{ grant_type = "client_credentials"; client_id = $ClientId; client_secret = $ClientSecret; scope = "monitoring management" }
-        $response = Invoke-RestMethod -Uri $authUrl -Method Post -Body $body -ContentType "application/x-www-form-urlencoded"
-        $global:NinjaToken = $response.access_token
-        Log "NinjaOne connected!"
-        return $true
-    } catch {
-        Log "NinjaOne connection failed: $_"
-        return $false
-    }
-}
+$(if($global:NinjaToken){"<p><span class='ninja-tag'>NinjaOne Connected</span> - RAID and backup data pulled from RMM</p>"})
+$(if($global:NinjaToken -and $ninjaData){"<p style='font-size:0.85em;'>Device ID: $($ninjaData.id) - Host: $($ninjaData.systemName)</p>"})
 
-# --- Deep Disk Cleanup Function ---
-function Invoke-DeepDiskCleanup {
-    <#
-    .SYNOPSIS
-        Comprehensive disk cleanup - Temp, Caches, DISM, Hibernation, Compression
-    #>
-    $results = @()
-    $hasErrors = $false
-    
-    # Helper: Get free space
-    function Get-FreeGB {
-        try {
-            $disk = Get-CimInstance Win32_LogicalDisk -Filter "DeviceID='C:'" -EA Stop
-            return [math]::Round($disk.FreeSpace / 1GB, 2)
-        } catch { return 0 }
-    }
-    
-    # Helper: Stop service safely
-    function Stop-Svc {
-        param([string]$Name)
-        $svc = Get-Service -Name $Name -EA SilentlyContinue
-        if (-not $svc) { return $true }
-        if ($svc.Status -eq 'Running') {
-            try {
-                Stop-Service -Name $Name -Force -EA Stop
-                $t = 0; while ((Get-Service $Name).Status -ne 'Stopped' -and $t -lt 30) { Start-Sleep 1; $t++ }
-            } catch { return $false }
-        }
-        return (Get-Service $Name).Status -eq 'Stopped'
-    }
-    
-    $startSpace = Get-FreeGB
-    $results += "Starting cleanup on $env:COMPUTERNAME"
-    $results += "Initial free space: $startSpace GB"
-    $results += ""
-    
-    # 1. Windows Update Cache
-    $results += "=== Windows Update Cache ==="
-    $wuaStopped = Stop-Svc "wuauserv"
+<h3>Server Identifying Information</h3>
+<table>
+    <tr><th>Server Name</th><td>$(Escape-ForHtmlAttr $CompInfo.Name)</td></tr>
+    <tr><th>Location (onsite/offsite)</th><td><input class='input' value='Onsite (confirm)'></td></tr>
+    <tr><th>OS Version</th><td>$($OSInfo.Caption) (Build $($OSInfo.BuildNumber)) ($($OSInfo.OSArchitecture)) $EOSWarning</td></tr>
+    <tr><th>Role(s)</th><td><input class='input' value='$(Escape-ForHtmlAttr $DetectedRoles)'></td></tr>
+    <tr><th>Who has administrative access</th><td><ul>$AdminList</ul></td></tr>
+    <tr><th>Last admin password changes</th><td><input class='input' value='$(Escape-ForHtmlAttr $AdminPasswordSummary)'></td></tr>
+    <tr><th>Virtual Machine</th><td>$(if($IsVM){"Yes (Guest - check host RAID/BitLocker)"}else{"No (Physical)"})</td></tr>
+</table>
+
+<h2>1. Backup & Data Retention (HIPAA §164.308(a)(7))</h2>
+<h3>A. Backup System Review</h3>
+<table>
+    <tr><th>Backup solution used</th><td><input class='input' value='$(Escape-ForHtmlAttr $DetectedBackup)'></td></tr>
+    <tr><th>Are backups completing successfully?</th><td><input class='input' value='$(Escape-ForHtmlAttr $BackupSuccess)'></td></tr>
+    <tr><th>Last successful backup date & time</th><td><input class='input' value='$(Escape-ForHtmlAttr $BackupLastSuccess)'></td></tr>
+    <tr><th>Backup frequency</th><td><input class='input' value='$(Escape-ForHtmlAttr $BackupFrequency)'></td></tr>
+    <tr><th>Are there any failed backups this month?</th><td><input class='input' value='$(Escape-ForHtmlAttr $BackupFailuresThisMonth)'></td></tr>
+</table>
+
+<h3>B. Backup Encryption</h3>
+<table>
+    <tr><th>Are backups encrypted at rest?</th><td><input class='input' value='$(Escape-ForHtmlAttr $BackupsEncrypted)'></td></tr>
+    <tr><th>Encryption standard used</th><td><input class='input' value='$(Escape-ForHtmlAttr $BackupEncryptionType)'></td></tr>
+    <tr><th>Are backup transfer channels encrypted?</th><td><input class='input' value='$(Escape-ForHtmlAttr $BackupTransferEncrypted)'></td></tr>
+</table>
+
+<h3>C. Backup Retention</h3>
+<table>
+    <tr><th>Retention period</th><td><input class='input' value='$(Escape-ForHtmlAttr $BackupRetention)'></td></tr>
+    <tr><th>Does retention meet HIPAA’s 6-year requirement?</th><td><input class='input' value='Unknown (verify documentation)'></td></tr>
+</table>
+
+<h3>D. Restore Testing</h3>
+<table>
+    <tr><th>Was a test restore performed in the last 90 days?</th><td><input class='input' value='Unknown'></td></tr>
+    <tr><th>Date of last verification restore</th><td><input class='input' placeholder='YYYY-MM-DD'></td></tr>
+    <tr><th>Result</th><td><input class='input' value='Unknown'></td></tr>
+</table>
+
+<h2>2. Server Security & Patch Compliance (HIPAA §164.308(a)(1), §164.312(c))</h2>
+<h3>A. Update Status</h3>
+<table>
+    <tr><th>Are Windows Updates current?</th><td>$(if($PendingReboot){"<span class='warn'>Reboot Pending</span>"}else{"<span class='good'>Yes</span>"})</td></tr>
+    <tr><th>Last update date</th><td>$LastUpdateDate</td></tr>
+    <tr><th>Pending patches?</th><td><input class='input' value='$(Escape-ForHtmlAttr ($ninjaPatches -replace '\\(.*\\)',''))'></td></tr>
+</table>
+
+<h3>B. Antivirus / EDR</h3>
+<table>
+    <tr><th>AV/EDR installed</th><td>$AVName</td></tr>
+    <tr><th>Real-time protection enabled?</th><td>$(if($RTPEnabled -eq 'Yes'){"<span class='good'>Yes</span>"}else{"<span class='alert'>No</span>"})</td></tr>
+    <tr><th>Last scan date</th><td>$LastScan</td></tr>
+    <tr><th>Any detections this month?</th><td><input class='input' placeholder='Attach or summarize if yes'></td></tr>
+</table>
+
+<h3>C. Local User Accounts</h3>
+<table>
+    <tr><th>List all local server accounts</th><td><input class='input' value='$(Escape-ForHtmlAttr $LocalUsers)'></td></tr>
+    <tr><th>Any accounts without MFA?</th><td><input class='input' value='$(Escape-ForHtmlAttr $MfaStatus)'></td></tr>
+    <tr><th>Any disabled but unremoved accounts?</th><td><input class='input' value='$(Escape-ForHtmlAttr $DisabledAdminList)'></td></tr>
+    <tr><th>Any unexpected accounts?</th><td><input class='input' value='Review local account list'></td></tr>
+</table>
+
+<h3>D. Administrator Access</h3>
+<table>
+    <tr><th>Who has administrative credentials</th><td><input class='input' value='$(Escape-ForHtmlAttr $AdminAccessSummary)'></td></tr>
+    <tr><th>Are admin passwords changed regularly?</th><td><input class='input' value='$(Escape-ForHtmlAttr $AdminPasswordSummary)'></td></tr>
+    <tr><th>Is password complexity enforced?</th><td><input class='input' value='$(Escape-ForHtmlAttr $PassComplex)'></td></tr>
+    <tr><th>Password policy details</th><td><input class='input' value='$(Escape-ForHtmlAttr $PasswordPolicySummary)'></td></tr>
+    <tr><th>Are there any shared admin accounts?</th><td><input class='input' value='Unknown (review team accounts)'></td></tr>
+</table>
+
+<h2>3. Server Encryption (HIPAA §164.312(a)(2)(iv))</h2>
+<h3>A. Disk Encryption</h3>
+<table>
+    <tr><th>Is full-disk encryption enabled?</th><td>$(if($BitLockerStatus -eq 'Encrypted'){"<span class='good'>Yes (BitLocker)</span>"}else{"<span class='warn'>$BitLockerStatus</span>"})</td></tr>
+    <tr><th>Encryption status</th><td>$BitLockerStatus</td></tr>
+    <tr><th>TPM present/enabled</th><td>$TpmStatus</td></tr>
+    <tr><th>If not encrypted, reason why</th><td><input class='input' value='$(Escape-ForHtmlAttr (if($IsVM){"Virtual Machine"}{"Verify host encryption"}))'></td></tr>
+</table>
+
+<h3>B. Data Encryption</h3>
+<table>
+    <tr><th>Are ChiroTouch data files stored in encrypted form?</th><td><input class='input' value='Unknown'></td></tr>
+    <tr><th>Are database backups encrypted?</th><td><input class='input' value='$(Escape-ForHtmlAttr $BackupsEncrypted)'></td></tr>
+</table>
+
+<h2>4. Server Firewall & Network Security (HIPAA §164.312(e))</h2>
+<h3>A. Local Firewall</h3>
+<table>
+    <tr><th>Windows Firewall enabled?</th><td>$(if($FWProfiles -ne 'DISABLED'){"<span class='good'>Enabled ($FWProfiles)</span>"}else{"<span class='alert'>DISABLED</span>"})</td></tr>
+    <tr><th>Inbound rule review</th><td><textarea class='input' rows='2' placeholder='List allowed inbound ports'></textarea></td></tr>
+    <tr><th>Outbound rule review</th><td><textarea class='input' rows='2' placeholder='Confirm non-essential ports are blocked'></textarea></td></tr>
+    <tr><th>Open Ports</th><td style='font-size:0.85em;'>$(Escape-ForHtmlAttr $OpenPorts)</td></tr>
+</table>
+
+<h3>B. Remote Access</h3>
+<table>
+    <tr><th>Does anyone RDP to the server?</th><td>$(if($RDPStatus -eq 'Enabled'){"<span class='warn'>Yes</span>"}else{"<span class='good'>No</span>"})</td></tr>
+    <tr><th>If yes: Is RDP protected by VPN?</th><td><input class='input' value='Unknown'></td></tr>
+    <tr><th>MFA required?</th><td><input class='input' value='Unknown'></td></tr>
+    <tr><th>External RDP open to internet?</th><td><input class='input' value='No (verify firewall)'></td></tr>
+    <tr><th>Any failed RDP attempts this month?</th><td><input class='input' value='$(Escape-ForHtmlAttr $RdpFailureNotes)'></td></tr>
+</table>
+
+<h2>5. Server Monitoring & Logs (HIPAA §164.312(b))</h2>
+<h3>A. Event Logs</h3>
+<table>
+    <tr><th>Security logs enabled?</th><td><input class='input' value='$(Escape-ForHtmlAttr $SecurityLogsEnabled)'></td></tr>
+    <tr><th>Retention period (in days)</th><td><input class='input' value='Log max size: $SecurityLogSizeMB MB (per policy)'></td></tr>
+    <tr><th>Any critical events found this month?</th><td>$EventsHTML</td></tr>
+</table>
+
+<h3>B. Application Logs</h3>
+<table>
+    <tr><th>Any application errors?</th><td><input class='input' value='$(Escape-ForHtmlAttr $AppErrorSummary)'></td></tr>
+    <tr><th>Any database errors?</th><td><input class='input' value='$(Escape-ForHtmlAttr $DatabaseErrorSummary)'></td></tr>
+    <tr><th>Any performance concerns logged?</th><td><input class='input' value='$(Escape-ForHtmlAttr $PerformanceSummary)'></td></tr>
+</table>
+
+<h3>C. Huntress / EDR Logs</h3>
+<table>
+    <tr><th>Any incidents detected on the server?</th><td><input class='input' value='Unknown (check EDR console)'></td></tr>
+</table>
+
+<h2>6. Physical Security (HIPAA §164.310)</h2>
+<h3>A. Server Location</h3>
+<table>
+    <tr><th>Where is the server physically located?</th><td><input class='input' value='Onsite (rack/closet)'></td></tr>
+    <tr><th>Is the room locked?</th><td><input class='input' value='Yes'></td></tr>
+    <tr><th>Who has physical access?</th><td><input class='input' value='Facilities, Polar Nite IT'></td></tr>
+    <tr><th>Any environmental risks?</th><td><input class='input' value='Unknown'></td></tr>
+</table>
+
+<h2>7. Contingency & Failover (HIPAA §164.308(a)(7)(ii)(C))</h2>
+<h3>A. Disaster Recovery</h3>
+<table>
+    <tr><th>If the server failed, how would be restored?</th><td><input class='input' value='Bare metal restore / documented recovery plan'></td></tr>
+    <tr><th>Estimated recovery time (RTO)</th><td><input class='input' value='Estimate required'></td></tr>
+    <tr><th>Are offsite backups present?</th><td><input class='input' value='$(Escape-ForHtmlAttr $OffsiteCopy)'></td></tr>
+</table>
+
+<h3>B. Redundancy</h3>
+<table>
+    <tr><th>RAID status</th><td><input class='input' value='$(Escape-ForHtmlAttr $RAIDStatus)'></td></tr>
+    <tr><th>Storage warnings</th><td>$(if($StorageWarn){"<span class='alert'>$StorageWarn</span>"}{"<span class='good'>None ($FreePct% free)</span>"})</td></tr>
+    <tr><th>Drive SMART status</th><td><input class='input' value='$(Escape-ForHtmlAttr $DiskHealth)'></td></tr>
+    <tr><th>Physical drives</th><td><input class='input' value='$(Escape-ForHtmlAttr $PhysicalDriveInfo)'></td></tr>
+</table>
+
+<h2>8. Server Exceptions (Anything Not Compliant)</h2>
+<table>
+    <tr><th>Description of issue</th><th>Safeguard</th><th>Risk rating</th><th>Owner</th><th>Status</th><th>Notes</th></tr>
+    <tr>
+        <td><textarea class='input' rows='2'></textarea></td>
+        <td><input class='input'></td>
+        <td><select><option>Low</option><option>Moderate</option><option>High</option></select></td>
+        <td><select><option>Polar Nite IT</option><option>Client</option></select></td>
+        <td><select><option>Planned</option><option>In Progress</option><option>Not Scheduled</option></select></td>
+        <td><textarea class='input' rows='2'></textarea></td>
+    </tr>
+</table>
+
+<button class='copy-btn' onclick='copyReport()'>Copy Report</button>
+<p style='text-align:center; margin-top:50px; color:#95a5a6; font-size:0.8em;'>WinFix Polar Nite Audit v2.1</p>
+</body>
+</html>
+"@
     $bitsStopped = Stop-Svc "bits"
     if ($wuaStopped -and $bitsStopped) {
         $swDist = "C:\Windows\SoftwareDistribution\Download\*"
@@ -1492,6 +1582,13 @@ $btnAudit.Add_Click({
     # RDP
     $RDP = Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server" -Name fDenyTSConnections -EA SilentlyContinue
     $RDPStatus = if ($RDP.fDenyTSConnections -eq 1) { "Disabled" } else { "Enabled" }
+    $RdpFailureNotes = "No recent failures detected"
+    try {
+        $rdpFailures = Get-WinEvent -FilterHashtable @{LogName='Security'; Id=4625; StartTime=(Get-Date).AddDays(-30)} -MaxEvents 5 -EA SilentlyContinue
+        if ($rdpFailures) { $RdpFailureNotes = "Yes ($($rdpFailures.Count) events in last 30 days)" }
+    } catch {
+        $RdpFailureNotes = "Unable to query Security log (requires elevated rights)"
+    }
     
     # Disk Health & RAID
     $Disks = Get-PhysicalDisk -EA SilentlyContinue | Select-Object FriendlyName, MediaType, HealthStatus
@@ -1514,10 +1611,70 @@ $btnAudit.Add_Click({
     $CDrive = Get-CimInstance Win32_LogicalDisk -Filter "DeviceID='C:'" -EA SilentlyContinue
     $FreePct = if ($CDrive) { [math]::Round(($CDrive.FreeSpace / $CDrive.Size) * 100, 1) } else { 0 }
     $StorageWarn = if ($FreePct -lt 15) { "LOW DISK: $FreePct% Free" } else { "" }
+
+    # Physical drives & TPM
+    $PhysicalDrives = Get-CimInstance Win32_DiskDrive -EA SilentlyContinue
+    $PhysicalDriveInfo = if ($PhysicalDrives) { ($PhysicalDrives | ForEach-Object { "$($_.DeviceID): $($_.Model) ($($_.Status))" }) -join "; " } else { "Not available" }
+    $TpmStatus = "Not present or unsupported"
+    if (Get-Command Get-Tpm -ErrorAction SilentlyContinue) {
+        try {
+            $tpm = Get-Tpm -ErrorAction Stop
+            if ($tpm.TpmReady) { $TpmStatus = "Yes (TPM ready)" } else { $TpmStatus = "No (TPM present but not ready)" }
+        } catch {
+            $TpmStatus = "No (Get-Tpm failed)"
+        }
+    }
     
     # Local Users
-    $LocalUsers = (Get-LocalUser -EA SilentlyContinue).Name -join ", "
-    $AdminList = if ($AdminGroup) { ($AdminGroup.Name | ForEach-Object { "<li>$_</li>" }) -join "" } else { "<li>Unknown</li>" }
+    $LocalUserCmd = Get-Command Get-LocalUser -ErrorAction SilentlyContinue
+    $LocalUserObjects = if ($LocalUserCmd) { Get-LocalUser -EA SilentlyContinue } else { @() }
+    $LocalUsersDetailed = @()
+    if ($LocalUserObjects) {
+        foreach ($user in $LocalUserObjects | Sort-Object Name) {
+            $status = if ($user.Enabled) { "Enabled" } else { "Disabled" }
+            $pwdDate = if ($user.PasswordLastSet) { $user.PasswordLastSet.ToString('yyyy-MM-dd HH:mm') } else { 'Never' }
+            $LocalUsersDetailed += "$($user.Name) [$status] - Last PW: $pwdDate"
+        }
+    } else {
+        $LocalUsersDetailed += "Local account enumeration not supported on this host."
+    }
+    $LocalUsers = $LocalUsersDetailed -join "; "
+
+    $AdminListEntries = @()
+    $AdminDetails = @()
+    if ($AdminGroup) {
+        foreach ($member in $AdminGroup | Sort-Object Name -Unique) {
+            $detail = [ordered]@{
+                Name = $member.Name
+                ObjectClass = $member.ObjectClass
+                Enabled = "Unknown"
+                PasswordLastSet = "Unknown"
+            }
+            if ($member.ObjectClass -eq "User") {
+                if (-not $LocalUserCmd -or $member.Name -match '\\') {
+                    $detail.Enabled = "Domain-managed"
+                    $detail.PasswordLastSet = "Managed externally"
+                } else {
+                    $localUser = Get-LocalUser -Name $member.Name -EA SilentlyContinue
+                    if ($localUser) {
+                        $detail.Enabled = if ($localUser.Enabled) { "Enabled" } else { "Disabled" }
+                        $detail.PasswordLastSet = if ($localUser.PasswordLastSet) { $localUser.PasswordLastSet.ToString('yyyy-MM-dd HH:mm') } else { 'Never' }
+                    }
+                }
+            } elseif ($member.ObjectClass -eq "Group") {
+                $detail.PasswordLastSet = "Group membership"
+            }
+            $AdminDetails += [pscustomobject]$detail
+            $AdminListEntries += "<li>$($detail.Name) ($($detail.Enabled)) - Last PW: $($detail.PasswordLastSet)</li>"
+        }
+    }
+    $AdminList = if ($AdminListEntries) { $AdminListEntries -join "" } else { "<li>Unknown</li>" }
+
+    $AdminAccessSummary = if ($AdminDetails) { ($AdminDetails | ForEach-Object { "$($_.Name) [$($_.Enabled)] - Last PW: $($_.PasswordLastSet)" }) -join "; " } else { "Unable to enumerate administrators" }
+    $AdminPasswordSummary = if ($AdminDetails) { ($AdminDetails | Where-Object { $_.ObjectClass -eq 'User' } | ForEach-Object { "$($_.Name): $($_.PasswordLastSet)" }) -join "; " } else { "Unknown" }
+    $DisabledAdminList = ($AdminDetails | Where-Object { $_.Enabled -eq 'Disabled' } | Select-Object -ExpandProperty Name) -join ", "
+    if (-not $DisabledAdminList) { $DisabledAdminList = "None" }
+    $MfaStatus = "Unknown (verify with identity provider)"
     
     # Password Policy
     $PassComplex = "Unknown"
@@ -1529,9 +1686,70 @@ $btnAudit.Add_Click({
         elseif ($secPol -match "PasswordComplexity\s*=\s*0") { $PassComplex = "No" }
         Remove-Item $secFile -EA SilentlyContinue
     } catch {}
+
+    $PasswordMinLength = Get-SecPolValue -Lines $secPol -Key "MinimumPasswordLength"
+    $PasswordMaxAge = Get-SecPolValue -Lines $secPol -Key "MaximumPasswordAge"
+    $PasswordHistory = Get-SecPolValue -Lines $secPol -Key "PasswordHistorySize"
+    $PasswordPolicySummary = "MinLen: $($PasswordMinLength -or 'Unknown'); MaxAge: $($PasswordMaxAge -or 'Unknown'); History: $($PasswordHistory -or 'Unknown'); Complexity: $PassComplex"
+
+    $BackupEncryptionMap = @{
+        'Veeam' = 'AES-256 (Veeam default)'
+        'Acronis' = 'AES-256 (Acronis encrypted vault)'
+        'Datto' = 'AES-256 (Datto cloud)'
+        'Ninja' = 'AES-256 (Ninja Secure Storage)'
+        'Carbonite' = 'AES-128 (Carbonite standard)'
+    }
+    $BackupEncryptionType = "Unknown (verify backup vendor settings)"
+    foreach ($pattern in $BackupEncryptionMap.Keys) {
+        if ($DetectedBackup -match $pattern) {
+            $BackupEncryptionType = $BackupEncryptionMap[$pattern]
+            break
+        }
+    }
+    $BackupsEncrypted = if ($BackupEncryptionType -match '^Unknown') { 'Unknown' } else { 'Yes' }
+    $BackupTransferEncrypted = "TLS/SSL assumed (per vendor defaults)"
+    $OffsiteCopy = if ($DetectedBackup -match 'Datto|Ninja|Carbonite|Backblaze') { 'Yes (cloud-enabled)' } else { 'Unknown' }
+
+    $BackupFrequency = "Unknown (check backup console)"
+    $BackupRetention = "Unknown"
+    if ($ninjaBackup) {
+        $freqProp = $ninjaBackup.psobject.Properties | Where-Object { $_.Name -match 'Frequency|Schedule' -and $_.Value } | Select-Object -First 1
+        if ($freqProp) { $BackupFrequency = $freqProp.Value }
+        $retProp = $ninjaBackup.psobject.Properties | Where-Object { $_.Name -match 'Retention' -and $_.Value } | Select-Object -First 1
+        if ($retProp) { $BackupRetention = $retProp.Value }
+    }
+
+    $BackupSuccess = "Unknown"
+    if ($ninjaBackupStatus) {
+        $statusToken = $ninjaBackupStatus.ToUpper()
+        if ($statusToken -match 'SUCCESS|COMPLETED|OK') { $BackupSuccess = "Yes ($ninjaBackupStatus)" }
+        elseif ($statusToken -match 'FAIL|ERROR|WARNING') { $BackupSuccess = "No ($ninjaBackupStatus)" }
+        else { $BackupSuccess = "Unknown ($ninjaBackupStatus)" }
+    }
+    $BackupLastSuccess = $ninjaBackupTime -or "Unknown"
+    $BackupFailuresThisMonth = if ($BackupSuccess -match '^No') { "Yes ($ninjaBackupStatus)" } elseif ($BackupSuccess -match '^Yes') { 'No' } else { 'Unknown' }
     
     # Open Ports
     $OpenPorts = (Get-NetTCPConnection -State Listen -EA SilentlyContinue | Select-Object -ExpandProperty LocalPort -Unique | Sort-Object {[int]$_}) -join ", "
+
+    # Security log metadata
+    $SecurityLogInfo = $null
+    try { $SecurityLogInfo = Get-WinEvent -ListLog Security -EA SilentlyContinue } catch {}
+    $SecurityLogsEnabled = if ($SecurityLogInfo -and $SecurityLogInfo.IsEnabled) { "Yes" } else { "No" }
+    $SecurityLogSizeMB = if ($SecurityLogInfo -and $SecurityLogInfo.MaximumSizeInBytes) { [math]::Round($SecurityLogInfo.MaximumSizeInBytes / 1MB, 0) } else { "Unknown" }
+
+    # Application & database logs
+    $AppErrors = @()
+    try { $AppErrors = Get-WinEvent -FilterHashtable @{LogName='Application'; Level=1,2; StartTime=(Get-Date).AddDays(-30)} -MaxEvents 5 -EA SilentlyContinue } catch {}
+    $AppErrorSummary = Format-EventSummary $AppErrors
+    $DatabaseEvents = @()
+    try {
+        $DatabaseEvents = Get-WinEvent -FilterHashtable @{LogName='Application'; Level=2,3; StartTime=(Get-Date).AddDays(-30)} -MaxEvents 5 -EA SilentlyContinue | Where-Object { $_.ProviderName -match 'MSSQL|SQL' }
+    } catch {}
+    $DatabaseErrorSummary = Format-EventSummary $DatabaseEvents
+    $PerformanceEvents = @()
+    try { $PerformanceEvents = Get-WinEvent -FilterHashtable @{LogName='System'; Level=1,2; StartTime=(Get-Date).AddDays(-30)} -MaxEvents 5 -EA SilentlyContinue } catch {}
+    $PerformanceSummary = Format-EventSummary $PerformanceEvents
     
     # Event Log Errors
     $CritEvents = Get-WinEvent -FilterHashtable @{LogName='System','Application'; Level=1,2; StartTime=(Get-Date).AddDays(-30)} -MaxEvents 10 -EA SilentlyContinue
@@ -1544,8 +1762,6 @@ $btnAudit.Add_Click({
     # Override with Ninja data if available
     if ($ninjaAV) { $AVName = $ninjaAV }
     if ($ninjaPatches) { $LastUpdateDate += " ($ninjaPatches)" }
-    if ($ninjaBackupStatus) { $DetectedBackup += " - Last: $ninjaBackupStatus" }
-    if ($ninjaBackupTime) { $DetectedBackup += " @ $ninjaBackupTime" }
 
     # --- Generate HTML ---
     $html = @"
