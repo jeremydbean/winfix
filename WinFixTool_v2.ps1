@@ -102,6 +102,155 @@ function Connect-NinjaOne {
     }
 }
 
+# --- Deep Disk Cleanup Function ---
+function Invoke-DeepDiskCleanup {
+    <#
+    .SYNOPSIS
+        Comprehensive disk cleanup - Temp, Caches, DISM, Hibernation, Compression
+    #>
+    $results = @()
+    $hasErrors = $false
+    
+    # Helper: Get free space
+    function Get-FreeGB {
+        try {
+            $disk = Get-CimInstance Win32_LogicalDisk -Filter "DeviceID='C:'" -EA Stop
+            return [math]::Round($disk.FreeSpace / 1GB, 2)
+        } catch { return 0 }
+    }
+    
+    # Helper: Stop service safely
+    function Stop-Svc {
+        param([string]$Name)
+        $svc = Get-Service -Name $Name -EA SilentlyContinue
+        if (-not $svc) { return $true }
+        if ($svc.Status -eq 'Running') {
+            try {
+                Stop-Service -Name $Name -Force -EA Stop
+                $t = 0; while ((Get-Service $Name).Status -ne 'Stopped' -and $t -lt 30) { Start-Sleep 1; $t++ }
+            } catch { return $false }
+        }
+        return (Get-Service $Name).Status -eq 'Stopped'
+    }
+    
+    $startSpace = Get-FreeGB
+    $results += "Starting cleanup on $env:COMPUTERNAME"
+    $results += "Initial free space: $startSpace GB"
+    $results += ""
+    
+    # 1. Windows Update Cache
+    $results += "=== Windows Update Cache ==="
+    $wuaStopped = Stop-Svc "wuauserv"
+    $bitsStopped = Stop-Svc "bits"
+    if ($wuaStopped -and $bitsStopped) {
+        $swDist = "C:\Windows\SoftwareDistribution\Download\*"
+        if (Test-Path $swDist) {
+            try { Remove-Item $swDist -Recurse -Force -EA Stop; $results += "Cleared SoftwareDistribution" }
+            catch { $results += "ERROR: SoftwareDistribution: $_"; $hasErrors = $true }
+        }
+    }
+    Start-Service wuauserv, bits -EA SilentlyContinue
+    
+    # 2. System Temp
+    $results += "`n=== Temp Folders ==="
+    try { Remove-Item "C:\Windows\Temp\*" -Recurse -Force -EA SilentlyContinue; $results += "Cleaned System Temp" }
+    catch { $results += "ERROR: System Temp: $_"; $hasErrors = $true }
+    
+    # 3. User Temp & App Caches
+    try {
+        $users = Get-ChildItem "C:\Users" -Directory -EA SilentlyContinue
+        foreach ($u in $users) {
+            $pathsToClean = @(
+                "$($u.FullName)\AppData\Local\Temp\*",
+                "$($u.FullName)\AppData\Roaming\Microsoft\Teams\Cache\*",
+                "$($u.FullName)\AppData\Roaming\Microsoft\Teams\blob_storage\*",
+                "$($u.FullName)\AppData\Roaming\Microsoft\Teams\GPUCache\*",
+                "$($u.FullName)\AppData\Roaming\Adobe\Common\Media Cache Files\*",
+                "$($u.FullName)\AppData\Local\CrashDumps\*",
+                "$($u.FullName)\AppData\Local\Microsoft\Teams\Current\SquirrelTemp\*"
+            )
+            foreach ($p in $pathsToClean) {
+                if (Test-Path $p) { Remove-Item $p -Recurse -Force -EA SilentlyContinue }
+            }
+        }
+        $results += "Cleaned User Temp, Teams, Adobe, CrashDumps"
+    } catch { $results += "ERROR: User caches: $_"; $hasErrors = $true }
+    
+    # 4. IIS Logs (30+ days old)
+    if (Test-Path "C:\inetpub\logs\LogFiles") {
+        $results += "`n=== IIS Logs ==="
+        try {
+            $oldLogs = Get-ChildItem "C:\inetpub\logs\LogFiles" -Recurse -File -EA SilentlyContinue | Where-Object { $_.LastWriteTime -lt (Get-Date).AddDays(-30) }
+            if ($oldLogs) { $oldLogs | Remove-Item -Force -EA SilentlyContinue; $results += "Removed $($oldLogs.Count) old IIS logs" }
+        } catch { $results += "ERROR: IIS logs: $_"; $hasErrors = $true }
+    }
+    
+    # 5. Hibernation
+    $results += "`n=== Hibernation ==="
+    if (Test-Path "C:\hiberfil.sys") {
+        try { powercfg.exe /h off; $results += "Disabled hibernation (reclaimed hiberfil.sys)" }
+        catch { $results += "ERROR: Hibernation: $_"; $hasErrors = $true }
+    } else { $results += "Hibernation already disabled" }
+    
+    # 6. Recycle Bin
+    $results += "`n=== Recycle Bin ==="
+    try { Clear-RecycleBin -DriveLetter C -Force -EA Stop; $results += "Emptied Recycle Bin" }
+    catch { $results += "Recycle bin already empty or locked" }
+    
+    # 7. DISM Component Cleanup (ResetBase)
+    $results += "`n=== DISM Component Cleanup ==="
+    $results += "Running DISM /ResetBase (this may take several minutes)..."
+    try {
+        $dismProc = Start-Process "dism.exe" -ArgumentList "/Online /Cleanup-Image /StartComponentCleanup /ResetBase /NoRestart" -NoNewWindow -PassThru -Wait
+        if ($dismProc.ExitCode -eq 0) { $results += "DISM cleanup complete" }
+        else { $results += "DISM exited with code $($dismProc.ExitCode)"; $hasErrors = $true }
+    } catch { $results += "ERROR: DISM: $_"; $hasErrors = $true }
+    
+    # 8. CleanMgr (Disk Cleanup)
+    if (Get-Command "cleanmgr.exe" -EA SilentlyContinue) {
+        $results += "`n=== Windows Disk Cleanup ==="
+        try {
+            $stateKeys = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\VolumeCaches"
+            $cleanItems = @("Active Setup Temp Folders","BranchCache","Device Driver Packages","Downloaded Program Files",
+                "Internet Cache Files","Memory Dump Files","Old ChkDsk Files","Previous Installations",
+                "Service Pack Cleanup","Setup Log Files","System error memory dump files","System error minidump files",
+                "Temporary Files","Temporary Setup Files","Thumbnail Cache","Update Cleanup",
+                "Upgrade Discarded Files","Windows Defender","Windows Error Reporting Files")
+            foreach ($k in $cleanItems) {
+                $p = "$stateKeys\$k"
+                if (Test-Path $p) { New-ItemProperty -Path $p -Name StateFlags0001 -Value 2 -PropertyType DWord -Force -EA SilentlyContinue | Out-Null }
+            }
+            Start-Process cleanmgr.exe -ArgumentList "/sagerun:1" -WindowStyle Hidden -Wait
+            $results += "Windows Disk Cleanup complete"
+        } catch { $results += "ERROR: CleanMgr: $_"; $hasErrors = $true }
+    }
+    
+    # 9. OS Compression (CompactOS)
+    $results += "`n=== OS Compression ==="
+    try {
+        $results += "Running CompactOS..."
+        compact.exe /CompactOS:always 2>&1 | Out-Null
+        $results += "Compressing Program Files..."
+        compact.exe /C /S /I /F "C:\Program Files\*" 2>&1 | Out-Null
+        compact.exe /C /S /I /F "C:\Program Files (x86)\*" 2>&1 | Out-Null
+        $results += "Compression complete"
+    } catch { $results += "ERROR: Compression: $_"; $hasErrors = $true }
+    
+    # Final Report
+    $endSpace = Get-FreeGB
+    $reclaimed = [math]::Round($endSpace - $startSpace, 2)
+    if ($reclaimed -lt 0) { $reclaimed = 0 }
+    
+    $results += "`n=========================================="
+    $results += "CLEANUP COMPLETE"
+    $results += "Initial: $startSpace GB | Final: $endSpace GB"
+    $results += "Reclaimed: $reclaimed GB"
+    $results += "Status: $(if ($hasErrors) { 'Completed with errors' } else { 'Success' })"
+    $results += "=========================================="
+    
+    return $results -join "`r`n"
+}
+
 # --- Create Main Form ---
 $form = New-Object System.Windows.Forms.Form
 $form.Text = "WinFix Tool v2.1"
@@ -438,7 +587,22 @@ $lblQuickTitle.ForeColor = $script:Theme.Dim
 $pageQuick.Controls.Add($lblQuickTitle)
 
 $fixes = @(
-    @{Name = "Clear Temp Files"; Cmd = { Remove-Item "$env:TEMP\*","C:\Windows\Temp\*" -Recurse -Force -EA 0; Clear-RecycleBin -Force -EA 0; "Done!" }}
+    @{Name = "Deep Disk Cleanup"; Cmd = {
+        $form = [System.Windows.Forms.Form]@{ Text="Deep Disk Cleanup"; Size="500,400"; StartPosition="CenterScreen"; BackColor=$script:Theme.Bg; ForeColor=$script:Theme.Text }
+        $txt = [System.Windows.Forms.TextBox]@{ Multiline=$true; ScrollBars="Both"; ReadOnly=$true; Location="10,10"; Size="465,300"; BackColor=$script:Theme.Surface; ForeColor=$script:Theme.Text; Font=[System.Drawing.Font]::new("Consolas",8); Anchor="Top,Left,Right,Bottom" }
+        $btn = [System.Windows.Forms.Button]@{ Text="Start Cleanup"; Location="10,320"; Size="465,30"; FlatStyle="Flat"; BackColor=$script:Theme.Accent; ForeColor="White" }
+        $btn.FlatAppearance.BorderSize = 0
+        $btn.Add_Click({
+            $this.Enabled = $false; $this.Text = "Running... Please wait"
+            $txt.Text = "Starting deep disk cleanup...`r`n`r`n"
+            [System.Windows.Forms.Application]::DoEvents()
+            $result = Invoke-DeepDiskCleanup
+            $txt.Text = $result
+            $this.Text = "Complete"; $this.Enabled = $true
+        })
+        $form.Controls.AddRange(@($txt,$btn)); $form.ShowDialog()
+        "Deep Disk Cleanup window closed"
+    }}
     @{Name = "Flush DNS"; Cmd = { ipconfig /flushdns }}
     @{Name = "Reset Network"; Cmd = { netsh winsock reset; netsh int ip reset; ipconfig /release; ipconfig /renew; "Done! Restart recommended." }}
     @{Name = "Fix Windows Update"; Cmd = { Stop-Service wuauserv,cryptSvc,bits,msiserver -Force -EA 0; Remove-Item "C:\Windows\SoftwareDistribution\*","C:\Windows\System32\catroot2\*" -Recurse -Force -EA 0; Start-Service wuauserv,cryptSvc,bits,msiserver -EA 0; "Done!" }}
