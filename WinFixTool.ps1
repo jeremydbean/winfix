@@ -325,30 +325,50 @@ function Get-NinjaDeviceData {
     $serial = (Get-CimInstance Win32_Bios).SerialNumber
     $hostname = $env:COMPUTERNAME
     
-    try {
-        # Try Serial Number Search
-        if (-not [string]::IsNullOrWhiteSpace($serial)) {
-            $encSerial = [uri]::EscapeDataString($serial)
-            $searchUrl = "https://$($global:NinjaInstance)/v2/devices?df=serialNumber:$encSerial"
-            try {
-                $devices = Invoke-RestMethod -Uri $searchUrl -Headers $headers -ErrorAction Stop
-            } catch {
-                Log-Output "Serial search failed ($($_.Exception.Message)). Trying hostname..."
-            }
-        }
+    $devices = $null
 
-        # Try Hostname Search if Serial failed or returned nothing
-        if (-not $devices) {
+    # Try Serial Number Search
+    if (-not [string]::IsNullOrWhiteSpace($serial)) {
+        try {
+            $encSerial = [uri]::EscapeDataString($serial)
+            Log-Output "Searching Serial: $serial"
+            $searchUrl = "https://$($global:NinjaInstance)/v2/devices?df=serialNumber:$encSerial"
+            $devices = Invoke-RestMethod -Uri $searchUrl -Headers $headers -ErrorAction Stop
+        } catch {
+            Log-Output "Serial search failed: $($_.Exception.Message)"
+        }
+    }
+
+    # Try Hostname Search (systemName)
+    if (-not $devices) {
+         try {
              $encHost = [uri]::EscapeDataString($hostname)
+             Log-Output "Searching Hostname (systemName): $hostname"
              $searchUrl = "https://$($global:NinjaInstance)/v2/devices?df=systemName:$encHost"
              $devices = Invoke-RestMethod -Uri $searchUrl -Headers $headers -ErrorAction Stop
-        }
+         } catch {
+             Log-Output "Hostname (systemName) search failed: $($_.Exception.Message)"
+         }
+    }
+    
+    # Try Hostname Search (nodeName - Fallback)
+    if (-not $devices) {
+         try {
+             $encHost = [uri]::EscapeDataString($hostname)
+             Log-Output "Searching Hostname (nodeName): $hostname"
+             $searchUrl = "https://$($global:NinjaInstance)/v2/devices?df=nodeName:$encHost"
+             $devices = Invoke-RestMethod -Uri $searchUrl -Headers $headers -ErrorAction Stop
+         } catch {
+             Log-Output "Hostname (nodeName) search failed: $($_.Exception.Message)"
+         }
+    }
 
-        if ($devices) {
-            $global:NinjaDeviceData = $devices[0]
-            Log-Output "Device found: $($global:NinjaDeviceData.systemName) (ID: $($global:NinjaDeviceData.id))"
-        } else { Log-Output "Device not found in NinjaOne." }
-    } catch { Log-Output "Error fetching device data: $($_.Exception.Message)" }
+    if ($devices) {
+        $global:NinjaDeviceData = $devices[0]
+        Log-Output "Device found: $($global:NinjaDeviceData.systemName) (ID: $($global:NinjaDeviceData.id))"
+    } else { 
+        Log-Output "Device not found in NinjaOne (or API errors occurred)." 
+    }
 }
 
 # --- Tab Control Setup ---
