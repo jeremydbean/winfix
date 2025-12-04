@@ -882,6 +882,11 @@ function Invoke-NinjaAPI {
         $url = "https://$($global:NinjaInstance)/v2$Endpoint"
         return Invoke-RestMethod -Uri $url -Headers $headers -Method Get
     } catch {
+        $response = $_.Exception.Response
+        if ($response -and $response.StatusCode -eq "NotFound") {
+             Log "API Info: Endpoint not found or no data: $Endpoint"
+             return $null
+        }
         Log "API Error ($Endpoint): $_"
         return $null
     }
