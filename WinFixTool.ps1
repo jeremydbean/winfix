@@ -519,7 +519,7 @@ function Add-Button($parent, $text, $scriptBlock) {
 
 # --- Tab 0: Dashboard ---
 $tabDashboard = New-Object System.Windows.Forms.TabPage
-$tabDashboard.Text = "🏠 Dashboard"
+$tabDashboard.Text = "Dashboard"
 $tabDashboard.BackColor = $Theme.Background
 $tabDashboard.Padding = New-Object System.Windows.Forms.Padding(20)
 
@@ -723,9 +723,9 @@ $form.Add_Shown({
     $btnRefreshDash.PerformClick()
 })
 
-# --- Tab 1: Common Fixes ---
+# --- Tab 1: Maintenance ---
 $tabFixes = New-Object System.Windows.Forms.TabPage
-$tabFixes.Text = "Common Fixes"
+$tabFixes.Text = "Maintenance"
 $tabFixes.BackColor = $Theme.Background
 $tabFixes.Padding = New-Object System.Windows.Forms.Padding(20)
 
@@ -838,7 +838,7 @@ $tabFixes.Controls.Add($flowFixes)
 
 # --- Tab 2: Diagnostics ---
 $tabInfo = New-Object System.Windows.Forms.TabPage
-$tabInfo.Text = "🔍 Diagnostics"
+$tabInfo.Text = "Diagnostics"
 $tabInfo.BackColor = $Theme.Background
 $tabInfo.Padding = New-Object System.Windows.Forms.Padding(20)
 
@@ -916,7 +916,7 @@ $tabInfo.Controls.Add($flowInfo)
 
 # --- Tab 3: Network Tools ---
 $tabNet = New-Object System.Windows.Forms.TabPage
-$tabNet.Text = "🌐 Network"
+$tabNet.Text = "Network"
 $tabNet.BackColor = $Theme.Background
 $tabNet.Padding = New-Object System.Windows.Forms.Padding(20)
 
@@ -970,7 +970,7 @@ Add-Button $flowNet "Scan Network Printers (Port 9100)" {
         
         if ($IPObj -and $IPObj.IPAddress -match "^(\d{1,3}\.\d{1,3}\.\d{1,3})\.") {
             $Subnet = $matches[1]
-            "Auto-detected subnet: $Subnet.x"
+            "Auto-detected subnet: ${Subnet}.x"
             ""
         }
     } catch {
@@ -983,7 +983,7 @@ Add-Button $flowNet "Scan Network Printers (Port 9100)" {
         return
     }
     
-    "Scanning $Subnet.1-254 for Port 9100 (JetDirect)..."
+    "Scanning ${Subnet}.1-254 for Port 9100 (JetDirect)..."
     "This will take 30-60 seconds..."
     ""
     
@@ -1138,7 +1138,7 @@ Add-Button $flowNet "Scan Network Printers (Port 9100)" {
         ""
         $Results | Sort-Object IPAddress | Format-Table IPAddress, HostName, Model -AutoSize | Out-String
     } else {
-        "No printers found on $Subnet.x network."
+        "No printers found on ${Subnet}.x network."
     }
 }
 
@@ -1156,201 +1156,17 @@ Add-Button $flowNet "Enable Network Sharing (Private/No FW)" {
     Set-NetFirewallProfile -Profile Domain,Public,Private -Enabled False
     "Setting Network Profiles to Private..."
     Get-NetConnectionProfile | Set-NetConnectionProfile -NetworkCategory Private
-    "Enabling File & Printer Sharing (Netsh)..."
-    netsh advfirewall firewall set rule group="File and Printer Sharing" new enable=Yes
+    "Enabling File and Printer Sharing (Netsh)..."
+    netsh advfirewall firewall set rule group=""File and Printer Sharing"" new enable=Yes
     netsh advfirewall firewall set rule group="Network Discovery" new enable=Yes
     "Network Sharing Enabled and Firewall Disabled."
-}
-
-Add-Button $flowNet "Scan Network Printers (Port 9100)" {
-    "Scanning for network printers..."
-    
-    # Auto-detect subnet
-    $Subnet = $null
-    try {
-        $IPObj = Get-NetIPAddress -AddressFamily IPv4 | Where-Object { 
-            $_.IPAddress -notmatch '^127\.' -and $_.IPAddress -notmatch '^169\.254\.' 
-        } | Select-Object -First 1
-        
-        if ($IPObj -and $IPObj.IPAddress -match "^(\d{1,3}\.\d{1,3}\.\d{1,3})\.") {
-            $Subnet = $matches[1]
-            "Auto-detected subnet: $Subnet.x"
-            ""
-        }
-    } catch {
-        "Could not auto-detect subnet. Aborting scan."
-        return
-    }
-    
-    if (-not $Subnet) {
-        "Failed to detect local subnet. Aborting scan."
-        return
-    }
-    
-    "Scanning $Subnet.1-254 for Port 9100 (JetDirect)..."
-    "This will take 30-60 seconds..."
-    ""
-    
-    $ScriptBlock = {
-        param($IP, $Timeout)
-        
-        function Get-SnmpModel {
-            param($TargetIP)
-            try {
-                $Udp = New-Object System.Net.Sockets.UdpClient
-                $Udp.Client.ReceiveTimeout = 3000
-                $Udp.Connect($TargetIP, 161)
-                $Bytes = @(0x30, 0x29, 0x02, 0x01, 0x00, 0x04, 0x06, 0x70, 0x75, 0x62, 0x6c, 0x69, 0x63, 
-                    0xa0, 0x1c, 0x02, 0x04, 0x19, 0x54, 0x78, 0x33, 0x02, 0x01, 0x00, 0x02, 0x01, 
-                    0x00, 0x30, 0x0e, 0x30, 0x0c, 0x06, 0x08, 0x2b, 0x06, 0x01, 0x02, 0x01, 0x01, 
-                    0x01, 0x00, 0x05, 0x00)
-                [void]$Udp.Send($Bytes, $Bytes.Length)
-                $RemoteEP = New-Object System.Net.IPEndPoint([System.Net.IPAddress]::Any, 0)
-                $ResponseBytes = $Udp.Receive([ref]$RemoteEP)
-                $Udp.Close()
-                
-                $oidBytes = 0x2b,0x06,0x01,0x02,0x01,0x01,0x01,0x00
-                $startIndex = -1
-                for ($i = 0; $i -le $ResponseBytes.Length - $oidBytes.Length; $i++) {
-                    $match = $true
-                    for ($j = 0; $j -lt $oidBytes.Length; $j++) {
-                        if ($ResponseBytes[$i + $j] -ne $oidBytes[$j]) { $match = $false; break }
-                    }
-                    if ($match) { $startIndex = $i + $oidBytes.Length; break }
-                }
-                if ($startIndex -lt 0) { return $null }
-                
-                $idx = $startIndex
-                while ($idx -lt ($ResponseBytes.Length - 2) -and $ResponseBytes[$idx] -ne 0x04) { $idx++ }
-                if ($idx -ge ($ResponseBytes.Length - 2)) { return $null }
-                
-                $len = [int]$ResponseBytes[$idx + 1]
-                if ($idx + 2 + $len -gt $ResponseBytes.Length) { $len = $ResponseBytes.Length - $idx - 2 }
-                
-                $strBytes = $ResponseBytes[($idx + 2)..($idx + 1 + $len)]
-                $text = [System.Text.Encoding]::ASCII.GetString($strBytes)
-                $CleanString = $text -replace "[^a-zA-Z0-9\s\-\.\_\(\)]", " " -replace "\s+", " "
-                return $CleanString.Trim()
-            } catch { return $null }
-        }
-        
-        function Get-WebData {
-            param($Url)
-            try {
-                [System.Net.ServicePointManager]::ServerCertificateValidationCallback = {$true}
-                [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12
-                $Request = [System.Net.WebRequest]::Create($Url)
-                $Request.Timeout = 3000
-                $Request.UserAgent = "Mozilla/5.0"
-                $Response = $Request.GetResponse()
-                $Stream = $Response.GetResponseStream()
-                $Reader = New-Object System.IO.StreamReader($Stream)
-                $Content = $Reader.ReadToEnd()
-                $Reader.Close(); $Response.Close()
-                
-                $Result = @{ Found = $false; Info = "" }
-                if ($Content -match "(?si)<title>\s*(.*?)\s*</title>") { 
-                    $Result.Found = $true
-                    $Result.Info = $matches[1].Trim()
-                }
-                if ($Content -match '(?si)<meta\s+name=["'']description["'']\s+content=["''](.*?)["'']') {
-                    $Result.Found = $true
-                    $desc = $matches[1].Trim()
-                    if ($Result.Info.Length -eq 0 -or $Result.Info -match "Remote UI") {
-                        $Result.Info = "$($Result.Info) [$desc]"
-                    }
-                }
-                return $Result
-            } catch { return $null }
-        }
-        
-        try {
-            $Client = New-Object System.Net.Sockets.TcpClient
-            $Connect = $Client.BeginConnect($IP, 9100, $null, $null)
-            $Wait = $Connect.AsyncWaitHandle.WaitOne($Timeout, $false)
-            
-            if ($Wait) {
-                $Client.EndConnect($Connect)
-                $Client.Close()
-                
-                $HostName = "Unknown"
-                $Model = "Unknown"
-                
-                try { 
-                    $HostEntry = [System.Net.Dns]::GetHostEntry($IP)
-                    if ($HostEntry) { $HostName = $HostEntry.HostName }
-                } catch {}
-                
-                $SnmpResult = Get-SnmpModel -TargetIP $IP
-                if ($SnmpResult) {
-                    $Model = $SnmpResult
-                } else {
-                    $WebPorts = @(80, 443)
-                    foreach ($Port in $WebPorts) {
-                        $Scheme = if ($Port -eq 443) { "https" } else { "http" }
-                        $TargetUrl = "{0}://{1}:{2}" -f $Scheme, $IP, $Port
-                        $WebData = Get-WebData -Url $TargetUrl
-                        if ($WebData -and $WebData.Found -and $WebData.Info.Length -gt 0) {
-                            $Model = "$($WebData.Info) (Port $Port)"
-                            break
-                        }
-                    }
-                }
-                
-                if (($Model -eq "Unknown" -or [string]::IsNullOrWhiteSpace($Model)) -and $HostName -ne "Unknown") {
-                    $Model = "[$HostName]"
-                }
-                
-                return [PSCustomObject]@{
-                    IPAddress = $IP
-                    HostName  = $HostName
-                    Model     = $Model
-                }
-            }
-        } catch { }
-    }
-    
-    $RunspacePool = [runspacefactory]::CreateRunspacePool(1, 50)
-    $RunspacePool.Open()
-    $Jobs = @()
-    
-    for ($i = 1; $i -le 254; $i++) {
-        $TargetIP = "$Subnet.$i"
-        $Pipeline = [powershell]::Create()
-        $Pipeline.RunspacePool = $RunspacePool
-        [void]$Pipeline.AddScript($ScriptBlock)
-        [void]$Pipeline.AddArgument($TargetIP)
-        [void]$Pipeline.AddArgument(500)
-        $Job = $Pipeline.BeginInvoke()
-        $Jobs += [PSCustomObject]@{ Pipeline = $Pipeline; Job = $Job }
-    }
-    
-    $Results = @()
-    foreach ($JobObj in $Jobs) {
-        try {
-            $Result = $JobObj.Pipeline.EndInvoke($JobObj.Job)
-            if ($Result) { $Results += $Result }
-        } catch { } finally {
-            $JobObj.Pipeline.Dispose()
-        }
-    }
-    
-    $RunspacePool.Close()
-    
-    if ($Results.Count -gt 0) {
-        "Found $($Results.Count) printer(s):"
-        ""
-        $Results | Sort-Object IPAddress | Format-Table IPAddress, HostName, Model -AutoSize | Out-String
-    } else {
-        "No printers found on $Subnet.x network."
-    }
 }
 
 $tabNet.Controls.Add($flowNet)
 
 # --- Tab 5: Integrations (NinjaOne) ---
 $tabIntegrations = New-Object System.Windows.Forms.TabPage
-$tabIntegrations.Text = "🔗 Integrations"
+$tabIntegrations.Text = "Integrations"
 $tabIntegrations.BackColor = $Theme.Background
 $tabIntegrations.Padding = New-Object System.Windows.Forms.Padding(20)
 
@@ -1425,7 +1241,7 @@ $tabIntegrations.Controls.Add($grpNinja)
 
 # --- Tab 4: User & Shares ---
 $tabUsers = New-Object System.Windows.Forms.TabPage
-$tabUsers.Text = "👥 Users & Shares"
+$tabUsers.Text = "Users & Shares"
 $tabUsers.BackColor = $Theme.Background
 $tabUsers.Padding = New-Object System.Windows.Forms.Padding(20)
 
@@ -1683,12 +1499,12 @@ $tabControl.Add_Selected({
 
 # --- Tab 6: Security Audit ---
 $tabAudit = New-Object System.Windows.Forms.TabPage
-$tabAudit.Text = "🔒 Security Audit"
+$tabAudit.Text = "Security Audit"
 $tabAudit.BackColor = $Theme.Background
 $tabAudit.Padding = New-Object System.Windows.Forms.Padding(20)
 
 $lblAudit = New-Object System.Windows.Forms.Label
-$lblAudit.Text = "Generates the 'Jeremy Bean' Security & Backup Audit HTML Report."
+$lblAudit.Text = "Generates the Jeremy Bean Security and Backup Audit HTML Report."
 $lblAudit.AutoSize = $true
 $lblAudit.Dock = "Top"
 $lblAudit.Padding = New-Object System.Windows.Forms.Padding(0,0,0,20)
