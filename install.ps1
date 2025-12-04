@@ -25,10 +25,10 @@ New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
 Write-Host "[+] Created temp directory: $tempDir" -ForegroundColor Green
 
 # Download main script
-Write-Host "[*] Downloading WinFixTool.ps1..." -ForegroundColor Cyan
+Write-Host "[*] Downloading WinFixTool_v2.ps1..." -ForegroundColor Cyan
 try {
-    $scriptUrl = "https://raw.githubusercontent.com/jeremydbean/winfix/main/WinFixTool.ps1"
-    $scriptPath = "$tempDir\WinFixTool.ps1"
+    $scriptUrl = "https://raw.githubusercontent.com/jeremydbean/winfix/main/WinFixTool_v2.ps1"
+    $scriptPath = "$tempDir\WinFixTool_v2.ps1"
     Invoke-WebRequest -Uri $scriptUrl -OutFile $scriptPath -UseBasicParsing
     Write-Host "[+] Downloaded successfully" -ForegroundColor Green
 } catch {
@@ -39,7 +39,7 @@ try {
 
 # Launch the tool
 Write-Host ""
-Write-Host "[*] Launching WinFixTool..." -ForegroundColor Cyan
+Write-Host "[*] Launching WinFixTool v2.0..." -ForegroundColor Cyan
 Write-Host "===========================================================" -ForegroundColor Cyan
 Write-Host ""
 
