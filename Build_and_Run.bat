@@ -32,7 +32,23 @@ powershell -NoProfile -Command "if (-not (Get-Module -ListAvailable -Name ps2exe
 
 echo.
 echo [2/3] Compiling WinFixTool.ps1 to WinFixTool.exe...
+
+:: Kill existing process if running
+taskkill /F /IM WinFixTool.exe >nul 2>&1
+:: Small delay to release file locks
+timeout /t 2 /nobreak >nul
+
 if exist "WinFixTool.exe" del "WinFixTool.exe"
+
+:: Verify deletion
+if exist "WinFixTool.exe" (
+    echo.
+    echo [ERROR] Could not delete existing WinFixTool.exe. 
+    echo Please close the application manually and try again.
+    pause
+    exit /b
+)
+
 powershell -NoProfile -Command "Import-Module ps2exe; Invoke-PS2EXE -InputFile '.\WinFixTool.ps1' -OutputFile '.\WinFixTool.exe' -Title 'WinFix Tool' -Version '1.0' -noConsole"
 
 if exist "WinFixTool.exe" (
