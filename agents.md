@@ -26,7 +26,8 @@ I have completed the core integration of the NinjaOne API, including authenticat
     *   **Logging**: Implemented a debug log (`%TEMP%\WinFix_Debug.log`) and an "Open Log" button in the GUI.
     *   **Crash Fixes**: Resolved `DrawString` type mismatch and `ScriptBlock` variable scope issues.
     *   **Button Logic**: Fixed "ScriptBlock is null" error by explicitly capturing variables in the closure.
-    *   **API Robustness**: Added fallback logic to `Connect-NinjaOne` to retry the original URL if the derived API URL fails (Fixes 404 errors on some instances).
+    *   **API Robustness**: Added fallback logic to `Connect-NinjaOne` to retry the original URL if the derived API URL fails.
+    *   **Endpoint Correction**: Discovered that the OAuth token endpoint is `/ws/oauth/token` (not `/v2/oauth/token`), while the rest of the API uses `/v2/`. Updated `Connect-NinjaOne` to use the correct auth path.
     *   **Report Generation**: Fixed a bug where `Invoke-SecurityAudit` could produce a blank report if `Get-LocalUser` failed. Added error handling and safe variable usage.
 
 ## API References & Notes

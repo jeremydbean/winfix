@@ -246,7 +246,7 @@ function Connect-NinjaOne {
     elseif ($ApiUrl -match "^ca\.") { $ApiUrl = $ApiUrl -replace "^ca\.", "ca-api." }
 
     Log-Output "Connecting to NinjaOne ($ApiUrl)..."
-    $tokenUrl = "https://$ApiUrl/v2/oauth/token"
+    $tokenUrl = "https://$ApiUrl/ws/oauth/token"
     # Scope: monitoring only (Read Only)
     $body = @{ grant_type = "client_credentials"; client_id = $ClientId; client_secret = $ClientSecret; scope = "monitoring" }
     
@@ -263,7 +263,7 @@ function Connect-NinjaOne {
         # Fallback: Try the original instance URL if the derived API URL failed
         if ($ApiUrl -ne $InstanceUrl) {
              Log-Output "Retrying with original URL '$InstanceUrl'..."
-             $tokenUrl = "https://$InstanceUrl/v2/oauth/token"
+             $tokenUrl = "https://$InstanceUrl/ws/oauth/token"
              try {
                 $response = Invoke-RestMethod -Uri $tokenUrl -Method Post -Body $body -ErrorAction Stop
                 $global:NinjaToken = $response.access_token
