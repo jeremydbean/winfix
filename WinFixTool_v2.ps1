@@ -12,12 +12,12 @@
     <title>Security Audit: $env:COMPUTERNAME</title>
     <style>
         :root { --accent: #0056b3; --good: #27ae60; --warn: #f39c12; --alert: #e74c3c; }
-        body { font-family: 'Segoe UI', sans-serif; background: #f4f7f6; color: #2c3e50; padding: 20px; }
+        body { font-family: 'Segoe UI', sans-serif; background: #f4f7f6; color: #2c3e50; padding: 20px; font-size: 12px; line-height: 1.3; }
         h1 { color: var(--accent); border-bottom: 3px solid var(--accent); padding-bottom: 10px; }
         h2 { background: #e8f4f8; color: var(--accent); padding: 10px; border-top: 3px solid var(--accent); margin-top: 30px; }
         h3 { color: var(--accent); border-left: 4px solid var(--accent); padding-left: 10px; }
-        table { border-collapse: collapse; width: 100%; background: white; box-shadow: 0 2px 5px rgba(0,0,0,0.1); margin-bottom: 15px; }
-        th, td { padding: 12px; border-bottom: 1px solid #ecf0f1; text-align: left; }
+        table { border-collapse: collapse; width: 100%; background: white; box-shadow: 0 2px 5px rgba(0,0,0,0.1); margin-bottom: 15px; font-size: 0.85rem; }
+        th, td { padding: 10px; border-bottom: 1px solid #ecf0f1; text-align: left; font-size: 0.85rem; }
         th { background: #ecf0f1; width: 40%; font-weight: bold; }
         .alert { color: var(--alert); font-weight: bold; }
         .good { color: var(--good); font-weight: bold; }
@@ -39,6 +39,9 @@
                 el.parentNode.replaceChild(span, el);
             });
             var temp = document.createElement('div');
+            temp.style.transform = 'scale(0.75)';
+            temp.style.transformOrigin = 'top left';
+            temp.style.width = '133%';
             temp.innerHTML = clone.innerHTML;
             document.body.appendChild(temp);
             var range = document.createRange();
@@ -1541,9 +1544,43 @@ $btnAudit.Add_Click({
     }
     
     # Backup Detection
-    $BackupKeywords = "*Veeam*","*Acronis*","*Datto*","*Ninja*","*Carbonite*"
-    $DetectedBackup = (Get-Service | Where-Object { $d=$_.DisplayName; ($BackupKeywords | Where-Object { $d -like $_ }) } | Select-Object -First 1).DisplayName
-    if (-not $DetectedBackup) { $DetectedBackup = "Not Detected" }
+    $BackupKeywords = @("Veeam","Acronis","Datto","Ninja","Carbonite","Cyber Protect","Backup Exec","Backblaze","Ahsay","CrashPlan","ShadowProtect")
+    $BackupServices = @()
+    try {
+        $BackupServices = Get-Service -EA SilentlyContinue | Where-Object {
+            $name = $_.DisplayName
+            $matches = $false
+            foreach ($keyword in $BackupKeywords) {
+                if ($name -and $name -like "*$keyword*") { $matches = $true; break }
+            }
+            $matches
+        }
+    } catch {}
+    $BackupServiceNames = $BackupServices | Select-Object -ExpandProperty DisplayName -Unique
+    $UninstallPaths = @(
+        'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*',
+        'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*'
+    )
+    $BackupProgramNames = @()
+    foreach ($path in $UninstallPaths) {
+        try {
+            $packages = Get-ItemProperty -Path $path -EA SilentlyContinue
+            foreach ($pkg in $packages) {
+                $display = $pkg.DisplayName
+                if (-not $display) { continue }
+                $matches = $false
+                foreach ($keyword in $BackupKeywords) {
+                    if ($display -like "*$keyword*") { $matches = $true; break }
+                }
+                if ($matches) { $BackupProgramNames += $display }
+            }
+        } catch {}
+    }
+    $BackupSoftwareListAll = ($BackupServiceNames + $BackupProgramNames) | Where-Object { $_ } | Sort-Object -Unique
+    $BackupSoftwareListHtml = if ($BackupSoftwareListAll) {
+        '<ul style="margin:0; padding-left:16px;">' + ($BackupSoftwareListAll | ForEach-Object { "<li>$(Escape-ForHtmlAttr $_)</li>" }) -join '' + '</ul>'
+    } else { 'None detected' }
+    $DetectedBackup = if ($BackupSoftwareListAll) { $BackupSoftwareListAll -join '; ' } else { 'Not Detected' }
     
     # Updates
     $LastHotFix = Get-HotFix -EA SilentlyContinue | Sort-Object InstalledOn -Descending | Select-Object -First 1
@@ -1692,28 +1729,84 @@ $btnAudit.Add_Click({
     $PasswordHistory = Get-SecPolValue -Lines $secPol -Key "PasswordHistorySize"
     $PasswordPolicySummary = "MinLen: $($PasswordMinLength -or 'Unknown'); MaxAge: $($PasswordMaxAge -or 'Unknown'); History: $($PasswordHistory -or 'Unknown'); Complexity: $PassComplex"
 
+    # Patch summary and AI lookup links
+    $PatchEntries = @()
+    if ($ninjaPatchData) {
+        foreach ($patch in $ninjaPatchData) {
+            $titleParts = @()
+            if ($patch.name) { $titleParts += $patch.name }
+            if ($patch.title) { $titleParts += $patch.title }
+            if ($patch.knowledgeBaseArticleId) { $titleParts += "KB$($patch.knowledgeBaseArticleId)" }
+            if (-not $titleParts) { $titleParts += "Patch ID $($patch.id)" }
+            $patchLabel = ($titleParts -join ' ') -replace '\s{2,}', ' '
+            if ($patch.description) { $patchLabel = "$patchLabel - $($patch.description)" }
+            $searchTerm = [uri]::EscapeDataString(($patchLabel -replace '"', ''))
+            $aiLink = "https://www.bing.com/search?q=$searchTerm+patch"
+            $safeLabel = Escape-ForHtmlAttr $patchLabel
+            $PatchEntries += "<li><a href='$aiLink' target='_blank' rel='noreferrer'>AI lookup</a> $safeLabel</li>"
+        }
+    }
+    $PatchListHtml = if ($PatchEntries) { "<ul style='margin:0; padding-left:16px;'>$($PatchEntries -join '')</ul>" } else { 'No pending patches detected.' }
+    $PatchSummary = if ($PatchEntries) { "$($PatchEntries.Count) pending patch(es)" } else { 'Up to date' }
+
     $BackupEncryptionMap = @{
         'Veeam' = 'AES-256 (Veeam default)'
         'Acronis' = 'AES-256 (Acronis encrypted vault)'
         'Datto' = 'AES-256 (Datto cloud)'
         'Ninja' = 'AES-256 (Ninja Secure Storage)'
         'Carbonite' = 'AES-128 (Carbonite standard)'
+        'ShadowProtect' = 'AES-256 (StorageCraft default)'
+        'CrashPlan' = 'AES-256 (CrashPlan vault)'
+        'Backup Exec' = 'AES-128 (Symantec Backup Exec)'
     }
-    $BackupEncryptionType = "Unknown (verify backup vendor settings)"
+    $lookupString = ($BackupSoftwareListAll -join '; ')
+    $EncryptionDetails = @()
     foreach ($pattern in $BackupEncryptionMap.Keys) {
-        if ($DetectedBackup -match $pattern) {
-            $BackupEncryptionType = $BackupEncryptionMap[$pattern]
-            break
+        if ($lookupString -match $pattern) { $EncryptionDetails += $BackupEncryptionMap[$pattern] }
+    }
+    $BackupEncryptionType = if ($ninjaBackup -and $ninjaBackup.encryptionMethod) { $ninjaBackup.encryptionMethod } elseif ($EncryptionDetails) { $EncryptionDetails -join '; ' } else { 'Unknown (verify backup vendor settings)' }
+
+    $BackupsEncrypted = 'Unknown'
+    if ($ninjaBackup -and $ninjaBackup.encryptionStatus) {
+        $status = $ninjaBackup.encryptionStatus
+        if ($status -match 'ENCRYPTED|TRUE|ON') { $BackupsEncrypted = "Yes ($status)" }
+        elseif ($status -match 'FALSE|OFF|NOT') { $BackupsEncrypted = "No ($status)" }
+        else { $BackupsEncrypted = "Unknown ($status)" }
+    } elseif ($EncryptionDetails) {
+        $BackupsEncrypted = 'Yes (per vendor defaults)'
+    }
+
+    $BackupTransferEncrypted = 'Assumed TLS/SSL (vendor default)'
+    if ($ninjaBackup) {
+        $transferProps = $ninjaBackup.psobject.Properties | Where-Object { $_.Name -match 'tls|secure|transfer' }
+        foreach ($prop in $transferProps) {
+            if ($prop.Value -is [bool]) {
+                $BackupTransferEncrypted = if ($prop.Value) { "Yes ($($prop.Name))" } else { "No ($($prop.Name))" }
+                break
+            } elseif ($prop.Value -eq 1 -or $prop.Value -eq '1') {
+                $BackupTransferEncrypted = "Yes ($($prop.Name))"
+                break
+            } elseif ($prop.Value -eq 0 -or $prop.Value -eq '0') {
+                $BackupTransferEncrypted = "No ($($prop.Name))"
+                break
+            }
         }
     }
-    $BackupsEncrypted = if ($BackupEncryptionType -match '^Unknown') { 'Unknown' } else { 'Yes' }
-    $BackupTransferEncrypted = "TLS/SSL assumed (per vendor defaults)"
-    $OffsiteCopy = if ($DetectedBackup -match 'Datto|Ninja|Carbonite|Backblaze') { 'Yes (cloud-enabled)' } else { 'Unknown' }
 
-    $BackupFrequency = "Unknown (check backup console)"
-    $BackupRetention = "Unknown"
+    $OffsiteCopy = 'Unknown'
     if ($ninjaBackup) {
-        $freqProp = $ninjaBackup.psobject.Properties | Where-Object { $_.Name -match 'Frequency|Schedule' -and $_.Value } | Select-Object -First 1
+        if (($ninjaBackup.cloudBackup -eq $true) -or ($ninjaBackup.backupDestination -match 'cloud|offsite')) {
+            $OffsiteCopy = 'Yes (cloud/offsite destination)'
+        }
+    }
+    if ($OffsiteCopy -eq 'Unknown' -and $DetectedBackup -match 'Datto|Ninja|Carbonite|Backblaze') {
+        $OffsiteCopy = 'Yes (cloud-enabled vendor)'
+    }
+
+    $BackupFrequency = 'Unknown (check backup console)'
+    $BackupRetention = 'Unknown'
+    if ($ninjaBackup) {
+        $freqProp = $ninjaBackup.psobject.Properties | Where-Object { $_.Name -match 'Frequency|Schedule|Interval' -and $_.Value } | Select-Object -First 1
         if ($freqProp) { $BackupFrequency = $freqProp.Value }
         $retProp = $ninjaBackup.psobject.Properties | Where-Object { $_.Name -match 'Retention' -and $_.Value } | Select-Object -First 1
         if ($retProp) { $BackupRetention = $retProp.Value }
@@ -1728,7 +1821,7 @@ $btnAudit.Add_Click({
     }
     $BackupLastSuccess = $ninjaBackupTime -or "Unknown"
     $BackupFailuresThisMonth = if ($BackupSuccess -match '^No') { "Yes ($ninjaBackupStatus)" } elseif ($BackupSuccess -match '^Yes') { 'No' } else { 'Unknown' }
-    
+
     # Open Ports
     $OpenPorts = (Get-NetTCPConnection -State Listen -EA SilentlyContinue | Select-Object -ExpandProperty LocalPort -Unique | Sort-Object {[int]$_}) -join ", "
 
@@ -1750,14 +1843,27 @@ $btnAudit.Add_Click({
     $PerformanceEvents = @()
     try { $PerformanceEvents = Get-WinEvent -FilterHashtable @{LogName='System'; Level=1,2; StartTime=(Get-Date).AddDays(-30)} -MaxEvents 5 -EA SilentlyContinue } catch {}
     $PerformanceSummary = Format-EventSummary $PerformanceEvents
-    
-    # Event Log Errors
-    $CritEvents = Get-WinEvent -FilterHashtable @{LogName='System','Application'; Level=1,2; StartTime=(Get-Date).AddDays(-30)} -MaxEvents 10 -EA SilentlyContinue
-    $EventsHTML = if ($CritEvents) {
-        "<table><tr><th>Source</th><th>ID</th><th>Message</th></tr>" +
-        ($CritEvents | ForEach-Object { "<tr><td>$($_.ProviderName)</td><td>$($_.Id)</td><td>$($_.Message.Substring(0,[Math]::Min(80,$_.Message.Length)))...</td></tr>" }) +
-        "</table>"
-    } else { "None found in last 30 days" }
+
+    # Repeating critical/log entries (warnings/errors/critical) in last 30 days
+    $EventFilters = @{ LogName = 'System','Application','Security'; Level = 1,2,3; StartTime = (Get-Date).AddDays(-30) }
+    $RecentEventEntries = @()
+    try { $RecentEventEntries = Get-WinEvent -FilterHashtable $EventFilters -MaxEvents 1000 -EA SilentlyContinue } catch {}
+    $RepeatedEvents = @()
+    if ($RecentEventEntries) {
+        $RepeatedEvents = $RecentEventEntries | Group-Object { "$($_.ProviderName)|$($_.Id)|$($_.Level)" } | Where-Object { $_.Count -gt 1 }
+    }
+    if ($RepeatedEvents) {
+        $eventRows = $RepeatedEvents | ForEach-Object {
+            $sample = $_.Group | Sort-Object TimeCreated -Descending | Select-Object -First 1
+            $levelName = switch ($sample.Level) { 1 { 'Critical' } 2 { 'Error' } 3 { 'Warning' } default { "Level $($sample.Level)" } }
+            $message = if ($sample.Message) { $sample.Message.Substring(0,[Math]::Min(150,$sample.Message.Length)) } else { 'No message' }
+            $message = (Escape-ForHtmlAttr $message)
+            "<tr><td>$(Escape-ForHtmlAttr $($sample.ProviderName))</td><td>$($sample.Id)</td><td>$levelName</td><td>$($_.Count)x</td><td>$($sample.TimeCreated.ToString('yyyy-MM-dd'))</td><td>$message</td></tr>"
+        }
+        $EventsHTML = "<table style='width:100%; font-size:0.85em;'><tr><th>Source</th><th>ID</th><th>Level</th><th>Count</th><th>Last Seen</th><th>Message</th></tr>" + ($eventRows -join '') + "</table>"
+    } else {
+        $EventsHTML = "No repeating warnings/errors/critical events detected in the last 30 days"
+    }
     
     # Override with Ninja data if available
     if ($ninjaAV) { $AVName = $ninjaAV }
@@ -1771,12 +1877,12 @@ $btnAudit.Add_Click({
     <title>Security Audit: $env:COMPUTERNAME</title>
     <style>
         :root { --accent: #0056b3; --good: #27ae60; --warn: #f39c12; --alert: #e74c3c; }
-        body { font-family: 'Segoe UI', sans-serif; background: #f4f7f6; color: #2c3e50; padding: 20px; }
+        body { font-family: 'Segoe UI', sans-serif; background: #f4f7f6; color: #2c3e50; padding: 20px; font-size: 12px; line-height: 1.3; }
         h1 { color: var(--accent); border-bottom: 3px solid var(--accent); padding-bottom: 10px; }
         h2 { background: #e8f4f8; color: var(--accent); padding: 10px; border-top: 3px solid var(--accent); margin-top: 30px; }
         h3 { color: var(--accent); border-left: 4px solid var(--accent); padding-left: 10px; }
-        table { border-collapse: collapse; width: 100%; background: white; box-shadow: 0 2px 5px rgba(0,0,0,0.1); margin-bottom: 15px; }
-        th, td { padding: 12px; border-bottom: 1px solid #ecf0f1; text-align: left; }
+        table { border-collapse: collapse; width: 100%; background: white; box-shadow: 0 2px 5px rgba(0,0,0,0.1); margin-bottom: 15px; font-size: 0.85rem; }
+        th, td { padding: 10px; border-bottom: 1px solid #ecf0f1; text-align: left; font-size: 0.85rem; }
         th { background: #ecf0f1; width: 40%; font-weight: bold; }
         .alert { color: var(--alert); font-weight: bold; }
         .good { color: var(--good); font-weight: bold; }
@@ -1798,6 +1904,9 @@ $btnAudit.Add_Click({
                 el.parentNode.replaceChild(span, el);
             });
             var temp = document.createElement('div');
+            temp.style.transform = 'scale(0.75)';
+            temp.style.transformOrigin = 'top left';
+            temp.style.width = '133%';
             temp.innerHTML = clone.innerHTML;
             document.body.appendChild(temp);
             var range = document.createRange();
@@ -1831,31 +1940,33 @@ $(if($global:NinjaToken){"<p><span class='ninja-tag'>NinjaOne Connected</span> -
 <h2>1. Backup & Data Retention (HIPAA §164.308(a)(7))</h2>
 <h3>A. Backup System Review</h3>
 <table>
-    <tr><th>Backup solution used</th><td><input class='input' value='$DetectedBackup'></td></tr>
-    <tr><th>Are backups completing successfully?</th><td><select><option>Select...</option><option>Yes</option><option>No</option><option>Unknown</option></select> $(if($ninjaBackupStatus){"($ninjaBackupStatus)"})</td></tr>
-    <tr><th>Last successful backup date & time</th><td><input class='input' value='$ninjaBackupTime'></td></tr>
-    <tr><th>Backup frequency</th><td><input class='input' placeholder='Hourly/Daily'></td></tr>
-    <tr><th>Are there any failed backups this month?</th><td><select><option>Select...</option><option>Yes</option><option>No</option></select></td></tr>
+    <tr><th>Backup solution used</th><td><input class='input' value='$(Escape-ForHtmlAttr $DetectedBackup)'></td></tr>
+    <tr><th>Detected backup agents</th><td>$BackupSoftwareListHtml</td></tr>
+    <tr><th>Are backups completing successfully?</th><td><input class='input' value='$(Escape-ForHtmlAttr $BackupSuccess)'></td></tr>
+    <tr><th>Last successful backup date & time</th><td><input class='input' value='$(Escape-ForHtmlAttr $BackupLastSuccess)'></td></tr>
+    <tr><th>Backup frequency</th><td><input class='input' value='$(Escape-ForHtmlAttr $BackupFrequency)'></td></tr>
+    <tr><th>Are there any failed backups this month?</th><td><input class='input' value='$(Escape-ForHtmlAttr $BackupFailuresThisMonth)'></td></tr>
+    <tr><th>Offsite/Cloud copy?</th><td><input class='input' value='$(Escape-ForHtmlAttr $OffsiteCopy)'></td></tr>
 </table>
 
 <h3>B. Backup Encryption</h3>
 <table>
-    <tr><th>Are backups encrypted at rest?</th><td><select><option>Select...</option><option>Yes</option><option>No</option><option>Unknown</option></select></td></tr>
-    <tr><th>Encryption standard used</th><td><input class='input' placeholder='AES-256 preferred'></td></tr>
-    <tr><th>Are backup transfer channels encrypted?</th><td><select><option>Select...</option><option>Yes</option><option>No</option><option>Unknown</option></select></td></tr>
+    <tr><th>Are backups encrypted at rest?</th><td><input class='input' value='$(Escape-ForHtmlAttr $BackupsEncrypted)'></td></tr>
+    <tr><th>Encryption standard used</th><td><input class='input' value='$(Escape-ForHtmlAttr $BackupEncryptionType)'></td></tr>
+    <tr><th>Are backup transfer channels encrypted?</th><td><input class='input' value='$(Escape-ForHtmlAttr $BackupTransferEncrypted)'></td></tr>
 </table>
 
 <h3>C. Backup Retention</h3>
 <table>
-    <tr><th>Retention period</th><td><input class='input' placeholder='days/weeks/months/years'></td></tr>
-    <tr><th>Does retention meet HIPAA’s 6-year requirement?</th><td><select><option>Select...</option><option>Yes</option><option>No</option></select></td></tr>
+    <tr><th>Retention period</th><td><input class='input' value='$(Escape-ForHtmlAttr $BackupRetention)'></td></tr>
+    <tr><th>Does retention meet HIPAA’s 6-year requirement?</th><td><input class='input' value='Unknown (verify documentation)'></td></tr>
 </table>
 
 <h3>D. Restore Testing</h3>
 <table>
-    <tr><th>Was a test restore performed in the last 90 days?</th><td><select><option>Select...</option><option>Yes</option><option>No</option></select></td></tr>
-    <tr><th>Date of last verification restore</th><td><input class='input' type='date'></td></tr>
-    <tr><th>Result</th><td><select><option>Select...</option><option>Successful</option><option>Issues found</option></select></td></tr>
+    <tr><th>Was a test restore performed in the last 90 days?</th><td><input class='input' value='Unknown'></td></tr>
+    <tr><th>Date of last verification restore</th><td><input class='input' placeholder='YYYY-MM-DD'></td></tr>
+    <tr><th>Result</th><td><input class='input' value='Unknown'></td></tr>
 </table>
 
 <h2>2. Server Security & Patch Compliance (HIPAA §164.308(a)(1), §164.312(c))</h2>
@@ -1863,7 +1974,8 @@ $(if($global:NinjaToken){"<p><span class='ninja-tag'>NinjaOne Connected</span> -
 <table>
     <tr><th>Are Windows Updates current?</th><td>$(if($PendingReboot){"<span class='warn'>Reboot Pending</span>"}else{"<span class='good'>Yes</span>"})</td></tr>
     <tr><th>Last update date</th><td>$LastUpdateDate</td></tr>
-    <tr><th>Pending patches?</th><td><input class='input' value='$ninjaPatches'></td></tr>
+    <tr><th>Pending patches?</th><td>$PatchSummary $(if($ninjaPatches){"<span style='font-size:0.75em;'>($(Escape-ForHtmlAttr $ninjaPatches))</span>"})</td></tr>
+    <tr><th>Pending patch details</th><td>$PatchListHtml</td></tr>
 </table>
 
 <h3>B. Antivirus / EDR</h3>
@@ -1925,16 +2037,16 @@ $(if($global:NinjaToken){"<p><span class='ninja-tag'>NinjaOne Connected</span> -
 <h2>5. Server Monitoring & Logs (HIPAA §164.312(b))</h2>
 <h3>A. Event Logs</h3>
 <table>
-    <tr><th>Security logs enabled?</th><td><select><option>Select...</option><option>Yes</option><option>No</option></select></td></tr>
-    <tr><th>Retention period (in days)</th><td><input class='input'></td></tr>
+    <tr><th>Security logs enabled?</th><td><input class='input' value='$(Escape-ForHtmlAttr $SecurityLogsEnabled)'></td></tr>
+    <tr><th>Retention period / max size</th><td><input class='input' value='Log max size: $SecurityLogSizeMB MB'></td></tr>
     <tr><th>Any critical events found this month?</th><td>$EventsHTML</td></tr>
 </table>
 
 <h3>B. Application Logs</h3>
 <table>
-    <tr><th>Any application errors?</th><td><input class='input'></td></tr>
-    <tr><th>Any database errors?</th><td><input class='input'></td></tr>
-    <tr><th>Any performance concerns logged?</th><td><input class='input'></td></tr>
+    <tr><th>Any application errors?</th><td><input class='input' value='$(Escape-ForHtmlAttr $AppErrorSummary)'></td></tr>
+    <tr><th>Any database errors?</th><td><input class='input' value='$(Escape-ForHtmlAttr $DatabaseErrorSummary)'></td></tr>
+    <tr><th>Any performance concerns logged?</th><td><input class='input' value='$(Escape-ForHtmlAttr $PerformanceSummary)'></td></tr>
 </table>
 
 <h3>C. Huntress / EDR Logs</h3>
