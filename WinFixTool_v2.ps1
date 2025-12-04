@@ -991,7 +991,7 @@ $btnFetchData.Add_Click({
         $output += "BIOS Serial: $($system.biosSerialNumber)`r`n"
         $output += "Chassis Type: $($system.chassisType)`r`n"
         $output += "Domain: $($system.domain)`r`n"
-        $output += "Domain Role: $($system.domainRole)`r`n"`r`n"
+        $output += "Domain Role: $($system.domainRole)`r`n`r`n"
     }
     
     # OS Info
@@ -1096,7 +1096,7 @@ $btnFetchData.Add_Click({
     [System.Windows.Forms.Application]::DoEvents()
     $software = Invoke-NinjaAPI "/device/$deviceId/software"
     if ($software) {
-        $output += "=== INSTALLED SOFTWARE ($($software.Count) apps) ===`r`n"
+        $output += "=== INSTALLED SOFTWARE (" + $software.Count + " apps) ===`r`n"
         foreach ($app in ($software | Sort-Object name | Select-Object -First 50)) {
             $output += "$($app.name) - $($app.version)`r`n"
         }
