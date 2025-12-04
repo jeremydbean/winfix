@@ -40,7 +40,7 @@ $Theme = @{
 
 # --- GUI Setup ---
 $form = New-Object System.Windows.Forms.Form
-$form.Text = "WinFix Tool & Security Audit"
+$form.Text = "WinFix Tool"
 $form.Size = New-Object System.Drawing.Size(900, 700)
 $form.StartPosition = "CenterScreen"
 $form.FormBorderStyle = "FixedSingle"
