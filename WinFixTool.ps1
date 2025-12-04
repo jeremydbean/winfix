@@ -326,13 +326,24 @@ function Get-NinjaDeviceData {
     $hostname = $env:COMPUTERNAME
     
     try {
-        $searchUrl = "https://$($global:NinjaInstance)/v2/devices?df=serialNumber:$serial"
-        $devices = Invoke-RestMethod -Uri $searchUrl -Headers $headers -ErrorAction Stop
+        # Try Serial Number Search
+        if (-not [string]::IsNullOrWhiteSpace($serial)) {
+            $encSerial = [uri]::EscapeDataString($serial)
+            $searchUrl = "https://$($global:NinjaInstance)/v2/devices?df=serialNumber:$encSerial"
+            try {
+                $devices = Invoke-RestMethod -Uri $searchUrl -Headers $headers -ErrorAction Stop
+            } catch {
+                Log-Output "Serial search failed ($($_.Exception.Message)). Trying hostname..."
+            }
+        }
+
+        # Try Hostname Search if Serial failed or returned nothing
         if (-not $devices) {
-             Log-Output "Serial search failed, trying hostname..."
-             $searchUrl = "https://$($global:NinjaInstance)/v2/devices?df=systemName:$hostname"
+             $encHost = [uri]::EscapeDataString($hostname)
+             $searchUrl = "https://$($global:NinjaInstance)/v2/devices?df=systemName:$encHost"
              $devices = Invoke-RestMethod -Uri $searchUrl -Headers $headers -ErrorAction Stop
         }
+
         if ($devices) {
             $global:NinjaDeviceData = $devices[0]
             Log-Output "Device found: $($global:NinjaDeviceData.systemName) (ID: $($global:NinjaDeviceData.id))"
@@ -530,7 +541,19 @@ Add-Button $flowInfo "Get System Specs" {
 
 Add-Button $flowInfo "List Printers" {
     "Listing Printers..."
-    Get-Printer | Select-Object Name, DriverName, PortName | Out-String
+    $printers = Get-Printer
+    $ports = Get-PrinterPort
+    
+    $results = foreach ($p in $printers) {
+        $port = $ports | Where-Object { $_.Name -eq $p.PortName }
+        [PSCustomObject]@{
+            Name = $p.Name
+            Driver = $p.DriverName
+            PortName = $p.PortName
+            IPAddress = if ($port -and $port.PrinterHostAddress) { $port.PrinterHostAddress } else { "N/A" }
+        }
+    }
+    $results | Out-String
 }
 
 Add-Button $flowInfo "List Installed Software" {
@@ -569,6 +592,17 @@ Add-Button $flowNet "Quick Network Scan (ARP)" {
 Add-Button $flowNet "Test Internet Connection" {
     "Pinging Google DNS (8.8.8.8)..."
     Test-Connection -ComputerName 8.8.8.8 -Count 4 | Select-Object Address, ResponseTime, Status | Out-String
+}
+
+Add-Button $flowNet "Enable Network Sharing (Private/No FW)" {
+    "Disabling Windows Firewall..."
+    Set-NetFirewallProfile -Profile Domain,Public,Private -Enabled False
+    "Setting Network Profiles to Private..."
+    Get-NetConnectionProfile | Set-NetConnectionProfile -NetworkCategory Private
+    "Enabling File & Printer Sharing (Netsh)..."
+    netsh advfirewall firewall set rule group="File and Printer Sharing" new enable=Yes
+    netsh advfirewall firewall set rule group="Network Discovery" new enable=Yes
+    "Network Sharing Enabled and Firewall Disabled."
 }
 
 $tabNet.Controls.Add($flowNet)
@@ -1199,9 +1233,11 @@ function Invoke-SecurityAudit {
     # Smart BitLocker Logic
     $BitLockerSel = "Select..."
     $BitLockerReason = ""
+    $C_Encrypted = $false
     if ($BitLocker -and ($BitLocker | Where-Object ProtectionStatus -eq 'On')) {
         $BitLockerSel = "Yes"
         $BitLockerStatus = ($BitLocker | ForEach-Object { "$($_.MountPoint) [$($_.ProtectionStatus)]" }) -join ", "
+        if ($BitLocker | Where-Object { $_.MountPoint -like "C:*" -and $_.ProtectionStatus -eq 'On' }) { $C_Encrypted = $true }
     } else {
         $BitLockerStatus = "Not Encrypted"
         if ($IsVM) {
@@ -1213,10 +1249,24 @@ function Invoke-SecurityAudit {
         }
     }
 
+    # Smart ChiroTouch Logic
+    $ChiroPath = "C:\Program Files\PSChiro"
+    $ChiroInstalled = (Test-Path $ChiroPath)
+    $ChiroEncryptedSel = "Select..."
+    if ($ChiroInstalled) {
+        $ChiroEncryptedSel = if ($C_Encrypted) { "Yes" } else { "No" }
+    } else {
+        $ChiroEncryptedSel = "N/A"
+    }
+
     # 4. Firewall & RDP
     Log-Output "[-] Auditing Network & RDP..."
     $Firewall = Get-NetFirewallProfile | Where-Object Enabled -eq True
     $RDPReg = Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server" -Name "fDenyTSConnections" -ErrorAction SilentlyContinue
+    
+    # Smart SMB Share Logic
+    $Shares = Get-SmbShare -ErrorAction SilentlyContinue | Where-Object { $_.Name -notin @("IPC$", "ADMIN$", "C$", "D$", "E$") }
+    $ShareList = if ($Shares) { "Shares: " + ($Shares.Name -join ", ") } else { "No Custom Shares" }
 
     # Smart RDP Logic
     $RDPVPNSel = "Select..."
@@ -1285,6 +1335,19 @@ function Invoke-SecurityAudit {
         if ($global:NinjaDeviceData.organizationId) { $ClientNameVal = "Ninja Org ID: $($global:NinjaDeviceData.organizationId)" }
         if ($global:NinjaDeviceData.locationId) { $LocationDefault += " (Ninja Loc: $($global:NinjaDeviceData.locationId))" }
         if ($global:NinjaDeviceData.publicIP) { $OpenPortsStr += " [Public IP: $($global:NinjaDeviceData.publicIP)]" }
+        
+        # Fetch Detailed Info (Software/Disks)
+        try {
+            $headers = @{ Authorization = "Bearer $global:NinjaToken" }
+            $devId = $global:NinjaDeviceData.id
+            
+            # Check Software for ChiroTouch
+            $nSoft = Invoke-RestMethod -Uri "https://$($global:NinjaInstance)/v2/devices/$devId/software" -Headers $headers -ErrorAction SilentlyContinue
+            if ($nSoft -and ($nSoft | Where-Object { $_.name -match "ChiroTouch" })) { 
+                $ChiroInstalled = $true
+                if ($ChiroEncryptedSel -eq "N/A") { $ChiroEncryptedSel = if ($C_Encrypted) { "Yes" } else { "No" } }
+            }
+        } catch { Log-Output "Ninja Detail Fetch Error: $_" }
     }
 
     # --- HTML GENERATION ---
@@ -1395,7 +1458,7 @@ function Invoke-SecurityAudit {
     </table>
     <h3>B. Data Encryption</h3>
     <table>
-        <tr><th>Are ChiroTouch data files stored in encrypted form?</th><td>$(Get-HtmlSelect)</td></tr>
+        <tr><th>Are ChiroTouch data files stored in encrypted form?</th><td>$(Get-HtmlSelect @("Select...", "Yes", "No", "N/A") -SelectedValue $ChiroEncryptedSel)</td></tr>
         <tr><th>Are database backups encrypted?</th><td>$(Get-HtmlSelect)</td></tr>
     </table>
 
@@ -1403,7 +1466,7 @@ function Invoke-SecurityAudit {
     <h3>A. Local Firewall</h3>
     <table>
         <tr><th>Windows Firewall enabled?</th><td>$(if($Firewall){"Yes (Profiles: $($Firewall.Name -join ', '))"}else{"<span class='alert'>No</span>"})</td></tr>
-        <tr><th>Inbound rule review</th><td>$(Get-HtmlInput "List allowed inbound ports" -Value $OpenPortsStr)</td></tr>
+        <tr><th>Inbound rule review</th><td>$(Get-HtmlInput "List allowed inbound ports" -Value "$OpenPortsStr | $ShareList")</td></tr>
         <tr><th>Outbound rule review</th><td>$(Get-HtmlInput "Confirm non-essential ports blocked")</td></tr>
     </table>
     <h3>B. Remote Access</h3>
