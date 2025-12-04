@@ -1796,6 +1796,29 @@ function Show-Page {
     }
 }
 
+function Get-SecPolValue {
+    param([string[]]$Lines, [string]$Key)
+    if (-not $Lines) { return $null }
+    foreach ($line in $Lines) {
+        if ($line -match "^\s*$Key\s*=\s*(.+)$") {
+            return $matches[1].Trim()
+        }
+    }
+    return $null
+}
+
+function Escape-ForHtmlAttr {
+    param([string]$Value)
+    if (-not $Value) { return "" }
+    return ($Value -replace '&','&amp;' -replace '<','&lt;' -replace '>','&gt;' -replace '"','&quot;' -replace "'","&#39;")
+}
+
+function Format-EventSummary {
+    param([array]$Events)
+    if (-not $Events) { return "None detected in the last 30 days" }
+    return ($Events | ForEach-Object { "$($_.ProviderName) (#$($_.Id))" }) -join "; "
+}
+
 # --- Assemble Form ---
 $form.Controls.Add($panelContent)
 $form.Controls.Add($panelLog)
