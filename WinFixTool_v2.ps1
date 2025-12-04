@@ -659,11 +659,11 @@ $txtDiag.Multiline = $true
 $txtDiag.ScrollBars = "Both"
 $txtDiag.ReadOnly = $true
 $txtDiag.Location = New-Object System.Drawing.Point(10, 30)
-$txtDiag.Size = New-Object System.Drawing.Size(400, 320)
+$txtDiag.Size = New-Object System.Drawing.Size(400, 340)
 $txtDiag.BackColor = $script:Theme.Surface
 $txtDiag.ForeColor = $script:Theme.Text
 $txtDiag.Font = New-Object System.Drawing.Font("Consolas", 8)
-$txtDiag.Anchor = "Top, Left, Right, Bottom"
+$txtDiag.Anchor = "Top, Left, Bottom"
 
 $diagBtns = @(
     @{Name = "System Specs"; Cmd = {
@@ -698,7 +698,6 @@ foreach ($diag in $diagBtns) {
     $btn.ForeColor = $script:Theme.Text
     $btn.FlatAppearance.BorderSize = 0
     $btn.Font = New-Object System.Drawing.Font("Segoe UI", 8)
-    $btn.Anchor = "Top, Right"
     $btn.Tag = $diag.Cmd
     $btn.Add_Click({ Log "Running: $($this.Text)..."; $txtDiag.Text = & $this.Tag; Log "Done." })
     $pageDiag.Controls.Add($btn)
@@ -725,11 +724,11 @@ $txtNet.Multiline = $true
 $txtNet.ScrollBars = "Both"
 $txtNet.ReadOnly = $true
 $txtNet.Location = New-Object System.Drawing.Point(10, 30)
-$txtNet.Size = New-Object System.Drawing.Size(400, 320)
+$txtNet.Size = New-Object System.Drawing.Size(400, 340)
 $txtNet.BackColor = $script:Theme.Surface
 $txtNet.ForeColor = $script:Theme.Text
 $txtNet.Font = New-Object System.Drawing.Font("Consolas", 8)
-$txtNet.Anchor = "Top, Left, Right, Bottom"
+$txtNet.Anchor = "Top, Left, Bottom"
 
 $netBtns = @(
     @{Name = "IP Config"; Cmd = { ipconfig /all | Out-String }}
@@ -779,7 +778,6 @@ foreach ($net in $netBtns) {
     $btn.ForeColor = $script:Theme.Text
     $btn.FlatAppearance.BorderSize = 0
     $btn.Font = New-Object System.Drawing.Font("Segoe UI", 8)
-    $btn.Anchor = "Top, Right"
     $btn.Tag = $net.Cmd
     $btn.Add_Click({ Log "Running: $($this.Text)..."; $txtNet.Text = & $this.Tag; Log "Done." })
     $pageNet.Controls.Add($btn)
@@ -868,7 +866,7 @@ $txtNinjaData.Multiline = $true
 $txtNinjaData.ScrollBars = "Both"
 $txtNinjaData.ReadOnly = $true
 $txtNinjaData.Location = New-Object System.Drawing.Point(270, 30)
-$txtNinjaData.Size = New-Object System.Drawing.Size(350, 340)
+$txtNinjaData.Size = New-Object System.Drawing.Size(290, 340)
 $txtNinjaData.BackColor = $script:Theme.Surface
 $txtNinjaData.ForeColor = $script:Theme.Text
 $txtNinjaData.Font = New-Object System.Drawing.Font("Consolas", 7.5)
