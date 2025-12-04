@@ -92,9 +92,53 @@ function Save-NinjaSettings {
     Log-Output "Settings saved securely."
 }
 
+function Decrypt-String {
+    param($EncryptedString, $Password)
+    try {
+        $bytes = [Convert]::FromBase64String($EncryptedString)
+        if ($bytes.Length -lt 32) { throw "Invalid data" }
+        $salt = $bytes[0..15]
+        $iv = $bytes[16..31]
+        $cipherText = $bytes[32..($bytes.Length - 1)]
+        
+        $derive = New-Object System.Security.Cryptography.Rfc2898DeriveBytes($Password, $salt, 100000, [System.Security.Cryptography.HashAlgorithmName]::SHA256)
+        $key = $derive.GetBytes(32)
+        
+        $aes = [System.Security.Cryptography.Aes]::Create()
+        $aes.Mode = [System.Security.Cryptography.CipherMode]::CBC
+        $aes.Padding = [System.Security.Cryptography.PaddingMode]::PKCS7
+        $aes.Key = $key
+        $aes.IV = $iv
+        
+        $decryptor = $aes.CreateDecryptor()
+        $ms = New-Object System.IO.MemoryStream(,$cipherText)
+        $cs = New-Object System.Security.Cryptography.CryptoStream($ms, $decryptor, [System.Security.Cryptography.CryptoStreamMode]::Read)
+        $sr = New-Object System.IO.StreamReader($cs)
+        return $sr.ReadToEnd()
+    } catch {
+        Log-Output "Decryption Error: $_"
+        return $null
+    }
+}
+
 function Connect-NinjaOne {
     param($ClientId, $ClientSecret, $InstanceUrl)
     
+    # Hardcoded Encrypted Credentials
+    $EncId = "lBPqaFXSjLrCJAKy9V7db00ImBVi7TmzocC4R1xmdaquRX+F0GzTWa+acd1lnhLb2U/h6ORrbF0vIKW55pihnQ=="
+    $EncSec = "EiRj/vGljBBXUDGrBkAEoXYldnzwzmYL40JvGK8ahShnk8nzBKtbuRujuandJ41QEgPc04ttpCLkGfAsW6vTrkd85nfgGG3g0/gRrNsLoH8="
+    $Pass = "smoke007"
+
+    # Use hardcoded if inputs are empty
+    if ([string]::IsNullOrWhiteSpace($ClientId)) {
+        Log-Output "Using embedded Client ID..."
+        $ClientId = Decrypt-String -EncryptedString $EncId -Password $Pass
+    }
+    if ([string]::IsNullOrWhiteSpace($ClientSecret)) {
+        Log-Output "Using embedded Client Secret..."
+        $ClientSecret = Decrypt-String -EncryptedString $EncSec -Password $Pass
+    }
+
     Log-Output "Connecting to NinjaOne ($InstanceUrl)..."
     $tokenUrl = "https://$InstanceUrl/v2/oauth/token"
     $body = @{
@@ -406,7 +450,7 @@ $txtUrl.Width = 300
 $txtUrl.Text = if ($savedSettings.Url) { $savedSettings.Url } else { "app.ninjarmm.com" }
 
 $lblCid = New-Object System.Windows.Forms.Label
-$lblCid.Text = "Client ID:"
+$lblCid.Text = "Client ID (Leave blank for embedded):"
 $lblCid.Location = New-Object System.Drawing.Point(10, 75)
 $lblCid.AutoSize = $true
 
@@ -416,7 +460,7 @@ $txtCid.Width = 300
 $txtCid.Text = if ($savedSettings.ClientId) { $savedSettings.ClientId } else { "" }
 
 $lblSec = New-Object System.Windows.Forms.Label
-$lblSec.Text = "Client Secret:"
+$lblSec.Text = "Client Secret (Leave blank for embedded):"
 $lblSec.Location = New-Object System.Drawing.Point(10, 125)
 $lblSec.AutoSize = $true
 
