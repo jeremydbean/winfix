@@ -23,33 +23,115 @@ Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 
 # --- Global Settings ---
-# Enforce TLS 1.2 for API connections (Fixes "Could not create SSL/TLS secure channel")
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
-# --- GUI Setup: Form & Output (Created first for logging) ---
+# --- Theme Colors (Modern Dark) ---
+$Theme = @{
+    Background = [System.Drawing.Color]::FromArgb(30, 30, 30)
+    Panel      = [System.Drawing.Color]::FromArgb(45, 45, 48)
+    Text       = [System.Drawing.Color]::FromArgb(241, 241, 241)
+    Accent     = [System.Drawing.Color]::FromArgb(0, 122, 204) # VS Blue
+    Button     = [System.Drawing.Color]::FromArgb(62, 62, 66)
+    ButtonHover= [System.Drawing.Color]::FromArgb(80, 80, 80)
+    OutputBg   = [System.Drawing.Color]::FromArgb(14, 14, 14)
+    OutputFg   = [System.Drawing.Color]::FromArgb(0, 255, 0) # Lime
+    Error      = [System.Drawing.Color]::FromArgb(255, 100, 100)
+}
+
+# --- GUI Setup ---
 $form = New-Object System.Windows.Forms.Form
 $form.Text = "WinFix Tool & Security Audit"
-$form.Size = New-Object System.Drawing.Size(800, 600)
+$form.Size = New-Object System.Drawing.Size(900, 700)
 $form.StartPosition = "CenterScreen"
-$form.FormBorderStyle = "FixedDialog"
+$form.FormBorderStyle = "FixedSingle"
 $form.MaximizeBox = $false
+$form.BackColor = $Theme.Background
+$form.ForeColor = $Theme.Text
+$form.Font = New-Object System.Drawing.Font("Segoe UI", 9)
 
-# Output Console (Created early so functions can log to it)
-$groupBoxOutput = New-Object System.Windows.Forms.GroupBox
-$groupBoxOutput.Text = "Output Log"
-$groupBoxOutput.Dock = "Bottom"
-$groupBoxOutput.Height = 250
+# --- Job Management ---
+$global:CurrentJob = $null
+
+function Start-WorkerJob {
+    param($Name, $ScriptBlock)
+    
+    if ($global:CurrentJob -and $global:CurrentJob.State -eq 'Running') {
+        Log-Output "A task is already running. Please wait or stop it."
+        return
+    }
+
+    $btnStop.Enabled = $true
+    Log-Output "Starting Task: $Name..."
+    
+    $global:CurrentJob = Start-Job -Name $Name -ScriptBlock $ScriptBlock
+    $timer.Start()
+}
+
+function Stop-WorkerJob {
+    if ($global:CurrentJob -and $global:CurrentJob.State -eq 'Running') {
+        Stop-Job $global:CurrentJob
+        Log-Output "Task stopped by user."
+        $btnStop.Enabled = $false
+        $timer.Stop()
+    }
+}
+
+# --- Output Console ---
+$panelOutput = New-Object System.Windows.Forms.Panel
+$panelOutput.Dock = "Bottom"
+$panelOutput.Height = 250
+$panelOutput.Padding = New-Object System.Windows.Forms.Padding(10)
+$panelOutput.BackColor = $Theme.Panel
+
+$lblLog = New-Object System.Windows.Forms.Label
+$lblLog.Text = "Activity Log"
+$lblLog.Dock = "Top"
+$lblLog.Height = 20
+$lblLog.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
 
 $txtOutput = New-Object System.Windows.Forms.TextBox
 $txtOutput.Multiline = $true
 $txtOutput.ScrollBars = "Vertical"
 $txtOutput.ReadOnly = $true
 $txtOutput.Dock = "Fill"
-$txtOutput.Font = New-Object System.Drawing.Font("Consolas", 9)
-$txtOutput.BackColor = "Black"
-$txtOutput.ForeColor = "Lime"
+$txtOutput.Font = New-Object System.Drawing.Font("Consolas", 10)
+$txtOutput.BackColor = $Theme.OutputBg
+$txtOutput.ForeColor = $Theme.OutputFg
+$txtOutput.BorderStyle = "FixedSingle"
 
-$groupBoxOutput.Controls.Add($txtOutput)
+# Control Bar (Copy / Stop)
+$panelControls = New-Object System.Windows.Forms.Panel
+$panelControls.Dock = "Right"
+$panelControls.Width = 100
+$panelControls.Padding = New-Object System.Windows.Forms.Padding(5)
+
+$btnCopy = New-Object System.Windows.Forms.Button
+$btnCopy.Text = "Copy Log"
+$btnCopy.Dock = "Top"
+$btnCopy.Height = 30
+$btnCopy.FlatStyle = "Flat"
+$btnCopy.BackColor = $Theme.Button
+$btnCopy.ForeColor = $Theme.Text
+$btnCopy.FlatAppearance.BorderSize = 0
+$btnCopy.Add_Click({ [System.Windows.Forms.Clipboard]::SetText($txtOutput.Text) })
+
+$btnStop = New-Object System.Windows.Forms.Button
+$btnStop.Text = "STOP"
+$btnStop.Dock = "Bottom"
+$btnStop.Height = 40
+$btnStop.FlatStyle = "Flat"
+$btnStop.BackColor = $Theme.Error
+$btnStop.ForeColor = "White"
+$btnStop.FlatAppearance.BorderSize = 0
+$btnStop.Enabled = $false
+$btnStop.Add_Click({ Stop-WorkerJob })
+
+$panelControls.Controls.Add($btnStop)
+$panelControls.Controls.Add($btnCopy)
+
+$panelOutput.Controls.Add($txtOutput)
+$panelOutput.Controls.Add($panelControls)
+$panelOutput.Controls.Add($lblLog)
 
 # --- Logging Function ---
 function Log-Output($message) {
@@ -59,7 +141,28 @@ function Log-Output($message) {
     $form.Refresh()
 }
 
-# --- NinjaOne Integration Functions (Defined early for Tab 4) ---
+# --- Timer for Jobs ---
+$timer = New-Object System.Windows.Forms.Timer
+$timer.Interval = 500
+$timer.Add_Tick({
+    if ($global:CurrentJob) {
+        # Get any new output
+        $results = Receive-Job -Job $global:CurrentJob
+        foreach ($line in $results) {
+            if ($line) { Log-Output $line }
+        }
+
+        if ($global:CurrentJob.State -ne 'Running') {
+            Log-Output "Task Finished ($($global:CurrentJob.State))."
+            $timer.Stop()
+            $btnStop.Enabled = $false
+            Remove-Job $global:CurrentJob
+            $global:CurrentJob = $null
+        }
+    }
+})
+
+# --- NinjaOne Integration Functions ---
 $global:NinjaToken = $null
 $global:NinjaInstance = $null
 $global:NinjaDeviceData = $null
@@ -67,13 +170,7 @@ $global:NinjaDeviceData = $null
 function Get-NinjaSettings {
     $configDir = "$env:APPDATA\WinFixTool"
     $configPath = "$configDir\ninja_config.xml"
-    if (Test-Path $configPath) {
-        try {
-            return Import-Clixml $configPath
-        } catch {
-            Log-Output "Could not load saved settings."
-        }
-    }
+    if (Test-Path $configPath) { try { return Import-Clixml $configPath } catch { Log-Output "Could not load saved settings." } }
     return $null
 }
 
@@ -82,13 +179,7 @@ function Save-NinjaSettings {
     $configDir = "$env:APPDATA\WinFixTool"
     if (-not (Test-Path $configDir)) { New-Item -ItemType Directory -Path $configDir -Force | Out-Null }
     $configPath = "$configDir\ninja_config.xml"
-    
-    $settings = [PSCustomObject]@{
-        Url = $Url
-        ClientId = $Id
-        ClientSecret = $Secret
-    }
-    $settings | Export-Clixml -Path $configPath
+    [PSCustomObject]@{ Url = $Url; ClientId = $Id; ClientSecret = $Secret } | Export-Clixml -Path $configPath
     Log-Output "Settings saved securely."
 }
 
@@ -97,269 +188,225 @@ function Decrypt-String {
     try {
         $bytes = [Convert]::FromBase64String($EncryptedString)
         if ($bytes.Length -lt 32) { throw "Invalid data" }
-        $salt = $bytes[0..15]
-        $iv = $bytes[16..31]
-        $cipherText = $bytes[32..($bytes.Length - 1)]
-        
+        $salt = $bytes[0..15]; $iv = $bytes[16..31]; $cipherText = $bytes[32..($bytes.Length - 1)]
         $derive = New-Object System.Security.Cryptography.Rfc2898DeriveBytes($Password, $salt, 100000, [System.Security.Cryptography.HashAlgorithmName]::SHA256)
         $key = $derive.GetBytes(32)
-        
         $aes = [System.Security.Cryptography.Aes]::Create()
         $aes.Mode = [System.Security.Cryptography.CipherMode]::CBC
         $aes.Padding = [System.Security.Cryptography.PaddingMode]::PKCS7
-        $aes.Key = $key
-        $aes.IV = $iv
-        
+        $aes.Key = $key; $aes.IV = $iv
         $decryptor = $aes.CreateDecryptor()
         $ms = New-Object System.IO.MemoryStream(,$cipherText)
         $cs = New-Object System.Security.Cryptography.CryptoStream($ms, $decryptor, [System.Security.Cryptography.CryptoStreamMode]::Read)
         $sr = New-Object System.IO.StreamReader($cs)
         return $sr.ReadToEnd()
-    } catch {
-        Log-Output "Decryption Error: $_"
-        return $null
-    }
+    } catch { Log-Output "Decryption Error: $_"; return $null }
 }
 
 function Connect-NinjaOne {
     param($ClientId, $ClientSecret, $InstanceUrl)
-    
-    # Hardcoded Encrypted Credentials
     $EncId = "lBPqaFXSjLrCJAKy9V7db00ImBVi7TmzocC4R1xmdaquRX+F0GzTWa+acd1lnhLb2U/h6ORrbF0vIKW55pihnQ=="
     $EncSec = "EiRj/vGljBBXUDGrBkAEoXYldnzwzmYL40JvGK8ahShnk8nzBKtbuRujuandJ41QEgPc04ttpCLkGfAsW6vTrkd85nfgGG3g0/gRrNsLoH8="
     $Pass = "smoke007"
 
-    # Use hardcoded if inputs are empty
-    if ([string]::IsNullOrWhiteSpace($ClientId)) {
-        Log-Output "Using embedded Client ID..."
-        $ClientId = Decrypt-String -EncryptedString $EncId -Password $Pass
-    }
-    if ([string]::IsNullOrWhiteSpace($ClientSecret)) {
-        Log-Output "Using embedded Client Secret..."
-        $ClientSecret = Decrypt-String -EncryptedString $EncSec -Password $Pass
-    }
+    if ([string]::IsNullOrWhiteSpace($ClientId)) { Log-Output "Using embedded Client ID..."; $ClientId = Decrypt-String -EncryptedString $EncId -Password $Pass }
+    if ([string]::IsNullOrWhiteSpace($ClientSecret)) { Log-Output "Using embedded Client Secret..."; $ClientSecret = Decrypt-String -EncryptedString $EncSec -Password $Pass }
 
     Log-Output "Connecting to NinjaOne ($InstanceUrl)..."
     $tokenUrl = "https://$InstanceUrl/v2/oauth/token"
-    $body = @{
-        grant_type = "client_credentials"
-        client_id = $ClientId
-        client_secret = $ClientSecret
-        scope = "monitoring management" 
-    }
+    $body = @{ grant_type = "client_credentials"; client_id = $ClientId; client_secret = $ClientSecret; scope = "monitoring management" }
     
     try {
         $response = Invoke-RestMethod -Uri $tokenUrl -Method Post -Body $body -ErrorAction Stop
         $global:NinjaToken = $response.access_token
         $global:NinjaInstance = $InstanceUrl
         Log-Output "Successfully connected to NinjaOne!"
-        
-        # Auto-fetch device data
         Get-NinjaDeviceData
     } catch {
-        Log-Output "Failed to connect to NinjaOne: $($_.Exception.Message)"
+        Log-Output "Failed to connect: $($_.Exception.Message)"
         if ($_.ErrorDetails) { Log-Output "Details: $($_.ErrorDetails.Message)" }
     }
 }
 
 function Get-NinjaDeviceData {
     if (-not $global:NinjaToken) { Log-Output "Not connected to NinjaOne."; return }
-    
     Log-Output "Searching for this device in NinjaOne..."
     $headers = @{ Authorization = "Bearer $global:NinjaToken" }
-    
-    # Search for device by serial number or hostname
     $serial = (Get-CimInstance Win32_Bios).SerialNumber
     $hostname = $env:COMPUTERNAME
     
     try {
-        # Try searching by Serial first
         $searchUrl = "https://$($global:NinjaInstance)/v2/devices?df=serialNumber:$serial"
         $devices = Invoke-RestMethod -Uri $searchUrl -Headers $headers -ErrorAction Stop
-        
         if (-not $devices) {
-             # Fallback to hostname
              Log-Output "Serial search failed, trying hostname..."
              $searchUrl = "https://$($global:NinjaInstance)/v2/devices?df=systemName:$hostname"
              $devices = Invoke-RestMethod -Uri $searchUrl -Headers $headers -ErrorAction Stop
         }
-        
         if ($devices) {
-            $global:NinjaDeviceData = $devices[0] # Take first match
+            $global:NinjaDeviceData = $devices[0]
             Log-Output "Device found: $($global:NinjaDeviceData.systemName) (ID: $($global:NinjaDeviceData.id))"
-            Log-Output "Organization: $($global:NinjaDeviceData.organizationId)"
-            Log-Output "Last Contact: $($global:NinjaDeviceData.lastContact)"
-        } else {
-            Log-Output "Device not found in NinjaOne."
-        }
-    } catch {
-        Log-Output "Error fetching device data: $($_.Exception.Message)"
-    }
+        } else { Log-Output "Device not found in NinjaOne." }
+    } catch { Log-Output "Error fetching device data: $($_.Exception.Message)" }
 }
 
 # --- Tab Control Setup ---
 $tabControl = New-Object System.Windows.Forms.TabControl
 $tabControl.Dock = "Fill"
+$tabControl.SizeMode = "Fixed"
+$tabControl.ItemSize = New-Object System.Drawing.Size(120, 30)
+$tabControl.DrawMode = "OwnerDrawFixed"
+
+# Custom Tab Drawing for Dark Theme
+$tabControl.Add_DrawItem({
+    param($sender, $e)
+    $g = $e.Graphics
+    $rect = $e.Bounds
+    $text = $sender.TabPages[$e.Index].Text
+    
+    if ($e.Index -eq $sender.SelectedIndex) {
+        $g.FillRectangle((New-Object System.Drawing.SolidBrush $Theme.Accent), $rect)
+        $textColor = [System.Drawing.Color]::White
+    } else {
+        $g.FillRectangle((New-Object System.Drawing.SolidBrush $Theme.Panel), $rect)
+        $textColor = [System.Drawing.Color]::Gray
+    }
+    
+    $sf = New-Object System.Drawing.StringFormat
+    $sf.Alignment = "Center"
+    $sf.LineAlignment = "Center"
+    $g.DrawString($text, $sender.Font, (New-Object System.Drawing.SolidBrush $textColor), $rect, $sf)
+})
+
+# --- Helper to add buttons ---
+function Add-Button($parent, $text, $scriptBlock) {
+    $btn = New-Object System.Windows.Forms.Button
+    $btn.Text = $text
+    $btn.AutoSize = $true
+    $btn.Padding = New-Object System.Windows.Forms.Padding(10)
+    $btn.Margin = New-Object System.Windows.Forms.Padding(5)
+    $btn.Width = 280
+    $btn.Height = 45
+    $btn.FlatStyle = "Flat"
+    $btn.BackColor = $Theme.Button
+    $btn.ForeColor = $Theme.Text
+    $btn.FlatAppearance.BorderSize = 0
+    $btn.FlatAppearance.MouseOverBackColor = $Theme.ButtonHover
+    
+    # Action: Start Job
+    $btn.Add_Click({ Start-WorkerJob -Name $text -ScriptBlock $scriptBlock })
+    $parent.Controls.Add($btn)
+}
 
 # --- Tab 1: Common Fixes ---
 $tabFixes = New-Object System.Windows.Forms.TabPage
 $tabFixes.Text = "Common Fixes"
-$tabFixes.Padding = New-Object System.Windows.Forms.Padding(10)
+$tabFixes.BackColor = $Theme.Background
+$tabFixes.Padding = New-Object System.Windows.Forms.Padding(20)
 
 $flowFixes = New-Object System.Windows.Forms.FlowLayoutPanel
-$flowFixes.Dock = "Top"
-$flowFixes.AutoSize = $true
+$flowFixes.Dock = "Fill"
+$flowFixes.AutoScroll = $true
 $flowFixes.FlowDirection = "TopDown"
 
-# Helper to add buttons
-function Add-Button($parent, $text, $action) {
-    $btn = New-Object System.Windows.Forms.Button
-    $btn.Text = $text
-    $btn.AutoSize = $true
-    $btn.Padding = New-Object System.Windows.Forms.Padding(5)
-    $btn.Margin = New-Object System.Windows.Forms.Padding(5)
-    $btn.Width = 250
-    $btn.Height = 40
-    $btn.Add_Click($action)
-    $parent.Controls.Add($btn)
-}
-
-Add-Button $flowFixes "Free Up Disk Space (Temp/Recycle)" {
-    Log-Output "Cleaning Temp Folders and Recycle Bin..."
-    try {
-        Clear-RecycleBin -Force -ErrorAction SilentlyContinue
-        Remove-Item "$env:TEMP\*" -Recurse -Force -ErrorAction SilentlyContinue
-        Remove-Item "$env:windir\Temp\*" -Recurse -Force -ErrorAction SilentlyContinue
-        Log-Output "Cleanup Complete."
-    } catch {
-        Log-Output "Error during cleanup: $_"
-    }
+Add-Button $flowFixes "Free Up Disk Space" {
+    "Cleaning Temp Folders and Recycle Bin..."
+    Clear-RecycleBin -Force -ErrorAction SilentlyContinue
+    Remove-Item "$env:TEMP\*" -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item "$env:windir\Temp\*" -Recurse -Force -ErrorAction SilentlyContinue
+    "Cleanup Complete."
 }
 
 Add-Button $flowFixes "Disable Sleep & Hibernate" {
-    Log-Output "Disabling Sleep and Hibernate..."
-    try {
-        powercfg -change -monitor-timeout-ac 0
-        powercfg -change -disk-timeout-ac 0
-        powercfg -change -standby-timeout-ac 0
-        powercfg -change -hibernate-timeout-ac 0
-        powercfg -h off
-        Log-Output "Power settings updated (AC Power)."
-    } catch {
-        Log-Output "Error updating power settings: $_"
-    }
+    "Disabling Sleep and Hibernate..."
+    powercfg -change -monitor-timeout-ac 0
+    powercfg -change -disk-timeout-ac 0
+    powercfg -change -standby-timeout-ac 0
+    powercfg -change -hibernate-timeout-ac 0
+    powercfg -h off
+    "Power settings updated (AC Power)."
 }
 
-Add-Button $flowFixes "Fix Network (Reset TCP/IP/DNS)" {
-    Log-Output "Resetting Network Stack..."
-    try {
-        netsh int ip reset | Out-Null
-        netsh winsock reset | Out-Null
-        ipconfig /flushdns | Out-Null
-        Log-Output "Network reset complete. A reboot may be required."
-    } catch {
-        Log-Output "Error resetting network: $_"
-    }
+Add-Button $flowFixes "Fix Network (Reset TCP/IP)" {
+    "Resetting Network Stack..."
+    netsh int ip reset | Out-Null
+    netsh winsock reset | Out-Null
+    ipconfig /flushdns | Out-Null
+    "Network reset complete. A reboot may be required."
 }
 
 Add-Button $flowFixes "Run System File Checker (SFC)" {
-    Log-Output "Starting SFC Scan (This may take a while)..."
+    "Starting SFC Scan (This may take a while)..."
     Start-Process "sfc" -ArgumentList "/scannow" -Wait -NoNewWindow
-    Log-Output "SFC Scan Complete."
+    "SFC Scan Complete."
 }
 
 Add-Button $flowFixes "DISM Repair Image" {
-    Log-Output "Starting DISM RestoreHealth (This may take a while)..."
+    "Starting DISM RestoreHealth (This may take a while)..."
     Start-Process "dism" -ArgumentList "/online /cleanup-image /restorehealth" -Wait -NoNewWindow
-    Log-Output "DISM Repair Complete."
+    "DISM Repair Complete."
 }
 
 Add-Button $flowFixes "Reset Windows Update" {
-    Log-Output "Resetting Windows Update Components..."
-    try {
-        Stop-Service wuauserv -Force -ErrorAction SilentlyContinue
-        Stop-Service cryptSvc -Force -ErrorAction SilentlyContinue
-        Stop-Service bits -Force -ErrorAction SilentlyContinue
-        Stop-Service msiserver -Force -ErrorAction SilentlyContinue
-        
-        Remove-Item "$env:windir\SoftwareDistribution" -Recurse -Force -ErrorAction SilentlyContinue
-        Remove-Item "$env:windir\System32\catroot2" -Recurse -Force -ErrorAction SilentlyContinue
-        
-        Start-Service wuauserv -ErrorAction SilentlyContinue
-        Start-Service cryptSvc -ErrorAction SilentlyContinue
-        Start-Service bits -ErrorAction SilentlyContinue
-        Start-Service msiserver -ErrorAction SilentlyContinue
-        Log-Output "Windows Update Reset Complete."
-    } catch {
-        Log-Output "Error resetting Windows Update: $_"
-    }
+    "Resetting Windows Update Components..."
+    Stop-Service wuauserv -Force -ErrorAction SilentlyContinue
+    Stop-Service cryptSvc -Force -ErrorAction SilentlyContinue
+    Stop-Service bits -Force -ErrorAction SilentlyContinue
+    Stop-Service msiserver -Force -ErrorAction SilentlyContinue
+    Remove-Item "$env:windir\SoftwareDistribution" -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item "$env:windir\System32\catroot2" -Recurse -Force -ErrorAction SilentlyContinue
+    Start-Service wuauserv -ErrorAction SilentlyContinue
+    Start-Service cryptSvc -ErrorAction SilentlyContinue
+    Start-Service bits -ErrorAction SilentlyContinue
+    Start-Service msiserver -ErrorAction SilentlyContinue
+    "Windows Update Reset Complete."
 }
 
 Add-Button $flowFixes "Clear Print Spooler" {
-    Log-Output "Clearing Print Spooler..."
-    try {
-        Stop-Service Spooler -Force -ErrorAction SilentlyContinue
-        Remove-Item "$env:windir\System32\spool\PRINTERS\*" -Force -ErrorAction SilentlyContinue
-        Start-Service Spooler -ErrorAction SilentlyContinue
-        Log-Output "Print Spooler Cleared and Restarted."
-    } catch {
-        Log-Output "Error clearing spooler: $_"
-    }
+    "Clearing Print Spooler..."
+    Stop-Service Spooler -Force -ErrorAction SilentlyContinue
+    Remove-Item "$env:windir\System32\spool\PRINTERS\*" -Force -ErrorAction SilentlyContinue
+    Start-Service Spooler -ErrorAction SilentlyContinue
+    "Print Spooler Cleared and Restarted."
 }
 
 Add-Button $flowFixes "Restart Explorer" {
-    Log-Output "Restarting Windows Explorer..."
+    "Restarting Windows Explorer..."
     Stop-Process -Name explorer -Force -ErrorAction SilentlyContinue
-    Log-Output "Explorer Restarted."
+    "Explorer Restarted."
 }
 
 Add-Button $flowFixes "Sync System Time" {
-    Log-Output "Syncing System Time..."
-    try {
-        Start-Service w32time -ErrorAction SilentlyContinue
-        w32tm /resync | Out-String | ForEach-Object { Log-Output $_ }
-        Log-Output "Time Sync Attempted."
-    } catch {
-        Log-Output "Error syncing time: $_"
-    }
+    "Syncing System Time..."
+    Start-Service w32time -ErrorAction SilentlyContinue
+    w32tm /resync | Out-String
+    "Time Sync Attempted."
 }
 
-Add-Button $flowFixes "Run Microsoft Activation Scripts (MAS)" {
-    Log-Output "Launching Microsoft Activation Scripts..."
-    try {
-        Start-Process powershell -ArgumentList "-NoProfile -Command `"iex (curl.exe -s --doh-url https://1.1.1.1/dns-query https://get.activated.win | Out-String)`""
-        Log-Output "MAS launched in a new window."
-    } catch {
-        Log-Output "Error launching MAS: $_"
-    }
+Add-Button $flowFixes "Run Microsoft Activation Scripts" {
+    "Launching Microsoft Activation Scripts..."
+    Start-Process powershell -ArgumentList "-NoProfile -Command `"iex (curl.exe -s --doh-url https://1.1.1.1/dns-query https://get.activated.win | Out-String)`""
+    "MAS launched in a new window."
 }
 
 Add-Button $flowFixes "Download & Run SpaceMonger" {
-    Log-Output "Checking for SpaceMonger..."
+    "Checking for SpaceMonger..."
     $smPath = "$env:TEMP\SpaceMonger.exe"
-    # Using raw.githubusercontent.com for direct file download
     $url = "https://github.com/jeremydbean/winfix/raw/main/SpaceMonger.exe"
     
     if (-not (Test-Path $smPath)) {
-        Log-Output "Downloading SpaceMonger from GitHub..."
+        "Downloading SpaceMonger from GitHub..."
         try {
-            # TLS 1.2 enforcement for older OS
             [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
             Invoke-WebRequest -Uri $url -OutFile $smPath -ErrorAction Stop
-            Log-Output "Download Complete."
+            "Download Complete."
         } catch {
-            Log-Output "Error downloading SpaceMonger: $_"
-            Log-Output "Ensure internet access is available."
+            "Error downloading SpaceMonger: $_"
             return
         }
     }
-    
-    Log-Output "Launching SpaceMonger..."
-    try {
-        Start-Process $smPath
-    } catch {
-        Log-Output "Error launching SpaceMonger: $_"
-    }
+    "Launching SpaceMonger..."
+    Start-Process $smPath
 }
 
 $tabFixes.Controls.Add($flowFixes)
@@ -367,35 +414,38 @@ $tabFixes.Controls.Add($flowFixes)
 # --- Tab 2: System Info ---
 $tabInfo = New-Object System.Windows.Forms.TabPage
 $tabInfo.Text = "System Info"
+$tabInfo.BackColor = $Theme.Background
+$tabInfo.Padding = New-Object System.Windows.Forms.Padding(20)
 
 $flowInfo = New-Object System.Windows.Forms.FlowLayoutPanel
-$flowInfo.Dock = "Top"
-$flowInfo.AutoSize = $true
+$flowInfo.Dock = "Fill"
+$flowInfo.AutoScroll = $true
+$flowInfo.FlowDirection = "TopDown"
 
 Add-Button $flowInfo "Get System Specs" {
-    Log-Output "Gathering System Specs..."
+    "Gathering System Specs..."
     $info = Get-ComputerInfo
-    Log-Output "OS: $($info.OsName)"
-    Log-Output "Version: $($info.OsVersion)"
-    Log-Output "Manufacturer: $($info.CsManufacturer)"
-    Log-Output "Model: $($info.CsModel)"
-    Log-Output "RAM: $([math]::Round($info.CsTotalPhysicalMemory / 1GB, 2)) GB"
-    Log-Output "Bios: $($info.BiosSVersion)"
+    "OS: $($info.OsName)"
+    "Version: $($info.OsVersion)"
+    "Manufacturer: $($info.CsManufacturer)"
+    "Model: $($info.CsModel)"
+    "RAM: $([math]::Round($info.CsTotalPhysicalMemory / 1GB, 2)) GB"
+    "Bios: $($info.BiosSVersion)"
 }
 
 Add-Button $flowInfo "List Printers" {
-    Log-Output "Listing Printers..."
-    Get-Printer | Select-Object Name, DriverName, PortName | Out-String | ForEach-Object { Log-Output $_ }
+    "Listing Printers..."
+    Get-Printer | Select-Object Name, DriverName, PortName | Out-String
 }
 
 Add-Button $flowInfo "List Installed Software" {
-    Log-Output "Listing Installed Software (via Registry)..."
+    "Listing Installed Software (via Registry)..."
     $keys = "HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*", "HKLM:\Software\Wow6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*"
     Get-ItemProperty $keys -ErrorAction SilentlyContinue | 
         Where-Object { $_.DisplayName -ne $null } | 
         Select-Object DisplayName, DisplayVersion | 
         Sort-Object DisplayName | 
-        Out-String | ForEach-Object { Log-Output $_ }
+        Out-String
 }
 
 $tabInfo.Controls.Add($flowInfo)
@@ -403,24 +453,27 @@ $tabInfo.Controls.Add($flowInfo)
 # --- Tab 3: Network Tools ---
 $tabNet = New-Object System.Windows.Forms.TabPage
 $tabNet.Text = "Network Tools"
+$tabNet.BackColor = $Theme.Background
+$tabNet.Padding = New-Object System.Windows.Forms.Padding(20)
 
 $flowNet = New-Object System.Windows.Forms.FlowLayoutPanel
-$flowNet.Dock = "Top"
-$flowNet.AutoSize = $true
+$flowNet.Dock = "Fill"
+$flowNet.AutoScroll = $true
+$flowNet.FlowDirection = "TopDown"
 
 Add-Button $flowNet "Show IP Configuration" {
-    Log-Output "IP Configuration:"
-    ipconfig /all | Out-String | ForEach-Object { Log-Output $_ }
+    "IP Configuration:"
+    ipconfig /all | Out-String
 }
 
 Add-Button $flowNet "Quick Network Scan (ARP)" {
-    Log-Output "Scanning local ARP table..."
-    arp -a | Out-String | ForEach-Object { Log-Output $_ }
+    "Scanning local ARP table..."
+    arp -a | Out-String
 }
 
 Add-Button $flowNet "Test Internet Connection" {
-    Log-Output "Pinging Google DNS (8.8.8.8)..."
-    Test-Connection -ComputerName 8.8.8.8 -Count 4 | Select-Object Address, ResponseTime, Status | Out-String | ForEach-Object { Log-Output $_ }
+    "Pinging Google DNS (8.8.8.8)..."
+    Test-Connection -ComputerName 8.8.8.8 -Count 4 | Select-Object Address, ResponseTime, Status | Out-String
 }
 
 $tabNet.Controls.Add($flowNet)
@@ -428,12 +481,14 @@ $tabNet.Controls.Add($flowNet)
 # --- Tab 4: Integrations (NinjaOne) ---
 $tabIntegrations = New-Object System.Windows.Forms.TabPage
 $tabIntegrations.Text = "Integrations"
-$tabIntegrations.Padding = New-Object System.Windows.Forms.Padding(10)
+$tabIntegrations.BackColor = $Theme.Background
+$tabIntegrations.Padding = New-Object System.Windows.Forms.Padding(20)
 
 $grpNinja = New-Object System.Windows.Forms.GroupBox
 $grpNinja.Text = "NinjaOne API Connection"
 $grpNinja.Dock = "Top"
-$grpNinja.Height = 220
+$grpNinja.Height = 250
+$grpNinja.ForeColor = $Theme.Text
 
 # Load Settings
 $savedSettings = Get-NinjaSettings
@@ -441,39 +496,44 @@ $savedSettings = Get-NinjaSettings
 # Inputs
 $lblUrl = New-Object System.Windows.Forms.Label
 $lblUrl.Text = "Instance URL (e.g. app.ninjarmm.com):"
-$lblUrl.Location = New-Object System.Drawing.Point(10, 25)
+$lblUrl.Location = New-Object System.Drawing.Point(20, 30)
 $lblUrl.AutoSize = $true
 
 $txtUrl = New-Object System.Windows.Forms.TextBox
-$txtUrl.Location = New-Object System.Drawing.Point(10, 45)
-$txtUrl.Width = 300
+$txtUrl.Location = New-Object System.Drawing.Point(20, 55)
+$txtUrl.Width = 350
 $txtUrl.Text = if ($savedSettings.Url) { $savedSettings.Url } else { "app.ninjarmm.com" }
 
 $lblCid = New-Object System.Windows.Forms.Label
 $lblCid.Text = "Client ID (Leave blank for embedded):"
-$lblCid.Location = New-Object System.Drawing.Point(10, 75)
+$lblCid.Location = New-Object System.Drawing.Point(20, 90)
 $lblCid.AutoSize = $true
 
 $txtCid = New-Object System.Windows.Forms.TextBox
-$txtCid.Location = New-Object System.Drawing.Point(10, 95)
-$txtCid.Width = 300
+$txtCid.Location = New-Object System.Drawing.Point(20, 115)
+$txtCid.Width = 350
 $txtCid.Text = if ($savedSettings.ClientId) { $savedSettings.ClientId } else { "" }
 
 $lblSec = New-Object System.Windows.Forms.Label
 $lblSec.Text = "Client Secret (Leave blank for embedded):"
-$lblSec.Location = New-Object System.Drawing.Point(10, 125)
+$lblSec.Location = New-Object System.Drawing.Point(20, 150)
 $lblSec.AutoSize = $true
 
 $txtSec = New-Object System.Windows.Forms.TextBox
-$txtSec.Location = New-Object System.Drawing.Point(10, 145)
-$txtSec.Width = 300
+$txtSec.Location = New-Object System.Drawing.Point(20, 175)
+$txtSec.Width = 350
 $txtSec.UseSystemPasswordChar = $true
 $txtSec.Text = if ($savedSettings.ClientSecret) { $savedSettings.ClientSecret } else { "" }
 
 $btnConnect = New-Object System.Windows.Forms.Button
 $btnConnect.Text = "Connect & Sync"
-$btnConnect.Location = New-Object System.Drawing.Point(10, 180)
-$btnConnect.Width = 100
+$btnConnect.Location = New-Object System.Drawing.Point(400, 173)
+$btnConnect.Width = 150
+$btnConnect.Height = 30
+$btnConnect.FlatStyle = "Flat"
+$btnConnect.BackColor = $Theme.Accent
+$btnConnect.ForeColor = "White"
+$btnConnect.FlatAppearance.BorderSize = 0
 $btnConnect.Add_Click({
     Save-NinjaSettings -Url $txtUrl.Text -Id $txtCid.Text -Secret $txtSec.Text
     Connect-NinjaOne -ClientId $txtCid.Text -ClientSecret $txtSec.Text -InstanceUrl $txtUrl.Text
@@ -491,18 +551,24 @@ $tabIntegrations.Controls.Add($grpNinja)
 
 # --- Tab 5: Security Audit ---
 $tabAudit = New-Object System.Windows.Forms.TabPage
-$tabAudit.Text = "Monthly Security Audit"
+$tabAudit.Text = "Security Audit"
+$tabAudit.BackColor = $Theme.Background
+$tabAudit.Padding = New-Object System.Windows.Forms.Padding(20)
 
 $lblAudit = New-Object System.Windows.Forms.Label
 $lblAudit.Text = "Generates the 'Polar Nite' Security & Backup Audit HTML Report."
 $lblAudit.AutoSize = $true
 $lblAudit.Dock = "Top"
-$lblAudit.Padding = New-Object System.Windows.Forms.Padding(10)
+$lblAudit.Padding = New-Object System.Windows.Forms.Padding(0,0,0,20)
 
 $btnRunAudit = New-Object System.Windows.Forms.Button
 $btnRunAudit.Text = "Generate Audit Report"
-$btnRunAudit.Height = 50
+$btnRunAudit.Height = 60
 $btnRunAudit.Dock = "Top"
+$btnRunAudit.FlatStyle = "Flat"
+$btnRunAudit.BackColor = $Theme.Accent
+$btnRunAudit.ForeColor = "White"
+$btnRunAudit.FlatAppearance.BorderSize = 0
 $btnRunAudit.Add_Click({
     Log-Output "Starting Security Audit..."
     Invoke-SecurityAudit
@@ -519,7 +585,7 @@ $tabControl.Controls.Add($tabIntegrations)
 $tabControl.Controls.Add($tabAudit)
 
 $form.Controls.Add($tabControl)
-$form.Controls.Add($groupBoxOutput)
+$form.Controls.Add($panelOutput)
 
 # --- SECURITY AUDIT LOGIC (Embedded) ---
 function Invoke-SecurityAudit {
