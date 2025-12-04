@@ -25,6 +25,8 @@ I have completed the core integration of the NinjaOne API, including authenticat
 4.  **Troubleshooting & Stability**:
     *   **Logging**: Implemented a debug log (`%TEMP%\WinFix_Debug.log`) and an "Open Log" button in the GUI.
     *   **Crash Fixes**: Resolved `DrawString` type mismatch and `ScriptBlock` variable scope issues.
+    *   **Button Logic**: Fixed "ScriptBlock is null" error by explicitly capturing variables in the closure.
+    *   **API Robustness**: Added fallback logic to `Connect-NinjaOne` to retry the original URL if the derived API URL fails (Fixes 404 errors on some instances).
 
 ## API References & Notes
 *   **Documentation Root**: [NinjaOne API Beta Docs](https://app.ninjarmm.com/apidocs-beta/authorization/overview)

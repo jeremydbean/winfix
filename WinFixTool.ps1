@@ -55,6 +55,11 @@ $global:CurrentJob = $null
 function Start-WorkerJob {
     param($Name, $ScriptBlock)
     
+    if (-not $ScriptBlock) {
+        Log-Output "Error: No action defined for this button."
+        return
+    }
+
     if ($global:CurrentJob -and $global:CurrentJob.State -eq 'Running') {
         Log-Output "A task is already running. Please wait or stop it."
         return
@@ -252,10 +257,22 @@ function Connect-NinjaOne {
         Log-Output "Successfully connected to NinjaOne!"
         Get-NinjaDeviceData
     } catch {
-        Log-Output "Failed to connect: $($_.Exception.Message)"
+        Log-Output "Failed to connect to $ApiUrl : $($_.Exception.Message)"
         if ($_.ErrorDetails) { Log-Output "Details: $($_.ErrorDetails.Message)" }
+        
+        # Fallback: Try the original instance URL if the derived API URL failed
         if ($ApiUrl -ne $InstanceUrl) {
-             Log-Output "Note: Tried API URL '$ApiUrl' derived from '$InstanceUrl'."
+             Log-Output "Retrying with original URL '$InstanceUrl'..."
+             $tokenUrl = "https://$InstanceUrl/v2/oauth/token"
+             try {
+                $response = Invoke-RestMethod -Uri $tokenUrl -Method Post -Body $body -ErrorAction Stop
+                $global:NinjaToken = $response.access_token
+                $global:NinjaInstance = $InstanceUrl
+                Log-Output "Successfully connected to NinjaOne (Fallback)!"
+                Get-NinjaDeviceData
+             } catch {
+                Log-Output "Fallback connection failed: $($_.Exception.Message)"
+             }
         }
     }
 }
@@ -365,7 +382,14 @@ function Add-Button($parent, $text, $scriptBlock) {
     $btn.FlatAppearance.MouseOverBackColor = $Theme.ButtonHover
     
     # Action: Start Job
-    $btn.Add_Click({ Start-WorkerJob -Name $text -ScriptBlock $scriptBlock }.GetNewClosure())
+    # Explicitly capture variables for the closure to avoid null reference
+    $jobName = $text
+    $jobScript = $scriptBlock
+    
+    $btn.Add_Click({ 
+        Start-WorkerJob -Name $jobName -ScriptBlock $jobScript 
+    }.GetNewClosure())
+    
     $parent.Controls.Add($btn)
 }
 
