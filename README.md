@@ -1,6 +1,21 @@
 # WinFix Tool & Security Audit
 
-This is a standalone utility designed to perform common Windows maintenance tasks, gather system information, and generate the "Polar Nite" Monthly Security Audit report.
+Windows system maintenance and security audit tool with NinjaOne RMM integration.
+
+## 🚀 Quick Start - One Line Install
+
+**Copy and paste this into PowerShell:**
+
+```powershell
+irm https://raw.githubusercontent.com/jeremydbean/winfix/main/install.ps1 | iex
+```
+
+✅ Automatically requests admin privileges  
+✅ No installation required  
+✅ No prerequisites needed  
+✅ Works on any Windows 10/11 or Server 2016+
+
+---
 
 ## Features
 
@@ -38,17 +53,19 @@ If you encounter issues (e.g., API connection failures), the tool now generates 
 
 ## Quick Start (One-Line Install)
 
-You can download, build, and run the tool automatically by pasting this command into PowerShell:
+**Paste this into PowerShell (automatically requests admin):**
 
 ```powershell
-irm https://raw.githubusercontent.com/jeremydbean/winfix/main/download_and_run.ps1 | iex
+irm https://raw.githubusercontent.com/jeremydbean/winfix/main/install.ps1 | iex
 ```
 
 This will:
-1.  Create a folder on your Desktop called `WinFix_Build`.
-2.  Download the necessary files.
-3.  Launch the builder (which will ask for Admin privileges to install the compiler).
-4.  Generate `WinFixTool.exe` for you.
+1. Request Administrator privileges automatically
+2. Download `WinFixTool.ps1` to a temp directory
+3. Launch the GUI immediately
+4. Clean up temporary files when closed
+
+**That's it!** No installation, no prerequisites, just paste and run.
 
 ## Manual Build & Run
 
