@@ -356,12 +356,13 @@ $QuickFixes = @{
 $form = New-Object System.Windows.Forms.Form
 $form.Text = "WinFix Tool v2.0"
 $form.Size = New-Object System.Drawing.Size(1100, 750)
+$form.MinimumSize = New-Object System.Drawing.Size(900, 600)
 $form.StartPosition = "CenterScreen"
 $form.BackColor = $Theme.Background
 $form.ForeColor = $Theme.Text
 $form.Font = New-Object System.Drawing.Font("Segoe UI", 9)
-$form.FormBorderStyle = "FixedSingle"
-$form.MaximizeBox = $false
+$form.FormBorderStyle = "Sizable"
+$form.MaximizeBox = $true
 
 # --- Header Panel ---
 $panelHeader = New-Object System.Windows.Forms.Panel
@@ -386,6 +387,7 @@ $lblComputer = New-Object System.Windows.Forms.Label
 $lblComputer.Text = "$env:COMPUTERNAME"
 $lblComputer.Location = New-Object System.Drawing.Point(850, 20)
 $lblComputer.AutoSize = $true
+$lblComputer.Anchor = "Top, Right"
 $lblComputer.Font = New-Object System.Drawing.Font("Segoe UI", 11, [System.Drawing.FontStyle]::Bold)
 $lblComputer.ForeColor = $Theme.Text
 
@@ -521,6 +523,7 @@ $cardIssues = New-Object System.Windows.Forms.Panel
 $cardIssues.Location = New-Object System.Drawing.Point(20, 190)
 $cardIssues.Size = New-Object System.Drawing.Size(670, 200)
 $cardIssues.BackColor = $Theme.Card
+$cardIssues.Anchor = "Top, Left, Right"
 
 $lblIssuesTitle = New-Object System.Windows.Forms.Label
 $lblIssuesTitle.Text = "Issues and Warnings"
@@ -538,6 +541,7 @@ $txtIssues.BackColor = $Theme.Surface
 $txtIssues.ForeColor = $Theme.Text
 $txtIssues.BorderStyle = "None"
 $txtIssues.Font = New-Object System.Drawing.Font("Consolas", 9)
+$txtIssues.Anchor = "Top, Left, Right, Bottom"
 
 $cardIssues.Controls.AddRange(@($lblIssuesTitle, $txtIssues))
 
@@ -692,6 +696,7 @@ $txtDiag.Size = New-Object System.Drawing.Size(650, 300)
 $txtDiag.BackColor = $Theme.Surface
 $txtDiag.ForeColor = $Theme.Text
 $txtDiag.Font = New-Object System.Drawing.Font("Consolas", 9)
+$txtDiag.Anchor = "Top, Left, Right, Bottom"
 
 $diagButtons = @(
     @{Text = "System Specs"; Action = {
@@ -784,6 +789,7 @@ foreach ($diag in $diagButtons) {
     $btn.ForeColor = $Theme.Text
     $btn.FlatAppearance.BorderSize = 0
     $btn.Tag = $diag.Action
+    $btn.Anchor = "Top, Right"
     
     $btn.Add_Click({
         Log-Output "Running diagnostic: $($this.Text)..."
@@ -820,6 +826,7 @@ $txtNet.Size = New-Object System.Drawing.Size(650, 300)
 $txtNet.BackColor = $Theme.Surface
 $txtNet.ForeColor = $Theme.Text
 $txtNet.Font = New-Object System.Drawing.Font("Consolas", 9)
+$txtNet.Anchor = "Top, Left, Right, Bottom"
 
 $netButtons = @(
     @{Text = "IP Configuration"; Action = { ipconfig /all | Out-String }}
@@ -844,6 +851,7 @@ foreach ($net in $netButtons) {
     $btn.ForeColor = $Theme.Text
     $btn.FlatAppearance.BorderSize = 0
     $btn.Tag = $net.Action
+    $btn.Anchor = "Top, Right"
     
     $btn.Add_Click({
         Log-Output "Running: $($this.Text)..."
@@ -942,6 +950,7 @@ $panelNinjaDevice = New-Object System.Windows.Forms.Panel
 $panelNinjaDevice.Location = New-Object System.Drawing.Point(440, 60)
 $panelNinjaDevice.Size = New-Object System.Drawing.Size(400, 300)
 $panelNinjaDevice.BackColor = $Theme.Card
+$panelNinjaDevice.Anchor = "Top, Left, Right, Bottom"
 
 $lblNinjaDevTitle = New-Object System.Windows.Forms.Label
 $lblNinjaDevTitle.Text = "Device Information (from Ninja)"
@@ -958,6 +967,7 @@ $txtNinjaDevice.Size = New-Object System.Drawing.Size(370, 250)
 $txtNinjaDevice.BackColor = $Theme.Surface
 $txtNinjaDevice.ForeColor = $Theme.Text
 $txtNinjaDevice.Font = New-Object System.Drawing.Font("Consolas", 9)
+$txtNinjaDevice.Anchor = "Top, Left, Right, Bottom"
 
 function Update-NinjaDeviceInfo {
     if (-not $global:NinjaDeviceData) {
