@@ -115,6 +115,16 @@ $btnCopy.ForeColor = $Theme.Text
 $btnCopy.FlatAppearance.BorderSize = 0
 $btnCopy.Add_Click({ [System.Windows.Forms.Clipboard]::SetText($txtOutput.Text) })
 
+$btnOpenLog = New-Object System.Windows.Forms.Button
+$btnOpenLog.Text = "Open Log"
+$btnOpenLog.Dock = "Top"
+$btnOpenLog.Height = 30
+$btnOpenLog.FlatStyle = "Flat"
+$btnOpenLog.BackColor = $Theme.Button
+$btnOpenLog.ForeColor = $Theme.Text
+$btnOpenLog.FlatAppearance.BorderSize = 0
+$btnOpenLog.Add_Click({ if (Test-Path $LogFilePath) { Invoke-Item $LogFilePath } })
+
 $btnStop = New-Object System.Windows.Forms.Button
 $btnStop.Text = "STOP"
 $btnStop.Dock = "Bottom"
@@ -127,6 +137,7 @@ $btnStop.Enabled = $false
 $btnStop.Add_Click({ Stop-WorkerJob })
 
 $panelControls.Controls.Add($btnStop)
+$panelControls.Controls.Add($btnOpenLog)
 $panelControls.Controls.Add($btnCopy)
 
 $panelOutput.Controls.Add($txtOutput)
@@ -134,7 +145,13 @@ $panelOutput.Controls.Add($panelControls)
 $panelOutput.Controls.Add($lblLog)
 
 # --- Logging Function ---
+$LogFilePath = "$env:TEMP\WinFix_Debug.log"
+$null = New-Item -Path $LogFilePath -ItemType File -Force -ErrorAction SilentlyContinue
+
 function Log-Output($message) {
+    $timestamp = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
+    Add-Content -Path $LogFilePath -Value "[$timestamp] $message" -ErrorAction SilentlyContinue
+
     $txtOutput.AppendText("[$((Get-Date).ToString('HH:mm:ss'))] $message`r`n")
     $txtOutput.SelectionStart = $txtOutput.Text.Length
     $txtOutput.ScrollToCaret()
@@ -205,6 +222,10 @@ function Decrypt-String {
 
 function Connect-NinjaOne {
     param($ClientId, $ClientSecret, $InstanceUrl)
+    
+    # Clean URL input (remove protocol and trailing slash)
+    $InstanceUrl = $InstanceUrl -replace "^https?://", "" -replace "/$", ""
+
     $EncId = "lBPqaFXSjLrCJAKy9V7db00ImBVi7TmzocC4R1xmdaquRX+F0GzTWa+acd1lnhLb2U/h6ORrbF0vIKW55pihnQ=="
     $EncSec = "EiRj/vGljBBXUDGrBkAEoXYldnzwzmYL40JvGK8ahShnk8nzBKtbuRujuandJ41QEgPc04ttpCLkGfAsW6vTrkd85nfgGG3g0/gRrNsLoH8="
     $Pass = "smoke007"
@@ -303,7 +324,7 @@ function Add-Button($parent, $text, $scriptBlock) {
     $btn.FlatAppearance.MouseOverBackColor = $Theme.ButtonHover
     
     # Action: Start Job
-    $btn.Add_Click({ Start-WorkerJob -Name $text -ScriptBlock $scriptBlock })
+    $btn.Add_Click({ Start-WorkerJob -Name $text -ScriptBlock $scriptBlock }.GetNewClosure())
     $parent.Controls.Add($btn)
 }
 
