@@ -585,6 +585,15 @@ $btnRefreshDash.Add_Click({
         $dash += "Logical Proc:     $($cpu.NumberOfLogicalProcessors)"
         $dash += ""
         
+        # CPU Usage
+        $dash += "=" * 80
+        $dash += "CPU USAGE"
+        $dash += "=" * 80
+        $cpuLoad = (Get-CimInstance Win32_Processor).LoadPercentage
+        $dash += "Current Load:     $cpuLoad%"
+        if ($cpuLoad -gt 90) { $dash += "WARNING: High CPU usage!" }
+        $dash += ""
+        
         # Memory
         $dash += "=" * 80
         $dash += "MEMORY USAGE"
@@ -1916,11 +1925,13 @@ function Invoke-SecurityAudit {
     $LocationDefault = ""
     $NinjaOrgName = ""
     $NinjaLocationName = ""
-    $NinjaRAIDStatus = ""
-    $NinjaDiskInfo = ""
+    $NinjaRAIDStatus = ""  # Will be populated from /v2/device/{id}/disks
+    $NinjaDiskInfo = ""    # Disk health summary
     $NinjaLastReboot = ""
     $NinjaLastLoggedUser = ""
     $NinjaCustomFields = @{}
+    
+    Log-Output "Initializing Ninja integration variables..."
     
     if ($global:NinjaDeviceData) {
         Log-Output "[-] Fetching extended NinjaOne device data..."
@@ -2200,8 +2211,8 @@ function Invoke-SecurityAudit {
     </table>
     <h3>B. Redundancy</h3>
     <table>
-        <tr><th>RAID status</th><td>$(Get-HtmlInput "e.g., RAID 5 Healthy" -Value $NinjaRAIDStatus)</td></tr>
-        <tr><th>Storage warnings?</th><td>$(Get-HtmlInput "Describe..." -Value "$StorageWarning $(if($NinjaDiskInfo){" | Ninja: $NinjaDiskInfo"})")</td></tr>
+        <tr><th>RAID status</th><td>$(Get-HtmlInput "e.g., RAID 5 Healthy" -Value $(if($NinjaRAIDStatus){$NinjaRAIDStatus}else{""}))</td></tr>
+        <tr><th>Storage warnings?</th><td>$(Get-HtmlInput "Describe..." -Value $(if($StorageWarning -or $NinjaDiskInfo){"$StorageWarning $(if($NinjaDiskInfo){" | Ninja: $NinjaDiskInfo"})"}else{""})))</td></tr>
         <tr><th>Drive SMART status (any failing drives?)</th><td>$(Get-HtmlInput "Describe..." -Value $DiskHealthStr) (Check App Logs above)</td></tr>
     </table>
 
