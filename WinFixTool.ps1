@@ -55,20 +55,24 @@ $global:CurrentJob = $null
 function Start-WorkerJob {
     param($Name, $ScriptBlock, $ArgumentList = @())
     
+    Log-Output "=== Start-WorkerJob Called: $Name ==="
+    
     if (-not $ScriptBlock) {
-        Log-Output "Error: No action defined for this button."
+        Log-Output "ERROR: No action defined for this button."
         return
     }
 
     if ($global:CurrentJob -and $global:CurrentJob.State -eq 'Running') {
-        Log-Output "A task is already running. Please wait or stop it."
+        Log-Output "WARNING: A task is already running. Please wait or stop it."
         return
     }
 
     $btnStop.Enabled = $true
     Log-Output "Starting Task: $Name..."
+    Log-Output "ArgumentList Count: $($ArgumentList.Count)"
     
     $global:CurrentJob = Start-Job -Name $Name -ScriptBlock $ScriptBlock -ArgumentList $ArgumentList
+    Log-Output "Job Started. Job ID: $($global:CurrentJob.Id)"
     $timer.Start()
 }
 
@@ -154,14 +158,23 @@ $LogFilePath = "$env:TEMP\WinFix_Debug.log"
 $null = New-Item -Path $LogFilePath -ItemType File -Force -ErrorAction SilentlyContinue
 
 function Log-Output($message) {
-    $timestamp = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
-    Add-Content -Path $LogFilePath -Value "[$timestamp] $message" -ErrorAction SilentlyContinue
+    $timestamp = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss.fff')
+    $fullMessage = "[$timestamp] $message"
+    Add-Content -Path $LogFilePath -Value $fullMessage -ErrorAction SilentlyContinue
 
     $txtOutput.AppendText("[$((Get-Date).ToString('HH:mm:ss'))] $message`r`n")
     $txtOutput.SelectionStart = $txtOutput.Text.Length
     $txtOutput.ScrollToCaret()
     $form.Refresh()
 }
+
+# Initial startup logging
+Log-Output "=== WinFix Tool Started ==="
+Log-Output "PowerShell Version: $($PSVersionTable.PSVersion)"
+Log-Output "OS: $([System.Environment]::OSVersion.VersionString)"
+Log-Output "User: $env:USERNAME"
+Log-Output "Computer: $env:COMPUTERNAME"
+Log-Output "Log File: $LogFilePath"
 
 # --- Timer for Jobs ---
 $timer = New-Object System.Windows.Forms.Timer
@@ -228,8 +241,12 @@ function Decrypt-String {
 function Connect-NinjaOne {
     param($ClientId, $ClientSecret, $InstanceUrl)
     
+    Log-Output "=== Connect-NinjaOne Called ==="
+    Log-Output "InstanceUrl (raw): $InstanceUrl"
+    
     # Clean URL input (remove protocol and trailing slash)
     $InstanceUrl = $InstanceUrl -replace "^https?://", "" -replace "/$", ""
+    Log-Output "InstanceUrl (cleaned): $InstanceUrl"
 
     $EncId = "lBPqaFXSjLrCJAKy9V7db00ImBVi7TmzocC4R1xmdaquRX+F0GzTWa+acd1lnhLb2U/h6ORrbF0vIKW55pihnQ=="
     $EncSec = "EiRj/vGljBBXUDGrBkAEoXYldnzwzmYL40JvGK8ahShnk8nzBKtbuRujuandJ41QEgPc04ttpCLkGfAsW6vTrkd85nfgGG3g0/gRrNsLoH8="
@@ -245,39 +262,51 @@ function Connect-NinjaOne {
     elseif ($ApiUrl -match "^oc\.") { $ApiUrl = $ApiUrl -replace "^oc\.", "oc-api." }
     elseif ($ApiUrl -match "^ca\.") { $ApiUrl = $ApiUrl -replace "^ca\.", "ca-api." }
 
+    Log-Output "ApiUrl (derived): $ApiUrl"
     Log-Output "Connecting to NinjaOne ($ApiUrl)..."
     $tokenUrl = "https://$ApiUrl/ws/oauth/token"
+    Log-Output "Token URL: $tokenUrl"
+    
     # Scope: monitoring only (Read Only)
     $body = @{ grant_type = "client_credentials"; client_id = $ClientId; client_secret = $ClientSecret; scope = "monitoring" }
+    Log-Output "OAuth Body: grant_type=client_credentials, scope=monitoring, client_id length=$($ClientId.Length)"
     
     try {
+        Log-Output "Sending OAuth request..."
         $response = Invoke-RestMethod -Uri $tokenUrl -Method Post -Body $body -ErrorAction Stop
         $global:NinjaToken = $response.access_token
         $global:NinjaInstance = $ApiUrl
+        Log-Output "OAuth Success! Token length: $($global:NinjaToken.Length)"
         Log-Output "Successfully connected to NinjaOne!"
         Get-NinjaDeviceData
     } catch {
-        Log-Output "Failed to connect to $ApiUrl : $($_.Exception.Message)"
+        Log-Output "OAuth FAILED: $($_.Exception.Message)"
+        Log-Output "HTTP Status: $($_.Exception.Response.StatusCode.value__)"
         if ($_.ErrorDetails) { Log-Output "Details: $($_.ErrorDetails.Message)" }
         
         # Fallback: Try the original instance URL if the derived API URL failed
         if ($ApiUrl -ne $InstanceUrl) {
              Log-Output "Retrying with original URL '$InstanceUrl'..."
              $tokenUrl = "https://$InstanceUrl/ws/oauth/token"
+             Log-Output "Fallback Token URL: $tokenUrl"
              try {
+                Log-Output "Sending fallback OAuth request..."
                 $response = Invoke-RestMethod -Uri $tokenUrl -Method Post -Body $body -ErrorAction Stop
                 $global:NinjaToken = $response.access_token
                 $global:NinjaInstance = $InstanceUrl
+                Log-Output "Fallback OAuth Success! Token length: $($global:NinjaToken.Length)"
                 Log-Output "Successfully connected to NinjaOne (Fallback)!"
                 Get-NinjaDeviceData
              } catch {
-                Log-Output "Fallback connection failed: $($_.Exception.Message)"
+                Log-Output "Fallback OAuth FAILED: $($_.Exception.Message)"
+                Log-Output "Fallback HTTP Status: $($_.Exception.Response.StatusCode.value__)"
              }
         }
     }
 }
 
 function Get-LocalNinjaNodeId {
+    Log-Output "=== Get-LocalNinjaNodeId Called ==="
     $paths = @(
         "HKLM:\SOFTWARE\NinjaRMM\Agent",
         "HKLM:\SOFTWARE\WOW6432Node\NinjaRMM\Agent",
@@ -286,20 +315,30 @@ function Get-LocalNinjaNodeId {
     )
     
     foreach ($path in $paths) {
+        Log-Output "Checking registry path: $path"
         if (Test-Path $path) {
+            Log-Output "Path exists: $path"
             $props = Get-ItemProperty -Path $path -ErrorAction SilentlyContinue
+            Log-Output "Properties found: $($props.PSObject.Properties.Name -join ', ')"
             # Check common property names for the Device ID
-            if ($props.NodeID) { return $props.NodeID }
-            if ($props.DeviceID) { return $props.DeviceID }
-            if ($props.id) { return $props.id }
-            if ($props.agent_id) { return $props.agent_id }
+            if ($props.NodeID) { Log-Output "Found NodeID: $($props.NodeID)"; return $props.NodeID }
+            if ($props.DeviceID) { Log-Output "Found DeviceID: $($props.DeviceID)"; return $props.DeviceID }
+            if ($props.id) { Log-Output "Found id: $($props.id)"; return $props.id }
+            if ($props.agent_id) { Log-Output "Found agent_id: $($props.agent_id)"; return $props.agent_id }
+        } else {
+            Log-Output "Path does not exist: $path"
         }
     }
+    Log-Output "No local Ninja Node ID found in registry"
     return $null
 }
 
 function Get-NinjaDeviceData {
-    if (-not $global:NinjaToken) { Log-Output "Not connected to NinjaOne."; return }
+    Log-Output "=== Get-NinjaDeviceData Called ==="
+    if (-not $global:NinjaToken) { Log-Output "ERROR: Not connected to NinjaOne (no token)."; return }
+    
+    Log-Output "Token exists, length: $($global:NinjaToken.Length)"
+    Log-Output "Instance: $($global:NinjaInstance)"
     
     $headers = @{ Authorization = "Bearer $global:NinjaToken" }
     
@@ -309,21 +348,28 @@ function Get-NinjaDeviceData {
         Log-Output "Found Local Ninja Node ID: $localId"
         try {
             $url = "https://$($global:NinjaInstance)/v2/devices/$localId"
+            Log-Output "Fetching device by ID: $url"
             $device = Invoke-RestMethod -Uri $url -Headers $headers -ErrorAction Stop
             if ($device) {
                 $global:NinjaDeviceData = $device
-                Log-Output "Device found via Node ID: $($device.systemName)"
+                Log-Output "SUCCESS: Device found via Node ID: $($device.systemName)"
                 return
             }
         } catch {
-            Log-Output "Could not fetch device by Node ID ($localId): $($_.Exception.Message)"
+            Log-Output "ERROR: Could not fetch device by Node ID ($localId): $($_.Exception.Message)"
+            Log-Output "HTTP Status: $($_.Exception.Response.StatusCode.value__)"
         }
+    } else {
+        Log-Output "No local Node ID found, proceeding to API search..."
     }
 
     # 2. Get ALL devices and filter locally (More reliable than API search filters)
     Log-Output "Fetching all devices from NinjaOne for local matching..."
     $serial = (Get-CimInstance Win32_Bios).SerialNumber
     $hostname = $env:COMPUTERNAME
+    
+    Log-Output "Local Serial Number: $serial"
+    Log-Output "Local Hostname: $hostname"
     
     try {
         $allDevices = @()
@@ -333,13 +379,24 @@ function Get-NinjaDeviceData {
         # Paginate through all devices
         do {
             $url = "https://$($global:NinjaInstance)/v2/devices?pageSize=$pageSize&after=$after"
-            Log-Output "Fetching page (after=$after)..."
-            $page = Invoke-RestMethod -Uri $url -Headers $headers -ErrorAction Stop
+            Log-Output "Fetching page (pageSize=$pageSize, after=$after): $url"
+            
+            try {
+                $page = Invoke-RestMethod -Uri $url -Headers $headers -ErrorAction Stop
+                Log-Output "Page returned $($page.Count) devices"
+            } catch {
+                Log-Output "ERROR: Page fetch failed: $($_.Exception.Message)"
+                Log-Output "HTTP Status: $($_.Exception.Response.StatusCode.value__)"
+                if ($_.ErrorDetails) { Log-Output "Error Details: $($_.ErrorDetails.Message)" }
+                break
+            }
             
             if ($page -and $page.Count -gt 0) {
                 $allDevices += $page
                 $after += $page.Count
+                Log-Output "Total devices collected so far: $($allDevices.Count)"
             } else {
+                Log-Output "No more devices to fetch (page was empty or null)"
                 break
             }
         } while ($page.Count -eq $pageSize)
@@ -348,33 +405,51 @@ function Get-NinjaDeviceData {
         
         # Match by Serial Number
         if (-not [string]::IsNullOrWhiteSpace($serial)) {
+            Log-Output "Searching for serial: '$serial'"
             $match = $allDevices | Where-Object { $_.serialNumber -eq $serial }
             if ($match) {
                 $global:NinjaDeviceData = $match | Select-Object -First 1
-                Log-Output "Device matched by Serial: $($global:NinjaDeviceData.systemName) (ID: $($global:NinjaDeviceData.id))"
+                Log-Output "SUCCESS: Device matched by Serial: $($global:NinjaDeviceData.systemName) (ID: $($global:NinjaDeviceData.id))"
                 return
+            } else {
+                Log-Output "No match found for serial"
             }
         }
         
         # Match by Hostname (systemName)
+        Log-Output "Searching for systemName: '$hostname'"
         $match = $allDevices | Where-Object { $_.systemName -eq $hostname }
         if ($match) {
             $global:NinjaDeviceData = $match | Select-Object -First 1
-            Log-Output "Device matched by Hostname: $($global:NinjaDeviceData.systemName) (ID: $($global:NinjaDeviceData.id))"
+            Log-Output "SUCCESS: Device matched by Hostname: $($global:NinjaDeviceData.systemName) (ID: $($global:NinjaDeviceData.id))"
             return
+        } else {
+            Log-Output "No match found for systemName"
         }
         
         # Match by nodeName (case-insensitive)
+        Log-Output "Searching for nodeName (like): '$hostname'"
         $match = $allDevices | Where-Object { $_.nodeName -like $hostname }
         if ($match) {
             $global:NinjaDeviceData = $match | Select-Object -First 1
-            Log-Output "Device matched by NodeName: $($global:NinjaDeviceData.systemName) (ID: $($global:NinjaDeviceData.id))"
+            Log-Output "SUCCESS: Device matched by NodeName: $($global:NinjaDeviceData.systemName) (ID: $($global:NinjaDeviceData.id))"
             return
+        } else {
+            Log-Output "No match found for nodeName"
         }
         
-        Log-Output "Device not found. Serial='$serial', Hostname='$hostname'"
+        Log-Output "ERROR: Device not found. Serial='$serial', Hostname='$hostname'"
+        Log-Output "Sample device properties from first device:"
+        if ($allDevices.Count -gt 0) {
+            $sample = $allDevices[0]
+            Log-Output "  id: $($sample.id)"
+            Log-Output "  systemName: $($sample.systemName)"
+            Log-Output "  nodeName: $($sample.nodeName)"
+            Log-Output "  serialNumber: $($sample.serialNumber)"
+        }
     } catch {
-        Log-Output "Error fetching devices: $($_.Exception.Message)"
+        Log-Output "FATAL ERROR in Get-NinjaDeviceData: $($_.Exception.Message)"
+        Log-Output "Stack Trace: $($_.ScriptStackTrace)"
     }
 }
 
@@ -691,6 +766,10 @@ $btnConnect.BackColor = $Theme.Accent
 $btnConnect.ForeColor = "White"
 $btnConnect.FlatAppearance.BorderSize = 0
 $btnConnect.Add_Click({
+    Log-Output "=== Connect Button Clicked ==="
+    Log-Output "URL Input: $($txtUrl.Text)"
+    Log-Output "Client ID Input: $(if($txtCid.Text){'<provided>'}else{'<blank>'})"
+    Log-Output "Client Secret Input: $(if($txtSec.Text){'<provided>'}else{'<blank>'})"
     Save-NinjaSettings -Url $txtUrl.Text -Id $txtCid.Text -Secret $txtSec.Text
     Connect-NinjaOne -ClientId $txtCid.Text -ClientSecret $txtSec.Text -InstanceUrl $txtUrl.Text
 })
@@ -1752,4 +1831,6 @@ function Invoke-SecurityAudit {
 }
 
 # --- Show Form ---
+Log-Output "=== Displaying Main Form ==="
 $form.ShowDialog() | Out-Null
+Log-Output "=== Form Closed ==="
