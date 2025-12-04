@@ -1653,9 +1653,9 @@ $(if($global:NinjaToken){"<p><span class='ninja-tag'>NinjaOne Connected</span> -
 "@
 
     # Save and open
-    $reportPath = "$env:TEMP\SecurityAudit_$env:COMPUTERNAME`_$(Get-Date -Format 'yyyyMMdd_HHmm').html"
+    $reportPath = "$env:TEMP\SecurityAudit_$($env:COMPUTERNAME)_$(Get-Date -Format 'yyyyMMdd_HHmm').html"
     $html | Out-File -FilePath $reportPath -Encoding UTF8
-    Start-Process $reportPath
+    Invoke-Item $reportPath
     
     Log "Audit report saved to $reportPath"
     $this.Text = "Generate Audit Report"
