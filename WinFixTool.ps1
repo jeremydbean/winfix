@@ -316,58 +316,65 @@ function Get-NinjaDeviceData {
                 return
             }
         } catch {
-            Log-Output "Could not fetch device by Node ID ($localId), falling back to search..."
+            Log-Output "Could not fetch device by Node ID ($localId): $($_.Exception.Message)"
         }
     }
 
-    # 2. Fallback to Serial Number & Hostname Search
-    Log-Output "Searching for this device in NinjaOne (Serial/Hostname)..."
+    # 2. Get ALL devices and filter locally (More reliable than API search filters)
+    Log-Output "Fetching all devices from NinjaOne for local matching..."
     $serial = (Get-CimInstance Win32_Bios).SerialNumber
     $hostname = $env:COMPUTERNAME
     
-    $devices = $null
-
-    # Try Serial Number Search
-    if (-not [string]::IsNullOrWhiteSpace($serial)) {
-        try {
-            $encSerial = [uri]::EscapeDataString($serial)
-            Log-Output "Searching Serial: $serial"
-            $searchUrl = "https://$($global:NinjaInstance)/v2/devices?df=serialNumber:$encSerial"
-            $devices = Invoke-RestMethod -Uri $searchUrl -Headers $headers -ErrorAction Stop
-        } catch {
-            Log-Output "Serial search failed: $($_.Exception.Message)"
+    try {
+        $allDevices = @()
+        $pageSize = 1000
+        $after = 0
+        
+        # Paginate through all devices
+        do {
+            $url = "https://$($global:NinjaInstance)/v2/devices?pageSize=$pageSize&after=$after"
+            Log-Output "Fetching page (after=$after)..."
+            $page = Invoke-RestMethod -Uri $url -Headers $headers -ErrorAction Stop
+            
+            if ($page -and $page.Count -gt 0) {
+                $allDevices += $page
+                $after += $page.Count
+            } else {
+                break
+            }
+        } while ($page.Count -eq $pageSize)
+        
+        Log-Output "Fetched $($allDevices.Count) total devices. Searching locally..."
+        
+        # Match by Serial Number
+        if (-not [string]::IsNullOrWhiteSpace($serial)) {
+            $match = $allDevices | Where-Object { $_.serialNumber -eq $serial }
+            if ($match) {
+                $global:NinjaDeviceData = $match | Select-Object -First 1
+                Log-Output "Device matched by Serial: $($global:NinjaDeviceData.systemName) (ID: $($global:NinjaDeviceData.id))"
+                return
+            }
         }
-    }
-
-    # Try Hostname Search (systemName)
-    if (-not $devices) {
-         try {
-             $encHost = [uri]::EscapeDataString($hostname)
-             Log-Output "Searching Hostname (systemName): $hostname"
-             $searchUrl = "https://$($global:NinjaInstance)/v2/devices?df=systemName:$encHost"
-             $devices = Invoke-RestMethod -Uri $searchUrl -Headers $headers -ErrorAction Stop
-         } catch {
-             Log-Output "Hostname (systemName) search failed: $($_.Exception.Message)"
-         }
-    }
-    
-    # Try Hostname Search (nodeName - Fallback)
-    if (-not $devices) {
-         try {
-             $encHost = [uri]::EscapeDataString($hostname)
-             Log-Output "Searching Hostname (nodeName): $hostname"
-             $searchUrl = "https://$($global:NinjaInstance)/v2/devices?df=nodeName:$encHost"
-             $devices = Invoke-RestMethod -Uri $searchUrl -Headers $headers -ErrorAction Stop
-         } catch {
-             Log-Output "Hostname (nodeName) search failed: $($_.Exception.Message)"
-         }
-    }
-
-    if ($devices) {
-        $global:NinjaDeviceData = $devices[0]
-        Log-Output "Device found: $($global:NinjaDeviceData.systemName) (ID: $($global:NinjaDeviceData.id))"
-    } else { 
-        Log-Output "Device not found in NinjaOne (or API errors occurred)." 
+        
+        # Match by Hostname (systemName)
+        $match = $allDevices | Where-Object { $_.systemName -eq $hostname }
+        if ($match) {
+            $global:NinjaDeviceData = $match | Select-Object -First 1
+            Log-Output "Device matched by Hostname: $($global:NinjaDeviceData.systemName) (ID: $($global:NinjaDeviceData.id))"
+            return
+        }
+        
+        # Match by nodeName (case-insensitive)
+        $match = $allDevices | Where-Object { $_.nodeName -like $hostname }
+        if ($match) {
+            $global:NinjaDeviceData = $match | Select-Object -First 1
+            Log-Output "Device matched by NodeName: $($global:NinjaDeviceData.systemName) (ID: $($global:NinjaDeviceData.id))"
+            return
+        }
+        
+        Log-Output "Device not found. Serial='$serial', Hostname='$hostname'"
+    } catch {
+        Log-Output "Error fetching devices: $($_.Exception.Message)"
     }
 }
 
