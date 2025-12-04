@@ -28,6 +28,13 @@ This is a standalone utility designed to perform common Windows maintenance task
     *   Generates the interactive HTML report for the Monthly Security Audit.
 *   **Integrations**:
     *   **NinjaOne API**: Connect to your NinjaOne instance to automatically pull device data (Patch status, AV status, Backup status) into the Security Audit.
+    *   **Smart Local Detection**: Automatically detects the local NinjaRMM agent ID from the registry for accurate device matching.
+
+## Troubleshooting
+
+If you encounter issues (e.g., API connection failures), the tool now generates a debug log.
+*   **Log Location**: `%TEMP%\WinFix_Debug.log`
+*   **View Log**: Click the **"Open Log"** button in the bottom-right corner of the tool to view the log file instantly.
 
 ## Quick Start (One-Line Install)
 

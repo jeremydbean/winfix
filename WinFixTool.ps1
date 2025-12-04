@@ -260,10 +260,51 @@ function Connect-NinjaOne {
     }
 }
 
+function Get-LocalNinjaNodeId {
+    $paths = @(
+        "HKLM:\SOFTWARE\NinjaRMM\Agent",
+        "HKLM:\SOFTWARE\WOW6432Node\NinjaRMM\Agent",
+        "HKLM:\SOFTWARE\NinjaMSP\Agent",
+        "HKLM:\SOFTWARE\WOW6432Node\NinjaMSP\Agent"
+    )
+    
+    foreach ($path in $paths) {
+        if (Test-Path $path) {
+            $props = Get-ItemProperty -Path $path -ErrorAction SilentlyContinue
+            # Check common property names for the Device ID
+            if ($props.NodeID) { return $props.NodeID }
+            if ($props.DeviceID) { return $props.DeviceID }
+            if ($props.id) { return $props.id }
+            if ($props.agent_id) { return $props.agent_id }
+        }
+    }
+    return $null
+}
+
 function Get-NinjaDeviceData {
     if (-not $global:NinjaToken) { Log-Output "Not connected to NinjaOne."; return }
-    Log-Output "Searching for this device in NinjaOne..."
+    
     $headers = @{ Authorization = "Bearer $global:NinjaToken" }
+    
+    # 1. Try Local Registry ID First (Most Accurate)
+    $localId = Get-LocalNinjaNodeId
+    if ($localId) {
+        Log-Output "Found Local Ninja Node ID: $localId"
+        try {
+            $url = "https://$($global:NinjaInstance)/v2/devices/$localId"
+            $device = Invoke-RestMethod -Uri $url -Headers $headers -ErrorAction Stop
+            if ($device) {
+                $global:NinjaDeviceData = $device
+                Log-Output "Device found via Node ID: $($device.systemName)"
+                return
+            }
+        } catch {
+            Log-Output "Could not fetch device by Node ID ($localId), falling back to search..."
+        }
+    }
+
+    # 2. Fallback to Serial Number & Hostname Search
+    Log-Output "Searching for this device in NinjaOne (Serial/Hostname)..."
     $serial = (Get-CimInstance Win32_Bios).SerialNumber
     $hostname = $env:COMPUTERNAME
     
@@ -1405,6 +1446,7 @@ function Invoke-SecurityAudit {
     <button onclick="copyReport()" class="copy-btn floating-action">Copy Report for Ticket</button>
 "@
 
+    $HTMLPage = "<html><head><title>Security Audit Report</title>$style</head><body>$HTMLBody</body></html>"
     $HTMLPage | Out-File -FilePath $ReportPath -Encoding UTF8
     Log-Output "Interactive Audit Generated. Opening Report..."
     Invoke-Item $ReportPath
