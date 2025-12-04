@@ -53,7 +53,7 @@ $form.Font = New-Object System.Drawing.Font("Segoe UI", 9)
 $global:CurrentJob = $null
 
 function Start-WorkerJob {
-    param($Name, $ScriptBlock)
+    param($Name, $ScriptBlock, $ArgumentList = @())
     
     if (-not $ScriptBlock) {
         Log-Output "Error: No action defined for this button."
@@ -68,7 +68,7 @@ function Start-WorkerJob {
     $btnStop.Enabled = $true
     Log-Output "Starting Task: $Name..."
     
-    $global:CurrentJob = Start-Job -Name $Name -ScriptBlock $ScriptBlock
+    $global:CurrentJob = Start-Job -Name $Name -ScriptBlock $ScriptBlock -ArgumentList $ArgumentList
     $timer.Start()
 }
 
@@ -678,6 +678,172 @@ $grpNinja.Controls.Add($btnConnect)
 
 $tabIntegrations.Controls.Add($grpNinja)
 
+# --- Tab: User & Shares ---
+$tabUsers = New-Object System.Windows.Forms.TabPage
+$tabUsers.Text = "User & Shares"
+$tabUsers.BackColor = $Theme.Background
+$tabUsers.Padding = New-Object System.Windows.Forms.Padding(20)
+
+# GroupBox: User Management
+$grpUser = New-Object System.Windows.Forms.GroupBox
+$grpUser.Text = "User Management"
+$grpUser.Location = New-Object System.Drawing.Point(20, 20)
+$grpUser.Size = New-Object System.Drawing.Size(400, 300)
+$grpUser.ForeColor = $Theme.Text
+
+$lblUName = New-Object System.Windows.Forms.Label
+$lblUName.Text = "Username:"
+$lblUName.Location = New-Object System.Drawing.Point(20, 30)
+$lblUName.AutoSize = $true
+$grpUser.Controls.Add($lblUName)
+
+$txtUName = New-Object System.Windows.Forms.TextBox
+$txtUName.Location = New-Object System.Drawing.Point(20, 50)
+$txtUName.Width = 350
+$grpUser.Controls.Add($txtUName)
+
+$lblUPass = New-Object System.Windows.Forms.Label
+$lblUPass.Text = "Password:"
+$lblUPass.Location = New-Object System.Drawing.Point(20, 80)
+$lblUPass.AutoSize = $true
+$grpUser.Controls.Add($lblUPass)
+
+$txtUPass = New-Object System.Windows.Forms.TextBox
+$txtUPass.Location = New-Object System.Drawing.Point(20, 100)
+$txtUPass.Width = 350
+$grpUser.Controls.Add($txtUPass)
+
+# Helper for User Buttons
+function Add-UserButton($parent, $text, $x, $y, $script) {
+    $btn = New-Object System.Windows.Forms.Button
+    $btn.Text = $text
+    $btn.Location = New-Object System.Drawing.Point($x, $y)
+    $btn.Width = 170
+    $btn.Height = 30
+    $btn.FlatStyle = "Flat"
+    $btn.BackColor = $Theme.Button
+    $btn.ForeColor = $Theme.Text
+    $btn.FlatAppearance.BorderSize = 0
+    $btn.Add_Click($script)
+    $parent.Controls.Add($btn)
+}
+
+Add-UserButton $grpUser "Create User" 20 140 {
+    $u = $txtUName.Text; $p = $txtUPass.Text
+    if (-not $u) { Log-Output "Username required."; return }
+    Start-WorkerJob -Name "Create User" -ArgumentList @($u, $p) -ScriptBlock {
+        param($u, $p)
+        try {
+            $pass = ConvertTo-SecureString $p -AsPlainText -Force
+            New-LocalUser -Name $u -Password $pass -PasswordNeverExpires -Description "Created by WinFix" -ErrorAction Stop
+            "User '$u' created successfully."
+            Add-LocalGroupMember -Group "Users" -Member $u
+        } catch { "Error: $_" }
+    }
+}
+
+Add-UserButton $grpUser "Reset Password" 20 180 {
+    $u = $txtUName.Text; $p = $txtUPass.Text
+    if (-not $u -or -not $p) { Log-Output "Username and Password required."; return }
+    Start-WorkerJob -Name "Reset Password" -ArgumentList @($u, $p) -ScriptBlock {
+        param($u, $p)
+        try {
+            $pass = ConvertTo-SecureString $p -AsPlainText -Force
+            Set-LocalUser -Name $u -Password $pass -ErrorAction Stop
+            "Password for '$u' reset successfully."
+        } catch { "Error: $_" }
+    }
+}
+
+Add-UserButton $grpUser "Add to Administrators" 20 220 {
+    $u = $txtUName.Text
+    if (-not $u) { Log-Output "Username required."; return }
+    Start-WorkerJob -Name "Add Admin" -ArgumentList @($u) -ScriptBlock {
+        param($u)
+        try {
+            Add-LocalGroupMember -Group "Administrators" -Member $u -ErrorAction Stop
+            "User '$u' added to Administrators group."
+        } catch { "Error: $_" }
+    }
+}
+
+Add-UserButton $grpUser "Enable User" 200 140 {
+    $u = $txtUName.Text
+    if (-not $u) { Log-Output "Username required."; return }
+    Start-WorkerJob -Name "Enable User" -ArgumentList @($u) -ScriptBlock { param($u); Enable-LocalUser $u; "User '$u' enabled." }
+}
+
+Add-UserButton $grpUser "Disable User" 200 180 {
+    $u = $txtUName.Text
+    if (-not $u) { Log-Output "Username required."; return }
+    Start-WorkerJob -Name "Disable User" -ArgumentList @($u) -ScriptBlock { param($u); Disable-LocalUser $u; "User '$u' disabled." }
+}
+
+Add-UserButton $grpUser "Delete User" 200 220 {
+    $u = $txtUName.Text
+    if (-not $u) { Log-Output "Username required."; return }
+    Start-WorkerJob -Name "Delete User" -ArgumentList @($u) -ScriptBlock { param($u); Remove-LocalUser $u -ErrorAction Stop; "User '$u' deleted." }
+}
+
+# GroupBox: Share Management
+$grpShare = New-Object System.Windows.Forms.GroupBox
+$grpShare.Text = "Network Shares"
+$grpShare.Location = New-Object System.Drawing.Point(440, 20)
+$grpShare.Size = New-Object System.Drawing.Size(400, 300)
+$grpShare.ForeColor = $Theme.Text
+
+$lblSPath = New-Object System.Windows.Forms.Label
+$lblSPath.Text = "Folder Path (e.g. C:\Share):"
+$lblSPath.Location = New-Object System.Drawing.Point(20, 30)
+$lblSPath.AutoSize = $true
+$grpShare.Controls.Add($lblSPath)
+
+$txtSPath = New-Object System.Windows.Forms.TextBox
+$txtSPath.Location = New-Object System.Drawing.Point(20, 50)
+$txtSPath.Width = 350
+$grpShare.Controls.Add($txtSPath)
+
+$lblSName = New-Object System.Windows.Forms.Label
+$lblSName.Text = "Share Name:"
+$lblSName.Location = New-Object System.Drawing.Point(20, 80)
+$lblSName.AutoSize = $true
+$grpShare.Controls.Add($lblSName)
+
+$txtSName = New-Object System.Windows.Forms.TextBox
+$txtSName.Location = New-Object System.Drawing.Point(20, 100)
+$txtSName.Width = 350
+$grpShare.Controls.Add($txtSName)
+
+Add-UserButton $grpShare "Create Share (Full Access)" 20 140 {
+    $p = $txtSPath.Text; $n = $txtSName.Text
+    if (-not $p -or -not $n) { Log-Output "Path and Name required."; return }
+    Start-WorkerJob -Name "Create Share" -ArgumentList @($p, $n) -ScriptBlock {
+        param($p, $n)
+        try {
+            if (-not (Test-Path $p)) { New-Item -ItemType Directory -Path $p -Force | Out-Null }
+            New-SmbShare -Name $n -Path $p -FullAccess "Everyone" -ErrorAction Stop
+            "Share '$n' created at '$p' with Full Access for Everyone."
+        } catch { "Error: $_" }
+    }
+}
+$grpShare.Controls[$grpShare.Controls.Count-1].Width = 350
+
+Add-UserButton $grpShare "Delete Share" 20 180 {
+    $n = $txtSName.Text
+    if (-not $n) { Log-Output "Share Name required."; return }
+    Start-WorkerJob -Name "Delete Share" -ArgumentList @($n) -ScriptBlock {
+        param($n)
+        try {
+            Remove-SmbShare -Name $n -Force -ErrorAction Stop
+            "Share '$n' deleted."
+        } catch { "Error: $_" }
+    }
+}
+$grpShare.Controls[$grpShare.Controls.Count-1].Width = 350
+
+$tabUsers.Controls.Add($grpUser)
+$tabUsers.Controls.Add($grpShare)
+
 # --- Tab 5: Security Audit ---
 $tabAudit = New-Object System.Windows.Forms.TabPage
 $tabAudit.Text = "Security Audit"
@@ -711,6 +877,7 @@ $tabControl.Controls.Add($tabFixes)
 $tabControl.Controls.Add($tabInfo)
 $tabControl.Controls.Add($tabNet)
 $tabControl.Controls.Add($tabIntegrations)
+$tabControl.Controls.Add($tabUsers)
 $tabControl.Controls.Add($tabAudit)
 
 $form.Controls.Add($tabControl)
