@@ -3,6 +3,9 @@
 
 $ErrorActionPreference = "Stop"
 
+# Force TLS 1.2 for GitHub connections
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+
 Write-Host "===========================================================" -ForegroundColor Cyan
 Write-Host "  WinFix Tool - Remote Installer" -ForegroundColor Cyan
 Write-Host "===========================================================" -ForegroundColor Cyan
