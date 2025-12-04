@@ -22,7 +22,11 @@ if (-NOT ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdenti
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 
-# --- GUI Setup ---
+# --- Global Settings ---
+# Enforce TLS 1.2 for API connections (Fixes "Could not create SSL/TLS secure channel")
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+
+# --- GUI Setup: Form & Output (Created first for logging) ---
 $form = New-Object System.Windows.Forms.Form
 $form.Text = "WinFix Tool & Security Audit"
 $form.Size = New-Object System.Drawing.Size(800, 600)
@@ -30,7 +34,126 @@ $form.StartPosition = "CenterScreen"
 $form.FormBorderStyle = "FixedDialog"
 $form.MaximizeBox = $false
 
-# Tabs
+# Output Console (Created early so functions can log to it)
+$groupBoxOutput = New-Object System.Windows.Forms.GroupBox
+$groupBoxOutput.Text = "Output Log"
+$groupBoxOutput.Dock = "Bottom"
+$groupBoxOutput.Height = 250
+
+$txtOutput = New-Object System.Windows.Forms.TextBox
+$txtOutput.Multiline = $true
+$txtOutput.ScrollBars = "Vertical"
+$txtOutput.ReadOnly = $true
+$txtOutput.Dock = "Fill"
+$txtOutput.Font = New-Object System.Drawing.Font("Consolas", 9)
+$txtOutput.BackColor = "Black"
+$txtOutput.ForeColor = "Lime"
+
+$groupBoxOutput.Controls.Add($txtOutput)
+
+# --- Logging Function ---
+function Log-Output($message) {
+    $txtOutput.AppendText("[$((Get-Date).ToString('HH:mm:ss'))] $message`r`n")
+    $txtOutput.SelectionStart = $txtOutput.Text.Length
+    $txtOutput.ScrollToCaret()
+    $form.Refresh()
+}
+
+# --- NinjaOne Integration Functions (Defined early for Tab 4) ---
+$global:NinjaToken = $null
+$global:NinjaInstance = $null
+$global:NinjaDeviceData = $null
+
+function Get-NinjaSettings {
+    $configDir = "$env:APPDATA\WinFixTool"
+    $configPath = "$configDir\ninja_config.xml"
+    if (Test-Path $configPath) {
+        try {
+            return Import-Clixml $configPath
+        } catch {
+            Log-Output "Could not load saved settings."
+        }
+    }
+    return $null
+}
+
+function Save-NinjaSettings {
+    param($Url, $Id, $Secret)
+    $configDir = "$env:APPDATA\WinFixTool"
+    if (-not (Test-Path $configDir)) { New-Item -ItemType Directory -Path $configDir -Force | Out-Null }
+    $configPath = "$configDir\ninja_config.xml"
+    
+    $settings = [PSCustomObject]@{
+        Url = $Url
+        ClientId = $Id
+        ClientSecret = $Secret
+    }
+    $settings | Export-Clixml -Path $configPath
+    Log-Output "Settings saved securely."
+}
+
+function Connect-NinjaOne {
+    param($ClientId, $ClientSecret, $InstanceUrl)
+    
+    Log-Output "Connecting to NinjaOne ($InstanceUrl)..."
+    $tokenUrl = "https://$InstanceUrl/v2/oauth/token"
+    $body = @{
+        grant_type = "client_credentials"
+        client_id = $ClientId
+        client_secret = $ClientSecret
+        scope = "monitoring management" 
+    }
+    
+    try {
+        $response = Invoke-RestMethod -Uri $tokenUrl -Method Post -Body $body -ErrorAction Stop
+        $global:NinjaToken = $response.access_token
+        $global:NinjaInstance = $InstanceUrl
+        Log-Output "Successfully connected to NinjaOne!"
+        
+        # Auto-fetch device data
+        Get-NinjaDeviceData
+    } catch {
+        Log-Output "Failed to connect to NinjaOne: $($_.Exception.Message)"
+        if ($_.ErrorDetails) { Log-Output "Details: $($_.ErrorDetails.Message)" }
+    }
+}
+
+function Get-NinjaDeviceData {
+    if (-not $global:NinjaToken) { Log-Output "Not connected to NinjaOne."; return }
+    
+    Log-Output "Searching for this device in NinjaOne..."
+    $headers = @{ Authorization = "Bearer $global:NinjaToken" }
+    
+    # Search for device by serial number or hostname
+    $serial = (Get-CimInstance Win32_Bios).SerialNumber
+    $hostname = $env:COMPUTERNAME
+    
+    try {
+        # Try searching by Serial first
+        $searchUrl = "https://$($global:NinjaInstance)/v2/devices?df=serialNumber:$serial"
+        $devices = Invoke-RestMethod -Uri $searchUrl -Headers $headers -ErrorAction Stop
+        
+        if (-not $devices) {
+             # Fallback to hostname
+             Log-Output "Serial search failed, trying hostname..."
+             $searchUrl = "https://$($global:NinjaInstance)/v2/devices?df=systemName:$hostname"
+             $devices = Invoke-RestMethod -Uri $searchUrl -Headers $headers -ErrorAction Stop
+        }
+        
+        if ($devices) {
+            $global:NinjaDeviceData = $devices[0] # Take first match
+            Log-Output "Device found: $($global:NinjaDeviceData.systemName) (ID: $($global:NinjaDeviceData.id))"
+            Log-Output "Organization: $($global:NinjaDeviceData.organizationId)"
+            Log-Output "Last Contact: $($global:NinjaDeviceData.lastContact)"
+        } else {
+            Log-Output "Device not found in NinjaOne."
+        }
+    } catch {
+        Log-Output "Error fetching device data: $($_.Exception.Message)"
+    }
+}
+
+# --- Tab Control Setup ---
 $tabControl = New-Object System.Windows.Forms.TabControl
 $tabControl.Dock = "Fill"
 
@@ -344,24 +467,6 @@ $btnRunAudit.Add_Click({
 $tabAudit.Controls.Add($btnRunAudit)
 $tabAudit.Controls.Add($lblAudit)
 
-
-# --- Output Console ---
-$groupBoxOutput = New-Object System.Windows.Forms.GroupBox
-$groupBoxOutput.Text = "Output Log"
-$groupBoxOutput.Dock = "Bottom"
-$groupBoxOutput.Height = 250
-
-$txtOutput = New-Object System.Windows.Forms.TextBox
-$txtOutput.Multiline = $true
-$txtOutput.ScrollBars = "Vertical"
-$txtOutput.ReadOnly = $true
-$txtOutput.Dock = "Fill"
-$txtOutput.Font = New-Object System.Drawing.Font("Consolas", 9)
-$txtOutput.BackColor = "Black"
-$txtOutput.ForeColor = "Lime"
-
-$groupBoxOutput.Controls.Add($txtOutput)
-
 # --- Assemble Form ---
 $tabControl.Controls.Add($tabFixes)
 $tabControl.Controls.Add($tabInfo)
@@ -371,108 +476,6 @@ $tabControl.Controls.Add($tabAudit)
 
 $form.Controls.Add($tabControl)
 $form.Controls.Add($groupBoxOutput)
-
-# --- Logging Function ---
-function Log-Output($message) {
-    $txtOutput.AppendText("[$((Get-Date).ToString('HH:mm:ss'))] $message`r`n")
-    $txtOutput.SelectionStart = $txtOutput.Text.Length
-    $txtOutput.ScrollToCaret()
-    $form.Refresh()
-}
-
-# --- NinjaOne Integration Functions ---
-$global:NinjaToken = $null
-$global:NinjaInstance = $null
-$global:NinjaDeviceData = $null
-
-function Get-NinjaSettings {
-    $configDir = "$env:APPDATA\WinFixTool"
-    $configPath = "$configDir\ninja_config.xml"
-    if (Test-Path $configPath) {
-        try {
-            return Import-Clixml $configPath
-        } catch {
-            Log-Output "Could not load saved settings."
-        }
-    }
-    return $null
-}
-
-function Save-NinjaSettings {
-    param($Url, $Id, $Secret)
-    $configDir = "$env:APPDATA\WinFixTool"
-    if (-not (Test-Path $configDir)) { New-Item -ItemType Directory -Path $configDir -Force | Out-Null }
-    $configPath = "$configDir\ninja_config.xml"
-    
-    $settings = [PSCustomObject]@{
-        Url = $Url
-        ClientId = $Id
-        ClientSecret = $Secret
-    }
-    $settings | Export-Clixml -Path $configPath
-    Log-Output "Settings saved securely."
-}
-
-function Connect-NinjaOne {
-    param($ClientId, $ClientSecret, $InstanceUrl)
-    
-    Log-Output "Connecting to NinjaOne ($InstanceUrl)..."
-    $tokenUrl = "https://$InstanceUrl/v2/oauth/token"
-    $body = @{
-        grant_type = "client_credentials"
-        client_id = $ClientId
-        client_secret = $ClientSecret
-        scope = "monitoring management" 
-    }
-    
-    try {
-        $response = Invoke-RestMethod -Uri $tokenUrl -Method Post -Body $body -ErrorAction Stop
-        $global:NinjaToken = $response.access_token
-        $global:NinjaInstance = $InstanceUrl
-        Log-Output "Successfully connected to NinjaOne!"
-        
-        # Auto-fetch device data
-        Get-NinjaDeviceData
-    } catch {
-        Log-Output "Failed to connect to NinjaOne: $($_.Exception.Message)"
-        if ($_.ErrorDetails) { Log-Output "Details: $($_.ErrorDetails.Message)" }
-    }
-}
-
-function Get-NinjaDeviceData {
-    if (-not $global:NinjaToken) { Log-Output "Not connected to NinjaOne."; return }
-    
-    Log-Output "Searching for this device in NinjaOne..."
-    $headers = @{ Authorization = "Bearer $global:NinjaToken" }
-    
-    # Search for device by serial number or hostname
-    $serial = (Get-CimInstance Win32_Bios).SerialNumber
-    $hostname = $env:COMPUTERNAME
-    
-    try {
-        # Try searching by Serial first
-        $searchUrl = "https://$($global:NinjaInstance)/v2/devices?df=serialNumber:$serial"
-        $devices = Invoke-RestMethod -Uri $searchUrl -Headers $headers -ErrorAction Stop
-        
-        if (-not $devices) {
-             # Fallback to hostname
-             Log-Output "Serial search failed, trying hostname..."
-             $searchUrl = "https://$($global:NinjaInstance)/v2/devices?df=systemName:$hostname"
-             $devices = Invoke-RestMethod -Uri $searchUrl -Headers $headers -ErrorAction Stop
-        }
-        
-        if ($devices) {
-            $global:NinjaDeviceData = $devices[0] # Take first match
-            Log-Output "Device found: $($global:NinjaDeviceData.systemName) (ID: $($global:NinjaDeviceData.id))"
-            Log-Output "Organization: $($global:NinjaDeviceData.organizationId)"
-            Log-Output "Last Contact: $($global:NinjaDeviceData.lastContact)"
-        } else {
-            Log-Output "Device not found in NinjaOne."
-        }
-    } catch {
-        Log-Output "Error fetching device data: $($_.Exception.Message)"
-    }
-}
 
 # --- SECURITY AUDIT LOGIC (Embedded) ---
 function Invoke-SecurityAudit {
@@ -1260,23 +1263,6 @@ function Invoke-SecurityAudit {
     </table>
 
     <button onclick="copyReport()" class="copy-btn floating-action">Copy Report for Ticket</button>
-"@
-
-    # --- OUTPUT ---
-    $HTMLPage = @"
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <title>Polar Nite Security Audit: $env:COMPUTERNAME</title>
-        $style
-    </head>
-    <body>
-        <div class='container'>
-            $HTMLBody
-            <p style='text-align:center; margin-top:50px; font-size:0.8em; color:#95a5a6;'>Polar Nite Audit Tool v7.0 (Ticket Mode)</p>
-        </div>
-    </body>
-    </html>
 "@
 
     $HTMLPage | Out-File -FilePath $ReportPath -Encoding UTF8
