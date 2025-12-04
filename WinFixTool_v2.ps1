@@ -1354,6 +1354,7 @@ $pages["NinjaOne"] = $pageNinja
 $pageAudit = New-Object System.Windows.Forms.Panel
 $pageAudit.Dock = "Fill"
 $pageAudit.BackColor = $script:Theme.Bg
+$pageAudit.AutoScroll = $true
 
 $lblAuditTitle = New-Object System.Windows.Forms.Label
 $lblAuditTitle.Text = "SECURITY AUDIT"
@@ -1363,10 +1364,22 @@ $lblAuditTitle.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Draw
 $lblAuditTitle.ForeColor = $script:Theme.Dim
 
 $lblAuditDesc = New-Object System.Windows.Forms.Label
-$lblAuditDesc.Text = "Generate a comprehensive security audit report."
+$lblAuditDesc.Text = "Generate a comprehensive security audit report for this system."
 $lblAuditDesc.Location = New-Object System.Drawing.Point(10, 32)
 $lblAuditDesc.AutoSize = $true
 $lblAuditDesc.Font = New-Object System.Drawing.Font("Segoe UI", 8)
+
+$txtAudit = New-Object System.Windows.Forms.TextBox
+$txtAudit.Multiline = $true
+$txtAudit.ScrollBars = "Both"
+$txtAudit.ReadOnly = $true
+$txtAudit.Location = New-Object System.Drawing.Point(10, 100)
+$txtAudit.Size = New-Object System.Drawing.Size(600, 300)
+$txtAudit.BackColor = $script:Theme.Surface
+$txtAudit.ForeColor = $script:Theme.Text
+$txtAudit.Font = New-Object System.Drawing.Font("Consolas", 8)
+$txtAudit.Anchor = "Top, Left, Right, Bottom"
+$txtAudit.Text = "Click 'Generate Audit Report' to scan this system."
 
 $btnAudit = New-Object System.Windows.Forms.Button
 $btnAudit.Text = "Generate Audit Report"
@@ -1378,10 +1391,287 @@ $btnAudit.ForeColor = "White"
 $btnAudit.FlatAppearance.BorderSize = 0
 $btnAudit.Add_Click({
     Log "Generating audit report..."
-    [System.Windows.Forms.MessageBox]::Show("Audit report generation would run here.", "Security Audit", "OK", "Information")
+    $this.Enabled = $false
+    $this.Text = "Scanning..."
+    $txtAudit.Text = "Running security audit...`r`n"
+    [System.Windows.Forms.Application]::DoEvents()
+    
+    $report = @()
+    $pass = 0; $warn = 0; $fail = 0
+    
+    $report += "========================================================"
+    $report += "SECURITY AUDIT REPORT"
+    $report += "Computer: $env:COMPUTERNAME"
+    $report += "Date: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
+    $report += "========================================================"
+    $report += ""
+    
+    # --- WINDOWS UPDATE ---
+    $txtAudit.Text += "Checking Windows Update...`r`n"; [System.Windows.Forms.Application]::DoEvents()
+    $report += "=== WINDOWS UPDATE ==="
+    try {
+        $lastUpdate = Get-HotFix | Sort-Object InstalledOn -Descending | Select-Object -First 1
+        if ($lastUpdate -and $lastUpdate.InstalledOn) {
+            $daysSince = (New-TimeSpan -Start $lastUpdate.InstalledOn -End (Get-Date)).Days
+            if ($daysSince -le 30) {
+                $report += "[PASS] Last update: $($lastUpdate.InstalledOn.ToString('yyyy-MM-dd')) ($daysSince days ago)"
+                $pass++
+            } elseif ($daysSince -le 60) {
+                $report += "[WARN] Last update: $($lastUpdate.InstalledOn.ToString('yyyy-MM-dd')) ($daysSince days ago)"
+                $warn++
+            } else {
+                $report += "[FAIL] Last update: $($lastUpdate.InstalledOn.ToString('yyyy-MM-dd')) ($daysSince days ago)"
+                $fail++
+            }
+        } else {
+            $report += "[WARN] Could not determine last update date"
+            $warn++
+        }
+    } catch { $report += "[WARN] Error checking updates: $_"; $warn++ }
+    $report += ""
+    
+    # --- ANTIVIRUS ---
+    $txtAudit.Text += "Checking Antivirus...`r`n"; [System.Windows.Forms.Application]::DoEvents()
+    $report += "=== ANTIVIRUS ==="
+    try {
+        $av = Get-CimInstance -Namespace "root/SecurityCenter2" -ClassName AntiVirusProduct -EA SilentlyContinue
+        if ($av) {
+            foreach ($product in $av) {
+                $status = switch ($product.productState) {
+                    "262144" { "[WARN] Disabled" }
+                    "262160" { "[WARN] Out of date" }
+                    "266240" { "[PASS] Enabled & Updated" }
+                    "266256" { "[WARN] Enabled, Out of date" }
+                    "393216" { "[WARN] Disabled" }
+                    "393232" { "[WARN] Out of date" }
+                    "393472" { "[PASS] Enabled & Updated" }
+                    "397312" { "[PASS] Enabled & Updated" }
+                    "397328" { "[WARN] Enabled, Out of date" }
+                    default { "[WARN] Unknown state: $($product.productState)" }
+                }
+                $report += "$status - $($product.displayName)"
+                if ($status -match "PASS") { $pass++ } elseif ($status -match "FAIL") { $fail++ } else { $warn++ }
+            }
+        } else {
+            $report += "[FAIL] No antivirus detected"
+            $fail++
+        }
+    } catch { $report += "[WARN] Could not query antivirus (may be server OS)"; $warn++ }
+    $report += ""
+    
+    # --- FIREWALL ---
+    $txtAudit.Text += "Checking Firewall...`r`n"; [System.Windows.Forms.Application]::DoEvents()
+    $report += "=== FIREWALL ==="
+    try {
+        $fw = Get-NetFirewallProfile -EA Stop
+        foreach ($profile in $fw) {
+            if ($profile.Enabled) {
+                $report += "[PASS] $($profile.Name) profile: Enabled"
+                $pass++
+            } else {
+                $report += "[FAIL] $($profile.Name) profile: Disabled"
+                $fail++
+            }
+        }
+    } catch { $report += "[WARN] Could not check firewall"; $warn++ }
+    $report += ""
+    
+    # --- USER ACCOUNTS ---
+    $txtAudit.Text += "Checking User Accounts...`r`n"; [System.Windows.Forms.Application]::DoEvents()
+    $report += "=== USER ACCOUNTS ==="
+    try {
+        $users = Get-LocalUser -EA Stop
+        $enabledUsers = $users | Where-Object { $_.Enabled }
+        $report += "[INFO] Total accounts: $($users.Count), Enabled: $($enabledUsers.Count)"
+        
+        # Check for Guest account
+        $guest = $users | Where-Object { $_.Name -eq "Guest" }
+        if ($guest -and $guest.Enabled) {
+            $report += "[FAIL] Guest account is ENABLED"
+            $fail++
+        } else {
+            $report += "[PASS] Guest account is disabled"
+            $pass++
+        }
+        
+        # Check for default Administrator
+        $admin = $users | Where-Object { $_.Name -eq "Administrator" }
+        if ($admin -and $admin.Enabled) {
+            $report += "[WARN] Built-in Administrator account is enabled"
+            $warn++
+        } else {
+            $report += "[PASS] Built-in Administrator is disabled"
+            $pass++
+        }
+        
+        # Check password expiry
+        $neverExpire = $enabledUsers | Where-Object { $_.PasswordNeverExpires }
+        if ($neverExpire.Count -gt 0) {
+            $report += "[WARN] $($neverExpire.Count) account(s) with non-expiring passwords: $($neverExpire.Name -join ', ')"
+            $warn++
+        }
+    } catch { $report += "[WARN] Could not enumerate users"; $warn++ }
+    $report += ""
+    
+    # --- ADMIN GROUP ---
+    $txtAudit.Text += "Checking Admin Group...`r`n"; [System.Windows.Forms.Application]::DoEvents()
+    $report += "=== LOCAL ADMINISTRATORS ==="
+    try {
+        $admins = Get-LocalGroupMember -Group "Administrators" -EA Stop
+        $report += "[INFO] $($admins.Count) member(s) in Administrators group:"
+        foreach ($member in $admins) {
+            $report += "  - $($member.Name) ($($member.ObjectClass))"
+        }
+        if ($admins.Count -gt 5) {
+            $report += "[WARN] High number of local admins"
+            $warn++
+        } else {
+            $pass++
+        }
+    } catch { $report += "[WARN] Could not enumerate Administrators group"; $warn++ }
+    $report += ""
+    
+    # --- BITLOCKER ---
+    $txtAudit.Text += "Checking BitLocker...`r`n"; [System.Windows.Forms.Application]::DoEvents()
+    $report += "=== DISK ENCRYPTION ==="
+    try {
+        $bl = Get-BitLockerVolume -EA Stop | Where-Object { $_.MountPoint -eq "C:" }
+        if ($bl) {
+            if ($bl.ProtectionStatus -eq "On") {
+                $report += "[PASS] BitLocker enabled on C: ($($bl.EncryptionPercentage)% encrypted)"
+                $pass++
+            } else {
+                $report += "[WARN] BitLocker present but protection is OFF"
+                $warn++
+            }
+        } else {
+            $report += "[WARN] BitLocker not configured on C:"
+            $warn++
+        }
+    } catch { $report += "[INFO] BitLocker not available or not configured"; }
+    $report += ""
+    
+    # --- RDP ---
+    $txtAudit.Text += "Checking Remote Desktop...`r`n"; [System.Windows.Forms.Application]::DoEvents()
+    $report += "=== REMOTE DESKTOP ==="
+    try {
+        $rdp = Get-ItemProperty "HKLM:\System\CurrentControlSet\Control\Terminal Server" -Name fDenyTSConnections -EA Stop
+        if ($rdp.fDenyTSConnections -eq 1) {
+            $report += "[PASS] Remote Desktop is DISABLED"
+            $pass++
+        } else {
+            $report += "[WARN] Remote Desktop is ENABLED"
+            $warn++
+            # Check NLA
+            $nla = Get-ItemProperty "HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" -Name UserAuthentication -EA SilentlyContinue
+            if ($nla -and $nla.UserAuthentication -eq 1) {
+                $report += "[PASS] Network Level Authentication (NLA) is required"
+                $pass++
+            } else {
+                $report += "[FAIL] NLA is NOT required - security risk!"
+                $fail++
+            }
+        }
+    } catch { $report += "[WARN] Could not check RDP settings"; $warn++ }
+    $report += ""
+    
+    # --- SMBv1 ---
+    $txtAudit.Text += "Checking SMBv1...`r`n"; [System.Windows.Forms.Application]::DoEvents()
+    $report += "=== SMBv1 PROTOCOL ==="
+    try {
+        $smb1 = Get-WindowsOptionalFeature -Online -FeatureName SMB1Protocol -EA SilentlyContinue
+        if ($smb1 -and $smb1.State -eq "Enabled") {
+            $report += "[FAIL] SMBv1 is ENABLED - serious security risk!"
+            $fail++
+        } else {
+            $report += "[PASS] SMBv1 is disabled"
+            $pass++
+        }
+    } catch { $report += "[INFO] Could not check SMBv1 status"; }
+    $report += ""
+    
+    # --- SERVICES ---
+    $txtAudit.Text += "Checking risky services...`r`n"; [System.Windows.Forms.Application]::DoEvents()
+    $report += "=== RISKY SERVICES ==="
+    $riskyServices = @("RemoteRegistry", "Telnet", "SNMP")
+    foreach ($svc in $riskyServices) {
+        $service = Get-Service -Name $svc -EA SilentlyContinue
+        if ($service -and $service.Status -eq "Running") {
+            $report += "[WARN] $svc service is RUNNING"
+            $warn++
+        } elseif ($service) {
+            $report += "[PASS] $svc service is stopped"
+            $pass++
+        }
+    }
+    $report += ""
+    
+    # --- OPEN SHARES ---
+    $txtAudit.Text += "Checking network shares...`r`n"; [System.Windows.Forms.Application]::DoEvents()
+    $report += "=== NETWORK SHARES ==="
+    try {
+        $shares = Get-SmbShare -EA Stop | Where-Object { $_.Name -notmatch '^\$' -and $_.Name -ne "Users" }
+        if ($shares) {
+            $report += "[INFO] Non-default shares found:"
+            foreach ($share in $shares) {
+                $report += "  - $($share.Name) -> $($share.Path)"
+            }
+            $warn++
+        } else {
+            $report += "[PASS] No non-default shares"
+            $pass++
+        }
+    } catch { $report += "[INFO] Could not enumerate shares"; }
+    $report += ""
+    
+    # --- SUMMARY ---
+    $report += "========================================================"
+    $report += "SUMMARY"
+    $report += "========================================================"
+    $report += "[PASS] $pass checks passed"
+    $report += "[WARN] $warn warnings"
+    $report += "[FAIL] $fail critical issues"
+    $report += ""
+    $total = $pass + $warn + $fail
+    $score = if ($total -gt 0) { [math]::Round(($pass / $total) * 100) } else { 0 }
+    $report += "Security Score: $score%"
+    if ($fail -gt 0) {
+        $report += "STATUS: CRITICAL - Immediate action required!"
+    } elseif ($warn -gt 3) {
+        $report += "STATUS: NEEDS ATTENTION - Review warnings"
+    } else {
+        $report += "STATUS: GOOD"
+    }
+    
+    $txtAudit.Text = $report -join "`r`n"
+    $this.Text = "Generate Audit Report"
+    $this.Enabled = $true
+    Log "Audit complete: $pass pass, $warn warn, $fail fail"
 })
 
-$pageAudit.Controls.AddRange(@($lblAuditTitle, $lblAuditDesc, $btnAudit))
+$btnExportAudit = New-Object System.Windows.Forms.Button
+$btnExportAudit.Text = "Export Report"
+$btnExportAudit.Location = New-Object System.Drawing.Point(170, 60)
+$btnExportAudit.Size = New-Object System.Drawing.Size(100, 32)
+$btnExportAudit.FlatStyle = "Flat"
+$btnExportAudit.BackColor = $script:Theme.Card
+$btnExportAudit.ForeColor = $script:Theme.Text
+$btnExportAudit.FlatAppearance.BorderSize = 0
+$btnExportAudit.Add_Click({
+    if ($txtAudit.Text.Length -lt 100) {
+        [System.Windows.Forms.MessageBox]::Show("Generate a report first.", "No Report", "OK", "Warning")
+        return
+    }
+    $saveDialog = New-Object System.Windows.Forms.SaveFileDialog
+    $saveDialog.Filter = "Text Files (*.txt)|*.txt|All Files (*.*)|*.*"
+    $saveDialog.FileName = "$env:COMPUTERNAME`_SecurityAudit_$(Get-Date -Format 'yyyyMMdd').txt"
+    if ($saveDialog.ShowDialog() -eq "OK") {
+        $txtAudit.Text | Out-File -FilePath $saveDialog.FileName -Encoding UTF8
+        [System.Windows.Forms.MessageBox]::Show("Report saved to:`n$($saveDialog.FileName)", "Export Complete", "OK", "Information")
+    }
+})
+
+$pageAudit.Controls.AddRange(@($lblAuditTitle, $lblAuditDesc, $btnAudit, $btnExportAudit, $txtAudit))
 $pages["Audit"] = $pageAudit
 
 # --- Navigation ---
