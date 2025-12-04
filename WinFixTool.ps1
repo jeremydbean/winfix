@@ -283,11 +283,8 @@ $tabControl.Add_DrawItem({
         $textColor = [System.Drawing.Color]::Gray
     }
     
-    $sf = New-Object System.Drawing.StringFormat
-    $sf.Alignment = "Center"
-    $sf.LineAlignment = "Center"
-    $rectF = New-Object System.Drawing.RectangleF $rect.X, $rect.Y, $rect.Width, $rect.Height
-    $g.DrawString($text, $sender.Font, (New-Object System.Drawing.SolidBrush $textColor), $rectF, $sf)
+    $flags = [System.Windows.Forms.TextFormatFlags]::HorizontalCenter -bor [System.Windows.Forms.TextFormatFlags]::VerticalCenter
+    [System.Windows.Forms.TextRenderer]::DrawText($g, $text, $sender.Font, $rect, $textColor, $flags)
 })
 
 # --- Helper to add buttons ---
