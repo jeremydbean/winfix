@@ -105,74 +105,75 @@ function Connect-NinjaOne {
 # --- Create Main Form ---
 $form = New-Object System.Windows.Forms.Form
 $form.Text = "WinFix Tool v2.1"
-$form.Size = New-Object System.Drawing.Size(950, 650)
-$form.MinimumSize = New-Object System.Drawing.Size(800, 500)
+$form.Size = New-Object System.Drawing.Size(780, 560)
+$form.MinimumSize = New-Object System.Drawing.Size(640, 480)
 $form.StartPosition = "CenterScreen"
 $form.BackColor = $script:Theme.Bg
 $form.ForeColor = $script:Theme.Text
-$form.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+$form.Font = New-Object System.Drawing.Font("Segoe UI", 8)
 $form.FormBorderStyle = "Sizable"
 
 # --- Header ---
 $panelHeader = New-Object System.Windows.Forms.Panel
 $panelHeader.Dock = "Top"
-$panelHeader.Height = 50
+$panelHeader.Height = 36
 $panelHeader.BackColor = $script:Theme.Surface
 
 $lblTitle = New-Object System.Windows.Forms.Label
 $lblTitle.Text = "WinFix Tool"
-$lblTitle.Location = New-Object System.Drawing.Point(15, 12)
+$lblTitle.Location = New-Object System.Drawing.Point(10, 8)
 $lblTitle.AutoSize = $true
-$lblTitle.Font = New-Object System.Drawing.Font("Segoe UI", 14, [System.Drawing.FontStyle]::Bold)
+$lblTitle.Font = New-Object System.Drawing.Font("Segoe UI", 11, [System.Drawing.FontStyle]::Bold)
 $lblTitle.ForeColor = $script:Theme.Accent
 
 $lblPC = New-Object System.Windows.Forms.Label
 $lblPC.Text = "$env:COMPUTERNAME"
-$lblPC.Location = New-Object System.Drawing.Point(750, 15)
+$lblPC.Location = New-Object System.Drawing.Point(600, 10)
 $lblPC.AutoSize = $true
 $lblPC.Anchor = "Top, Right"
-$lblPC.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
+$lblPC.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
 
 $panelHeader.Controls.AddRange(@($lblTitle, $lblPC))
 
 # --- Nav Panel ---
 $panelNav = New-Object System.Windows.Forms.Panel
 $panelNav.Dock = "Left"
-$panelNav.Width = 140
+$panelNav.Width = 100
 $panelNav.BackColor = $script:Theme.Surface
 
 $navItems = @("Dashboard", "Quick Fix", "Diagnostics", "Network", "NinjaOne", "Audit")
 $navButtons = @()
-$navY = 10
+$navY = 5
 
 foreach ($nav in $navItems) {
     $btn = New-Object System.Windows.Forms.Button
     $btn.Text = $nav
-    $btn.Location = New-Object System.Drawing.Point(5, $navY)
-    $btn.Size = New-Object System.Drawing.Size(130, 35)
+    $btn.Location = New-Object System.Drawing.Point(3, $navY)
+    $btn.Size = New-Object System.Drawing.Size(94, 28)
     $btn.FlatStyle = "Flat"
     $btn.BackColor = $script:Theme.Card
     $btn.ForeColor = $script:Theme.Text
     $btn.FlatAppearance.BorderSize = 0
+    $btn.Font = New-Object System.Drawing.Font("Segoe UI", 8)
     $btn.Tag = $nav
     $btn.Add_Click({ Show-Page $this.Tag })
     $panelNav.Controls.Add($btn)
     $navButtons += $btn
-    $navY += 40
+    $navY += 32
 }
 
 # --- Log Panel (collapsible) ---
 $panelLog = New-Object System.Windows.Forms.Panel
 $panelLog.Dock = "Bottom"
-$panelLog.Height = 80
+$panelLog.Height = 60
 $panelLog.BackColor = $script:Theme.Surface
 
 $lblLog = New-Object System.Windows.Forms.Label
 $lblLog.Text = "Log"
 $lblLog.Dock = "Top"
-$lblLog.Height = 18
+$lblLog.Height = 14
 $lblLog.ForeColor = $script:Theme.Dim
-$lblLog.Font = New-Object System.Drawing.Font("Segoe UI", 8)
+$lblLog.Font = New-Object System.Drawing.Font("Segoe UI", 7)
 
 $script:txtLog = New-Object System.Windows.Forms.TextBox
 $script:txtLog.Multiline = $true
@@ -197,77 +198,78 @@ $pages = @{}
 $pageDash = New-Object System.Windows.Forms.Panel
 $pageDash.Dock = "Fill"
 $pageDash.BackColor = $script:Theme.Bg
+$pageDash.AutoScroll = $true
 
 # Status Grid - Left column
 $lblStatus = New-Object System.Windows.Forms.Label
 $lblStatus.Text = "SYSTEM STATUS"
-$lblStatus.Location = New-Object System.Drawing.Point(20, 15)
+$lblStatus.Location = New-Object System.Drawing.Point(10, 8)
 $lblStatus.AutoSize = $true
-$lblStatus.Font = New-Object System.Drawing.Font("Segoe UI", 11, [System.Drawing.FontStyle]::Bold)
+$lblStatus.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
 $lblStatus.ForeColor = $script:Theme.Dim
 
 $script:lblCPU = New-Object System.Windows.Forms.Label
 $script:lblCPU.Text = "$($script:StatusPending) CPU: --"
-$script:lblCPU.Location = New-Object System.Drawing.Point(20, 50)
-$script:lblCPU.Size = New-Object System.Drawing.Size(300, 22)
-$script:lblCPU.Font = New-Object System.Drawing.Font("Consolas", 10)
+$script:lblCPU.Location = New-Object System.Drawing.Point(10, 32)
+$script:lblCPU.Size = New-Object System.Drawing.Size(250, 18)
+$script:lblCPU.Font = New-Object System.Drawing.Font("Consolas", 9)
 
 $script:lblRAM = New-Object System.Windows.Forms.Label
 $script:lblRAM.Text = "$($script:StatusPending) Memory: --"
-$script:lblRAM.Location = New-Object System.Drawing.Point(20, 75)
-$script:lblRAM.Size = New-Object System.Drawing.Size(300, 22)
-$script:lblRAM.Font = New-Object System.Drawing.Font("Consolas", 10)
+$script:lblRAM.Location = New-Object System.Drawing.Point(10, 52)
+$script:lblRAM.Size = New-Object System.Drawing.Size(250, 18)
+$script:lblRAM.Font = New-Object System.Drawing.Font("Consolas", 9)
 
 $script:lblDisk = New-Object System.Windows.Forms.Label
 $script:lblDisk.Text = "$($script:StatusPending) Disk C: --"
-$script:lblDisk.Location = New-Object System.Drawing.Point(20, 100)
-$script:lblDisk.Size = New-Object System.Drawing.Size(300, 22)
-$script:lblDisk.Font = New-Object System.Drawing.Font("Consolas", 10)
+$script:lblDisk.Location = New-Object System.Drawing.Point(10, 72)
+$script:lblDisk.Size = New-Object System.Drawing.Size(250, 18)
+$script:lblDisk.Font = New-Object System.Drawing.Font("Consolas", 9)
 
 $script:lblUptime = New-Object System.Windows.Forms.Label
 $script:lblUptime.Text = "$($script:StatusPending) Uptime: --"
-$script:lblUptime.Location = New-Object System.Drawing.Point(20, 125)
-$script:lblUptime.Size = New-Object System.Drawing.Size(300, 22)
-$script:lblUptime.Font = New-Object System.Drawing.Font("Consolas", 10)
+$script:lblUptime.Location = New-Object System.Drawing.Point(10, 92)
+$script:lblUptime.Size = New-Object System.Drawing.Size(250, 18)
+$script:lblUptime.Font = New-Object System.Drawing.Font("Consolas", 9)
 
 $script:lblUpdates = New-Object System.Windows.Forms.Label
 $script:lblUpdates.Text = "$($script:StatusPending) Updates: --"
-$script:lblUpdates.Location = New-Object System.Drawing.Point(20, 150)
-$script:lblUpdates.Size = New-Object System.Drawing.Size(300, 22)
-$script:lblUpdates.Font = New-Object System.Drawing.Font("Consolas", 10)
+$script:lblUpdates.Location = New-Object System.Drawing.Point(10, 112)
+$script:lblUpdates.Size = New-Object System.Drawing.Size(250, 18)
+$script:lblUpdates.Font = New-Object System.Drawing.Font("Consolas", 9)
 
 $script:lblServices = New-Object System.Windows.Forms.Label
 $script:lblServices.Text = "$($script:StatusPending) Services: --"
-$script:lblServices.Location = New-Object System.Drawing.Point(20, 175)
-$script:lblServices.Size = New-Object System.Drawing.Size(300, 22)
-$script:lblServices.Font = New-Object System.Drawing.Font("Consolas", 10)
+$script:lblServices.Location = New-Object System.Drawing.Point(10, 132)
+$script:lblServices.Size = New-Object System.Drawing.Size(250, 18)
+$script:lblServices.Font = New-Object System.Drawing.Font("Consolas", 9)
 
 $script:lblNinjaStatus = New-Object System.Windows.Forms.Label
 $script:lblNinjaStatus.Text = "$($script:StatusPending) NinjaOne: --"
-$script:lblNinjaStatus.Location = New-Object System.Drawing.Point(20, 200)
-$script:lblNinjaStatus.Size = New-Object System.Drawing.Size(300, 22)
-$script:lblNinjaStatus.Font = New-Object System.Drawing.Font("Consolas", 10)
+$script:lblNinjaStatus.Location = New-Object System.Drawing.Point(10, 152)
+$script:lblNinjaStatus.Size = New-Object System.Drawing.Size(250, 18)
+$script:lblNinjaStatus.Font = New-Object System.Drawing.Font("Consolas", 9)
 
 # Right side - System Info
 $lblInfoTitle = New-Object System.Windows.Forms.Label
 $lblInfoTitle.Text = "SYSTEM INFO"
-$lblInfoTitle.Location = New-Object System.Drawing.Point(350, 15)
+$lblInfoTitle.Location = New-Object System.Drawing.Point(270, 8)
 $lblInfoTitle.AutoSize = $true
-$lblInfoTitle.Font = New-Object System.Drawing.Font("Segoe UI", 11, [System.Drawing.FontStyle]::Bold)
+$lblInfoTitle.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
 $lblInfoTitle.ForeColor = $script:Theme.Dim
 
 $script:lblSysInfo = New-Object System.Windows.Forms.Label
-$script:lblSysInfo.Text = "Click Refresh to load system info..."
-$script:lblSysInfo.Location = New-Object System.Drawing.Point(350, 50)
-$script:lblSysInfo.Size = New-Object System.Drawing.Size(380, 180)
-$script:lblSysInfo.Font = New-Object System.Drawing.Font("Consolas", 9)
+$script:lblSysInfo.Text = "Click Refresh to load..."
+$script:lblSysInfo.Location = New-Object System.Drawing.Point(270, 32)
+$script:lblSysInfo.Size = New-Object System.Drawing.Size(300, 140)
+$script:lblSysInfo.Font = New-Object System.Drawing.Font("Consolas", 8)
 $script:lblSysInfo.Anchor = "Top, Left, Right"
 
 # Refresh Button
 $btnRefresh = New-Object System.Windows.Forms.Button
 $btnRefresh.Text = "Refresh Status"
-$btnRefresh.Location = New-Object System.Drawing.Point(20, 240)
-$btnRefresh.Size = New-Object System.Drawing.Size(150, 35)
+$btnRefresh.Location = New-Object System.Drawing.Point(10, 180)
+$btnRefresh.Size = New-Object System.Drawing.Size(120, 28)
 $btnRefresh.FlatStyle = "Flat"
 $btnRefresh.BackColor = $script:Theme.Accent
 $btnRefresh.ForeColor = "White"
@@ -428,9 +430,9 @@ $pageQuick.AutoScroll = $true
 
 $lblQuickTitle = New-Object System.Windows.Forms.Label
 $lblQuickTitle.Text = "QUICK FIXES"
-$lblQuickTitle.Location = New-Object System.Drawing.Point(20, 15)
+$lblQuickTitle.Location = New-Object System.Drawing.Point(10, 8)
 $lblQuickTitle.AutoSize = $true
-$lblQuickTitle.Font = New-Object System.Drawing.Font("Segoe UI", 11, [System.Drawing.FontStyle]::Bold)
+$lblQuickTitle.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
 $lblQuickTitle.ForeColor = $script:Theme.Dim
 
 $pageQuick.Controls.Add($lblQuickTitle)
@@ -447,16 +449,17 @@ $fixes = @(
     @{Name = "Restart Explorer"; Cmd = { Stop-Process -Name explorer -Force; Start-Process explorer; "Done!" }}
 )
 
-$fixY = 50; $fixX = 20; $fixCol = 0
+$fixY = 32; $fixX = 10; $fixCol = 0
 foreach ($fix in $fixes) {
     $btn = New-Object System.Windows.Forms.Button
     $btn.Text = $fix.Name
     $btn.Location = New-Object System.Drawing.Point($fixX, $fixY)
-    $btn.Size = New-Object System.Drawing.Size(160, 40)
+    $btn.Size = New-Object System.Drawing.Size(130, 32)
     $btn.FlatStyle = "Flat"
     $btn.BackColor = $script:Theme.Card
     $btn.ForeColor = $script:Theme.Text
     $btn.FlatAppearance.BorderSize = 0
+    $btn.Font = New-Object System.Drawing.Font("Segoe UI", 8)
     $btn.Tag = $fix.Cmd
     $btn.Add_Click({
         Log "Running: $($this.Text)..."
@@ -469,8 +472,8 @@ foreach ($fix in $fixes) {
     $pageQuick.Controls.Add($btn)
     
     $fixCol++
-    if ($fixCol -ge 4) { $fixCol = 0; $fixX = 20; $fixY += 50 }
-    else { $fixX += 170 }
+    if ($fixCol -ge 4) { $fixCol = 0; $fixX = 10; $fixY += 38 }
+    else { $fixX += 138 }
 }
 
 $pages["Quick Fix"] = $pageQuick
@@ -482,20 +485,20 @@ $pageDiag.BackColor = $script:Theme.Bg
 
 $lblDiagTitle = New-Object System.Windows.Forms.Label
 $lblDiagTitle.Text = "DIAGNOSTICS"
-$lblDiagTitle.Location = New-Object System.Drawing.Point(20, 15)
+$lblDiagTitle.Location = New-Object System.Drawing.Point(10, 8)
 $lblDiagTitle.AutoSize = $true
-$lblDiagTitle.Font = New-Object System.Drawing.Font("Segoe UI", 11, [System.Drawing.FontStyle]::Bold)
+$lblDiagTitle.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
 $lblDiagTitle.ForeColor = $script:Theme.Dim
 
 $txtDiag = New-Object System.Windows.Forms.TextBox
 $txtDiag.Multiline = $true
 $txtDiag.ScrollBars = "Both"
 $txtDiag.ReadOnly = $true
-$txtDiag.Location = New-Object System.Drawing.Point(20, 50)
-$txtDiag.Size = New-Object System.Drawing.Size(500, 350)
+$txtDiag.Location = New-Object System.Drawing.Point(10, 30)
+$txtDiag.Size = New-Object System.Drawing.Size(400, 320)
 $txtDiag.BackColor = $script:Theme.Surface
 $txtDiag.ForeColor = $script:Theme.Text
-$txtDiag.Font = New-Object System.Drawing.Font("Consolas", 9)
+$txtDiag.Font = New-Object System.Drawing.Font("Consolas", 8)
 $txtDiag.Anchor = "Top, Left, Right, Bottom"
 
 $diagBtns = @(
@@ -520,21 +523,22 @@ $diagBtns = @(
     @{Name = "Startup"; Cmd = { Get-CimInstance Win32_StartupCommand | Format-Table Name, Command, Location -Wrap | Out-String }}
 )
 
-$btnY = 50
+$btnY = 30
 foreach ($diag in $diagBtns) {
     $btn = New-Object System.Windows.Forms.Button
     $btn.Text = $diag.Name
-    $btn.Location = New-Object System.Drawing.Point(540, $btnY)
-    $btn.Size = New-Object System.Drawing.Size(120, 32)
+    $btn.Location = New-Object System.Drawing.Point(420, $btnY)
+    $btn.Size = New-Object System.Drawing.Size(100, 26)
     $btn.FlatStyle = "Flat"
     $btn.BackColor = $script:Theme.Card
     $btn.ForeColor = $script:Theme.Text
     $btn.FlatAppearance.BorderSize = 0
+    $btn.Font = New-Object System.Drawing.Font("Segoe UI", 8)
     $btn.Anchor = "Top, Right"
     $btn.Tag = $diag.Cmd
     $btn.Add_Click({ Log "Running: $($this.Text)..."; $txtDiag.Text = & $this.Tag; Log "Done." })
     $pageDiag.Controls.Add($btn)
-    $btnY += 40
+    $btnY += 30
 }
 
 $pageDiag.Controls.AddRange(@($lblDiagTitle, $txtDiag))
@@ -547,20 +551,20 @@ $pageNet.BackColor = $script:Theme.Bg
 
 $lblNetTitle = New-Object System.Windows.Forms.Label
 $lblNetTitle.Text = "NETWORK TOOLS"
-$lblNetTitle.Location = New-Object System.Drawing.Point(20, 15)
+$lblNetTitle.Location = New-Object System.Drawing.Point(10, 8)
 $lblNetTitle.AutoSize = $true
-$lblNetTitle.Font = New-Object System.Drawing.Font("Segoe UI", 11, [System.Drawing.FontStyle]::Bold)
+$lblNetTitle.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
 $lblNetTitle.ForeColor = $script:Theme.Dim
 
 $txtNet = New-Object System.Windows.Forms.TextBox
 $txtNet.Multiline = $true
 $txtNet.ScrollBars = "Both"
 $txtNet.ReadOnly = $true
-$txtNet.Location = New-Object System.Drawing.Point(20, 50)
-$txtNet.Size = New-Object System.Drawing.Size(500, 350)
+$txtNet.Location = New-Object System.Drawing.Point(10, 30)
+$txtNet.Size = New-Object System.Drawing.Size(400, 320)
 $txtNet.BackColor = $script:Theme.Surface
 $txtNet.ForeColor = $script:Theme.Text
-$txtNet.Font = New-Object System.Drawing.Font("Consolas", 9)
+$txtNet.Font = New-Object System.Drawing.Font("Consolas", 8)
 $txtNet.Anchor = "Top, Left, Right, Bottom"
 
 $netBtns = @(
@@ -600,21 +604,22 @@ $netBtns = @(
     }}
 )
 
-$btnY = 50
+$btnY = 30
 foreach ($net in $netBtns) {
     $btn = New-Object System.Windows.Forms.Button
     $btn.Text = $net.Name
-    $btn.Location = New-Object System.Drawing.Point(540, $btnY)
-    $btn.Size = New-Object System.Drawing.Size(120, 32)
+    $btn.Location = New-Object System.Drawing.Point(420, $btnY)
+    $btn.Size = New-Object System.Drawing.Size(100, 26)
     $btn.FlatStyle = "Flat"
     $btn.BackColor = $script:Theme.Card
     $btn.ForeColor = $script:Theme.Text
     $btn.FlatAppearance.BorderSize = 0
+    $btn.Font = New-Object System.Drawing.Font("Segoe UI", 8)
     $btn.Anchor = "Top, Right"
     $btn.Tag = $net.Cmd
     $btn.Add_Click({ Log "Running: $($this.Text)..."; $txtNet.Text = & $this.Tag; Log "Done." })
     $pageNet.Controls.Add($btn)
-    $btnY += 40
+    $btnY += 30
 }
 
 $pageNet.Controls.AddRange(@($lblNetTitle, $txtNet))
@@ -624,64 +629,68 @@ $pages["Network"] = $pageNet
 $pageNinja = New-Object System.Windows.Forms.Panel
 $pageNinja.Dock = "Fill"
 $pageNinja.BackColor = $script:Theme.Bg
+$pageNinja.AutoScroll = $true
 
 $lblNinjaTitle = New-Object System.Windows.Forms.Label
 $lblNinjaTitle.Text = "NINJAONE RMM"
-$lblNinjaTitle.Location = New-Object System.Drawing.Point(20, 15)
+$lblNinjaTitle.Location = New-Object System.Drawing.Point(10, 8)
 $lblNinjaTitle.AutoSize = $true
-$lblNinjaTitle.Font = New-Object System.Drawing.Font("Segoe UI", 11, [System.Drawing.FontStyle]::Bold)
+$lblNinjaTitle.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
 $lblNinjaTitle.ForeColor = $script:Theme.Dim
 
 $savedSettings = Get-NinjaSettings
 
 # Connection Panel
 $panelConn = New-Object System.Windows.Forms.Panel
-$panelConn.Location = New-Object System.Drawing.Point(20, 45)
-$panelConn.Size = New-Object System.Drawing.Size(320, 180)
+$panelConn.Location = New-Object System.Drawing.Point(10, 30)
+$panelConn.Size = New-Object System.Drawing.Size(250, 150)
 $panelConn.BackColor = $script:Theme.Card
 
 $lblUrl = New-Object System.Windows.Forms.Label
-$lblUrl.Text = "Instance URL:"
-$lblUrl.Location = New-Object System.Drawing.Point(10, 10)
+$lblUrl.Text = "URL:"
+$lblUrl.Location = New-Object System.Drawing.Point(5, 5)
 $lblUrl.AutoSize = $true
+$lblUrl.Font = New-Object System.Drawing.Font("Segoe UI", 8)
 
 $txtUrl = New-Object System.Windows.Forms.TextBox
-$txtUrl.Location = New-Object System.Drawing.Point(10, 28)
-$txtUrl.Size = New-Object System.Drawing.Size(300, 25)
+$txtUrl.Location = New-Object System.Drawing.Point(5, 20)
+$txtUrl.Size = New-Object System.Drawing.Size(240, 22)
 $txtUrl.Text = if ($savedSettings.Url) { $savedSettings.Url } else { "app.ninjarmm.com" }
 
 $lblCid = New-Object System.Windows.Forms.Label
 $lblCid.Text = "Client ID:"
-$lblCid.Location = New-Object System.Drawing.Point(10, 55)
+$lblCid.Location = New-Object System.Drawing.Point(5, 44)
 $lblCid.AutoSize = $true
+$lblCid.Font = New-Object System.Drawing.Font("Segoe UI", 8)
 
 $txtCid = New-Object System.Windows.Forms.TextBox
-$txtCid.Location = New-Object System.Drawing.Point(10, 73)
-$txtCid.Size = New-Object System.Drawing.Size(300, 25)
+$txtCid.Location = New-Object System.Drawing.Point(5, 59)
+$txtCid.Size = New-Object System.Drawing.Size(240, 22)
 $txtCid.Text = $savedSettings.ClientId
 
 $lblSec = New-Object System.Windows.Forms.Label
-$lblSec.Text = "Client Secret:"
-$lblSec.Location = New-Object System.Drawing.Point(10, 100)
+$lblSec.Text = "Secret:"
+$lblSec.Location = New-Object System.Drawing.Point(5, 83)
 $lblSec.AutoSize = $true
+$lblSec.Font = New-Object System.Drawing.Font("Segoe UI", 8)
 
 $txtSec = New-Object System.Windows.Forms.TextBox
-$txtSec.Location = New-Object System.Drawing.Point(10, 118)
-$txtSec.Size = New-Object System.Drawing.Size(300, 25)
+$txtSec.Location = New-Object System.Drawing.Point(5, 98)
+$txtSec.Size = New-Object System.Drawing.Size(240, 22)
 $txtSec.UseSystemPasswordChar = $true
 $txtSec.Text = $savedSettings.ClientSecret
 
 $lblNinjaConn = New-Object System.Windows.Forms.Label
 $lblNinjaConn.Text = "$($script:StatusPending) Not connected"
-$lblNinjaConn.Location = New-Object System.Drawing.Point(120, 150)
+$lblNinjaConn.Location = New-Object System.Drawing.Point(90, 125)
 $lblNinjaConn.AutoSize = $true
-$lblNinjaConn.Font = New-Object System.Drawing.Font("Consolas", 9)
+$lblNinjaConn.Font = New-Object System.Drawing.Font("Consolas", 8)
 $lblNinjaConn.ForeColor = $script:Theme.Dim
 
 $btnConnect = New-Object System.Windows.Forms.Button
 $btnConnect.Text = "Connect"
-$btnConnect.Location = New-Object System.Drawing.Point(10, 145)
-$btnConnect.Size = New-Object System.Drawing.Size(100, 28)
+$btnConnect.Location = New-Object System.Drawing.Point(5, 122)
+$btnConnect.Size = New-Object System.Drawing.Size(80, 24)
 $btnConnect.FlatStyle = "Flat"
 $btnConnect.BackColor = $script:Theme.Accent
 $btnConnect.ForeColor = "White"
@@ -694,13 +703,13 @@ $txtNinjaData = New-Object System.Windows.Forms.TextBox
 $txtNinjaData.Multiline = $true
 $txtNinjaData.ScrollBars = "Both"
 $txtNinjaData.ReadOnly = $true
-$txtNinjaData.Location = New-Object System.Drawing.Point(360, 45)
-$txtNinjaData.Size = New-Object System.Drawing.Size(400, 380)
+$txtNinjaData.Location = New-Object System.Drawing.Point(270, 30)
+$txtNinjaData.Size = New-Object System.Drawing.Size(350, 340)
 $txtNinjaData.BackColor = $script:Theme.Surface
 $txtNinjaData.ForeColor = $script:Theme.Text
-$txtNinjaData.Font = New-Object System.Drawing.Font("Consolas", 8)
+$txtNinjaData.Font = New-Object System.Drawing.Font("Consolas", 7.5)
 $txtNinjaData.Anchor = "Top, Left, Right, Bottom"
-$txtNinjaData.Text = "Connect to NinjaOne and click 'Fetch Device Data' to load all available fields."
+$txtNinjaData.Text = "Connect to NinjaOne and click 'Fetch Device' to load data."
 
 # API Functions
 function Invoke-NinjaAPI {
@@ -749,13 +758,14 @@ function Get-NinjaDeviceId {
 
 # Fetch All Data Button
 $btnFetchData = New-Object System.Windows.Forms.Button
-$btnFetchData.Text = "Fetch Device Data"
-$btnFetchData.Location = New-Object System.Drawing.Point(20, 235)
-$btnFetchData.Size = New-Object System.Drawing.Size(150, 30)
+$btnFetchData.Text = "Fetch Device"
+$btnFetchData.Location = New-Object System.Drawing.Point(10, 185)
+$btnFetchData.Size = New-Object System.Drawing.Size(90, 26)
 $btnFetchData.FlatStyle = "Flat"
 $btnFetchData.BackColor = $script:Theme.Card
 $btnFetchData.ForeColor = $script:Theme.Text
 $btnFetchData.FlatAppearance.BorderSize = 0
+$btnFetchData.Font = New-Object System.Drawing.Font("Segoe UI", 8)
 $btnFetchData.Add_Click({
     if (-not $global:NinjaToken) {
         [System.Windows.Forms.MessageBox]::Show("Please connect to NinjaOne first.", "Not Connected", "OK", "Warning")
@@ -770,7 +780,7 @@ $btnFetchData.Add_Click({
     $deviceId = Get-NinjaDeviceId
     if (-not $deviceId) {
         $txtNinjaData.Text = "ERROR: Could not find this device in NinjaOne.`r`n`r`nMake sure the Ninja agent is installed on this machine."
-        $this.Text = "Fetch Device Data"
+        $this.Text = "Fetch Device"
         $this.Enabled = $true
         return
     }
@@ -1082,20 +1092,21 @@ $btnFetchData.Add_Click({
     $output += "========================================"
     
     $txtNinjaData.Text = $output
-    $this.Text = "Fetch Device Data"
+    $this.Text = "Fetch Device"
     $this.Enabled = $true
     Log "NinjaOne data fetch complete"
 })
 
 # Export Button
 $btnExport = New-Object System.Windows.Forms.Button
-$btnExport.Text = "Export to File"
-$btnExport.Location = New-Object System.Drawing.Point(180, 235)
-$btnExport.Size = New-Object System.Drawing.Size(120, 30)
+$btnExport.Text = "Export"
+$btnExport.Location = New-Object System.Drawing.Point(105, 185)
+$btnExport.Size = New-Object System.Drawing.Size(70, 26)
 $btnExport.FlatStyle = "Flat"
 $btnExport.BackColor = $script:Theme.Card
 $btnExport.ForeColor = $script:Theme.Text
 $btnExport.FlatAppearance.BorderSize = 0
+$btnExport.Font = New-Object System.Drawing.Font("Segoe UI", 8)
 $btnExport.Add_Click({
     if ($txtNinjaData.Text.Length -lt 100) {
         [System.Windows.Forms.MessageBox]::Show("No data to export. Fetch device data first.", "No Data", "OK", "Warning")
@@ -1112,30 +1123,31 @@ $btnExport.Add_Click({
 
 # Quick API endpoints
 $lblQuickAPI = New-Object System.Windows.Forms.Label
-$lblQuickAPI.Text = "Quick API Queries:"
-$lblQuickAPI.Location = New-Object System.Drawing.Point(20, 275)
+$lblQuickAPI.Text = "Quick API:"
+$lblQuickAPI.Location = New-Object System.Drawing.Point(10, 215)
 $lblQuickAPI.AutoSize = $true
 $lblQuickAPI.ForeColor = $script:Theme.Dim
+$lblQuickAPI.Font = New-Object System.Drawing.Font("Segoe UI", 8)
 
 $quickAPIs = @(
     @{Name = "Organizations"; Endpoint = "/organizations"}
     @{Name = "All Devices"; Endpoint = "/devices"}
-    @{Name = "Device Groups"; Endpoint = "/groups"}
+    @{Name = "Groups"; Endpoint = "/groups"}
     @{Name = "Policies"; Endpoint = "/policies"}
     @{Name = "Users"; Endpoint = "/users"}
 )
 
-$apiY = 295
+$apiY = 232
 foreach ($api in $quickAPIs) {
     $btn = New-Object System.Windows.Forms.Button
     $btn.Text = $api.Name
-    $btn.Location = New-Object System.Drawing.Point(20, $apiY)
-    $btn.Size = New-Object System.Drawing.Size(130, 25)
+    $btn.Location = New-Object System.Drawing.Point(10, $apiY)
+    $btn.Size = New-Object System.Drawing.Size(100, 22)
     $btn.FlatStyle = "Flat"
     $btn.BackColor = $script:Theme.Surface
     $btn.ForeColor = $script:Theme.Text
     $btn.FlatAppearance.BorderSize = 0
-    $btn.Font = New-Object System.Drawing.Font("Segoe UI", 8)
+    $btn.Font = New-Object System.Drawing.Font("Segoe UI", 7.5)
     $btn.Tag = $api.Endpoint
     $btn.Add_Click({
         if (-not $global:NinjaToken) {
@@ -1152,7 +1164,7 @@ foreach ($api in $quickAPIs) {
         }
     })
     $pageNinja.Controls.Add($btn)
-    $apiY += 30
+    $apiY += 24
 }
 
 # Connect button handler
@@ -1181,20 +1193,21 @@ $pageAudit.BackColor = $script:Theme.Bg
 
 $lblAuditTitle = New-Object System.Windows.Forms.Label
 $lblAuditTitle.Text = "SECURITY AUDIT"
-$lblAuditTitle.Location = New-Object System.Drawing.Point(20, 15)
+$lblAuditTitle.Location = New-Object System.Drawing.Point(10, 8)
 $lblAuditTitle.AutoSize = $true
-$lblAuditTitle.Font = New-Object System.Drawing.Font("Segoe UI", 11, [System.Drawing.FontStyle]::Bold)
+$lblAuditTitle.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
 $lblAuditTitle.ForeColor = $script:Theme.Dim
 
 $lblAuditDesc = New-Object System.Windows.Forms.Label
-$lblAuditDesc.Text = "Generate a comprehensive security audit report for this system."
-$lblAuditDesc.Location = New-Object System.Drawing.Point(20, 50)
+$lblAuditDesc.Text = "Generate a comprehensive security audit report."
+$lblAuditDesc.Location = New-Object System.Drawing.Point(10, 32)
 $lblAuditDesc.AutoSize = $true
+$lblAuditDesc.Font = New-Object System.Drawing.Font("Segoe UI", 8)
 
 $btnAudit = New-Object System.Windows.Forms.Button
 $btnAudit.Text = "Generate Audit Report"
-$btnAudit.Location = New-Object System.Drawing.Point(20, 90)
-$btnAudit.Size = New-Object System.Drawing.Size(200, 40)
+$btnAudit.Location = New-Object System.Drawing.Point(10, 60)
+$btnAudit.Size = New-Object System.Drawing.Size(150, 32)
 $btnAudit.FlatStyle = "Flat"
 $btnAudit.BackColor = $script:Theme.Accent
 $btnAudit.ForeColor = "White"
