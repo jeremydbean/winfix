@@ -1364,22 +1364,10 @@ $lblAuditTitle.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Draw
 $lblAuditTitle.ForeColor = $script:Theme.Dim
 
 $lblAuditDesc = New-Object System.Windows.Forms.Label
-$lblAuditDesc.Text = "Generate a comprehensive security audit report for this system."
+$lblAuditDesc.Text = "Generate Polar Nite Security & Backup Audit (HTML). NinjaOne data will be included if connected."
 $lblAuditDesc.Location = New-Object System.Drawing.Point(10, 32)
-$lblAuditDesc.AutoSize = $true
+$lblAuditDesc.Size = New-Object System.Drawing.Size(600, 20)
 $lblAuditDesc.Font = New-Object System.Drawing.Font("Segoe UI", 8)
-
-$txtAudit = New-Object System.Windows.Forms.TextBox
-$txtAudit.Multiline = $true
-$txtAudit.ScrollBars = "Both"
-$txtAudit.ReadOnly = $true
-$txtAudit.Location = New-Object System.Drawing.Point(10, 100)
-$txtAudit.Size = New-Object System.Drawing.Size(600, 300)
-$txtAudit.BackColor = $script:Theme.Surface
-$txtAudit.ForeColor = $script:Theme.Text
-$txtAudit.Font = New-Object System.Drawing.Font("Consolas", 8)
-$txtAudit.Anchor = "Top, Left, Right, Bottom"
-$txtAudit.Text = "Click 'Generate Audit Report' to scan this system."
 
 $btnAudit = New-Object System.Windows.Forms.Button
 $btnAudit.Text = "Generate Audit Report"
@@ -1390,288 +1378,294 @@ $btnAudit.BackColor = $script:Theme.Accent
 $btnAudit.ForeColor = "White"
 $btnAudit.FlatAppearance.BorderSize = 0
 $btnAudit.Add_Click({
-    Log "Generating audit report..."
+    Log "Generating Polar Nite Audit..."
     $this.Enabled = $false
     $this.Text = "Scanning..."
-    $txtAudit.Text = "Running security audit...`r`n"
     [System.Windows.Forms.Application]::DoEvents()
     
-    $report = @()
-    $pass = 0; $warn = 0; $fail = 0
+    # --- Get NinjaOne Data if connected ---
+    $ninjaData = $null
+    $ninjaRAID = "Check manually or connect NinjaOne"
+    $ninjaBackupStatus = ""
+    $ninjaBackupTime = ""
+    $ninjaAV = ""
+    $ninjaPatches = ""
     
-    $report += "========================================================"
-    $report += "SECURITY AUDIT REPORT"
-    $report += "Computer: $env:COMPUTERNAME"
-    $report += "Date: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
-    $report += "========================================================"
-    $report += ""
-    
-    # --- WINDOWS UPDATE ---
-    $txtAudit.Text += "Checking Windows Update...`r`n"; [System.Windows.Forms.Application]::DoEvents()
-    $report += "=== WINDOWS UPDATE ==="
-    try {
-        $lastUpdate = Get-HotFix | Sort-Object InstalledOn -Descending | Select-Object -First 1
-        if ($lastUpdate -and $lastUpdate.InstalledOn) {
-            $daysSince = (New-TimeSpan -Start $lastUpdate.InstalledOn -End (Get-Date)).Days
-            if ($daysSince -le 30) {
-                $report += "[PASS] Last update: $($lastUpdate.InstalledOn.ToString('yyyy-MM-dd')) ($daysSince days ago)"
-                $pass++
-            } elseif ($daysSince -le 60) {
-                $report += "[WARN] Last update: $($lastUpdate.InstalledOn.ToString('yyyy-MM-dd')) ($daysSince days ago)"
-                $warn++
-            } else {
-                $report += "[FAIL] Last update: $($lastUpdate.InstalledOn.ToString('yyyy-MM-dd')) ($daysSince days ago)"
-                $fail++
-            }
-        } else {
-            $report += "[WARN] Could not determine last update date"
-            $warn++
-        }
-    } catch { $report += "[WARN] Error checking updates: $_"; $warn++ }
-    $report += ""
-    
-    # --- ANTIVIRUS ---
-    $txtAudit.Text += "Checking Antivirus...`r`n"; [System.Windows.Forms.Application]::DoEvents()
-    $report += "=== ANTIVIRUS ==="
-    try {
-        $av = Get-CimInstance -Namespace "root/SecurityCenter2" -ClassName AntiVirusProduct -EA SilentlyContinue
-        if ($av) {
-            foreach ($product in $av) {
-                $status = switch ($product.productState) {
-                    "262144" { "[WARN] Disabled" }
-                    "262160" { "[WARN] Out of date" }
-                    "266240" { "[PASS] Enabled & Updated" }
-                    "266256" { "[WARN] Enabled, Out of date" }
-                    "393216" { "[WARN] Disabled" }
-                    "393232" { "[WARN] Out of date" }
-                    "393472" { "[PASS] Enabled & Updated" }
-                    "397312" { "[PASS] Enabled & Updated" }
-                    "397328" { "[WARN] Enabled, Out of date" }
-                    default { "[WARN] Unknown state: $($product.productState)" }
+    if ($global:NinjaToken) {
+        try {
+            $deviceId = Get-NinjaDeviceId
+            if ($deviceId) {
+                $ninjaData = Invoke-NinjaAPI "/device/$deviceId"
+                $ninjaDisks = Invoke-NinjaAPI "/device/$deviceId/disks"
+                $ninjaBackup = Invoke-NinjaAPI "/device/$deviceId/backup"
+                $ninjaAVData = Invoke-NinjaAPI "/device/$deviceId/antivirus-status"
+                $ninjaPatchData = Invoke-NinjaAPI "/device/$deviceId/os-patches"
+                
+                # RAID from Ninja
+                if ($ninjaDisks) {
+                    $raidInfo = $ninjaDisks | ForEach-Object { "$($_.name): $($_.smartStatus)" }
+                    $ninjaRAID = $raidInfo -join "; "
                 }
-                $report += "$status - $($product.displayName)"
-                if ($status -match "PASS") { $pass++ } elseif ($status -match "FAIL") { $fail++ } else { $warn++ }
+                
+                # Backup from Ninja
+                if ($ninjaBackup) {
+                    $ninjaBackupStatus = $ninjaBackup.lastBackupStatus
+                    $ninjaBackupTime = $ninjaBackup.lastBackupTime
+                }
+                
+                # AV from Ninja
+                if ($ninjaAVData) {
+                    $ninjaAV = "$($ninjaAVData.productName) - RTP: $($ninjaAVData.realTimeProtection)"
+                }
+                
+                # Patches from Ninja
+                if ($ninjaPatchData) {
+                    $pending = ($ninjaPatchData | Where-Object { $_.status -ne "INSTALLED" }).Count
+                    $ninjaPatches = "Pending: $pending"
+                }
             }
-        } else {
-            $report += "[FAIL] No antivirus detected"
-            $fail++
-        }
-    } catch { $report += "[WARN] Could not query antivirus (may be server OS)"; $warn++ }
-    $report += ""
-    
-    # --- FIREWALL ---
-    $txtAudit.Text += "Checking Firewall...`r`n"; [System.Windows.Forms.Application]::DoEvents()
-    $report += "=== FIREWALL ==="
-    try {
-        $fw = Get-NetFirewallProfile -EA Stop
-        foreach ($profile in $fw) {
-            if ($profile.Enabled) {
-                $report += "[PASS] $($profile.Name) profile: Enabled"
-                $pass++
-            } else {
-                $report += "[FAIL] $($profile.Name) profile: Disabled"
-                $fail++
-            }
-        }
-    } catch { $report += "[WARN] Could not check firewall"; $warn++ }
-    $report += ""
-    
-    # --- USER ACCOUNTS ---
-    $txtAudit.Text += "Checking User Accounts...`r`n"; [System.Windows.Forms.Application]::DoEvents()
-    $report += "=== USER ACCOUNTS ==="
-    try {
-        $users = Get-LocalUser -EA Stop
-        $enabledUsers = $users | Where-Object { $_.Enabled }
-        $report += "[INFO] Total accounts: $($users.Count), Enabled: $($enabledUsers.Count)"
-        
-        # Check for Guest account
-        $guest = $users | Where-Object { $_.Name -eq "Guest" }
-        if ($guest -and $guest.Enabled) {
-            $report += "[FAIL] Guest account is ENABLED"
-            $fail++
-        } else {
-            $report += "[PASS] Guest account is disabled"
-            $pass++
-        }
-        
-        # Check for default Administrator
-        $admin = $users | Where-Object { $_.Name -eq "Administrator" }
-        if ($admin -and $admin.Enabled) {
-            $report += "[WARN] Built-in Administrator account is enabled"
-            $warn++
-        } else {
-            $report += "[PASS] Built-in Administrator is disabled"
-            $pass++
-        }
-        
-        # Check password expiry
-        $neverExpire = $enabledUsers | Where-Object { $_.PasswordNeverExpires }
-        if ($neverExpire.Count -gt 0) {
-            $report += "[WARN] $($neverExpire.Count) account(s) with non-expiring passwords: $($neverExpire.Name -join ', ')"
-            $warn++
-        }
-    } catch { $report += "[WARN] Could not enumerate users"; $warn++ }
-    $report += ""
-    
-    # --- ADMIN GROUP ---
-    $txtAudit.Text += "Checking Admin Group...`r`n"; [System.Windows.Forms.Application]::DoEvents()
-    $report += "=== LOCAL ADMINISTRATORS ==="
-    try {
-        $admins = Get-LocalGroupMember -Group "Administrators" -EA Stop
-        $report += "[INFO] $($admins.Count) member(s) in Administrators group:"
-        foreach ($member in $admins) {
-            $report += "  - $($member.Name) ($($member.ObjectClass))"
-        }
-        if ($admins.Count -gt 5) {
-            $report += "[WARN] High number of local admins"
-            $warn++
-        } else {
-            $pass++
-        }
-    } catch { $report += "[WARN] Could not enumerate Administrators group"; $warn++ }
-    $report += ""
-    
-    # --- BITLOCKER ---
-    $txtAudit.Text += "Checking BitLocker...`r`n"; [System.Windows.Forms.Application]::DoEvents()
-    $report += "=== DISK ENCRYPTION ==="
-    try {
-        $bl = Get-BitLockerVolume -EA Stop | Where-Object { $_.MountPoint -eq "C:" }
-        if ($bl) {
-            if ($bl.ProtectionStatus -eq "On") {
-                $report += "[PASS] BitLocker enabled on C: ($($bl.EncryptionPercentage)% encrypted)"
-                $pass++
-            } else {
-                $report += "[WARN] BitLocker present but protection is OFF"
-                $warn++
-            }
-        } else {
-            $report += "[WARN] BitLocker not configured on C:"
-            $warn++
-        }
-    } catch { $report += "[INFO] BitLocker not available or not configured"; }
-    $report += ""
-    
-    # --- RDP ---
-    $txtAudit.Text += "Checking Remote Desktop...`r`n"; [System.Windows.Forms.Application]::DoEvents()
-    $report += "=== REMOTE DESKTOP ==="
-    try {
-        $rdp = Get-ItemProperty "HKLM:\System\CurrentControlSet\Control\Terminal Server" -Name fDenyTSConnections -EA Stop
-        if ($rdp.fDenyTSConnections -eq 1) {
-            $report += "[PASS] Remote Desktop is DISABLED"
-            $pass++
-        } else {
-            $report += "[WARN] Remote Desktop is ENABLED"
-            $warn++
-            # Check NLA
-            $nla = Get-ItemProperty "HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" -Name UserAuthentication -EA SilentlyContinue
-            if ($nla -and $nla.UserAuthentication -eq 1) {
-                $report += "[PASS] Network Level Authentication (NLA) is required"
-                $pass++
-            } else {
-                $report += "[FAIL] NLA is NOT required - security risk!"
-                $fail++
-            }
-        }
-    } catch { $report += "[WARN] Could not check RDP settings"; $warn++ }
-    $report += ""
-    
-    # --- SMBv1 ---
-    $txtAudit.Text += "Checking SMBv1...`r`n"; [System.Windows.Forms.Application]::DoEvents()
-    $report += "=== SMBv1 PROTOCOL ==="
-    try {
-        $smb1 = Get-WindowsOptionalFeature -Online -FeatureName SMB1Protocol -EA SilentlyContinue
-        if ($smb1 -and $smb1.State -eq "Enabled") {
-            $report += "[FAIL] SMBv1 is ENABLED - serious security risk!"
-            $fail++
-        } else {
-            $report += "[PASS] SMBv1 is disabled"
-            $pass++
-        }
-    } catch { $report += "[INFO] Could not check SMBv1 status"; }
-    $report += ""
-    
-    # --- SERVICES ---
-    $txtAudit.Text += "Checking risky services...`r`n"; [System.Windows.Forms.Application]::DoEvents()
-    $report += "=== RISKY SERVICES ==="
-    $riskyServices = @("RemoteRegistry", "Telnet", "SNMP")
-    foreach ($svc in $riskyServices) {
-        $service = Get-Service -Name $svc -EA SilentlyContinue
-        if ($service -and $service.Status -eq "Running") {
-            $report += "[WARN] $svc service is RUNNING"
-            $warn++
-        } elseif ($service) {
-            $report += "[PASS] $svc service is stopped"
-            $pass++
-        }
-    }
-    $report += ""
-    
-    # --- OPEN SHARES ---
-    $txtAudit.Text += "Checking network shares...`r`n"; [System.Windows.Forms.Application]::DoEvents()
-    $report += "=== NETWORK SHARES ==="
-    try {
-        $shares = Get-SmbShare -EA Stop | Where-Object { $_.Name -notmatch '^\$' -and $_.Name -ne "Users" }
-        if ($shares) {
-            $report += "[INFO] Non-default shares found:"
-            foreach ($share in $shares) {
-                $report += "  - $($share.Name) -> $($share.Path)"
-            }
-            $warn++
-        } else {
-            $report += "[PASS] No non-default shares"
-            $pass++
-        }
-    } catch { $report += "[INFO] Could not enumerate shares"; }
-    $report += ""
-    
-    # --- SUMMARY ---
-    $report += "========================================================"
-    $report += "SUMMARY"
-    $report += "========================================================"
-    $report += "[PASS] $pass checks passed"
-    $report += "[WARN] $warn warnings"
-    $report += "[FAIL] $fail critical issues"
-    $report += ""
-    $total = $pass + $warn + $fail
-    $score = if ($total -gt 0) { [math]::Round(($pass / $total) * 100) } else { 0 }
-    $report += "Security Score: $score%"
-    if ($fail -gt 0) {
-        $report += "STATUS: CRITICAL - Immediate action required!"
-    } elseif ($warn -gt 3) {
-        $report += "STATUS: NEEDS ATTENTION - Review warnings"
-    } else {
-        $report += "STATUS: GOOD"
+        } catch { Log "NinjaOne data fetch error: $_" }
     }
     
-    $txtAudit.Text = $report -join "`r`n"
+    # --- Gather Local Data ---
+    $CompInfo = Get-CimInstance Win32_ComputerSystem -EA SilentlyContinue
+    $OSInfo = Get-CimInstance Win32_OperatingSystem -EA SilentlyContinue
+    $AdminGroup = Get-LocalGroupMember -Group "Administrators" -EA SilentlyContinue
+    
+    $Uptime = if ($OSInfo) { (Get-Date) - $OSInfo.LastBootUpTime; "{0}D {1}H" -f $_.Days, $_.Hours } else { "Unknown" }
+    $IsVM = $CompInfo.Model -match "Virtual|VMware"
+    
+    # EOS Check
+    $EOSWarning = ""
+    if ($OSInfo.Caption -match "Server 2003|Server 2008|Server 2012|Windows 7|Windows 8|SBS 2011") {
+        $EOSWarning = "<span class='alert'>[END OF SUPPORT - SECURITY RISK]</span>"
+    }
+    
+    # Roles
+    $DetectedRoles = "Workstation"
+    if (Get-Command Get-WindowsFeature -EA SilentlyContinue) {
+        try { $DetectedRoles = (Get-WindowsFeature | Where-Object Installed).Name -join ", " } catch {}
+    }
+    
+    # Backup Detection
+    $BackupKeywords = "*Veeam*","*Acronis*","*Datto*","*Ninja*","*Carbonite*"
+    $DetectedBackup = (Get-Service | Where-Object { $d=$_.DisplayName; ($BackupKeywords | Where-Object { $d -like $_ }) } | Select-Object -First 1).DisplayName
+    if (-not $DetectedBackup) { $DetectedBackup = "Not Detected" }
+    
+    # Updates
+    $LastHotFix = Get-HotFix -EA SilentlyContinue | Sort-Object InstalledOn -Descending | Select-Object -First 1
+    $LastUpdateDate = if ($LastHotFix.InstalledOn) { $LastHotFix.InstalledOn.ToString('yyyy-MM-dd') } else { "Unknown" }
+    $PendingReboot = (Test-Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending") -or 
+                     (Test-Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\RebootRequired")
+    
+    # AV
+    $AV = Get-CimInstance -Namespace root/SecurityCenter2 -ClassName AntivirusProduct -EA SilentlyContinue
+    $AVName = if ($AV) { $AV.displayName } else { "None Detected" }
+    $Defender = Get-MpComputerStatus -EA SilentlyContinue
+    $RTPEnabled = if ($Defender.RealTimeProtectionEnabled) { "Yes" } else { "No" }
+    $LastScan = if ($Defender.QuickScanEndTime) { $Defender.QuickScanEndTime.ToString("yyyy-MM-dd") } else { "Unknown" }
+    
+    # BitLocker
+    $BitLocker = Get-BitLockerVolume -EA SilentlyContinue | Where-Object MountPoint -eq "C:"
+    $BitLockerStatus = if ($BitLocker.ProtectionStatus -eq "On") { "Encrypted" } else { "Not Encrypted" }
+    
+    # Firewall
+    $FWProfiles = (Get-NetFirewallProfile -EA SilentlyContinue | Where-Object Enabled).Name -join ", "
+    if (-not $FWProfiles) { $FWProfiles = "DISABLED" }
+    
+    # RDP
+    $RDP = Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server" -Name fDenyTSConnections -EA SilentlyContinue
+    $RDPStatus = if ($RDP.fDenyTSConnections -eq 1) { "Disabled" } else { "Enabled" }
+    
+    # Disk Health
+    $Disks = Get-PhysicalDisk -EA SilentlyContinue | Select-Object FriendlyName, MediaType, HealthStatus
+    $DiskHealth = if ($Disks) { ($Disks | ForEach-Object { "$($_.MediaType): $($_.HealthStatus)" }) -join "; " } else { "Unknown" }
+    
+    # Storage Warning
+    $CDrive = Get-CimInstance Win32_LogicalDisk -Filter "DeviceID='C:'" -EA SilentlyContinue
+    $FreePct = if ($CDrive) { [math]::Round(($CDrive.FreeSpace / $CDrive.Size) * 100, 1) } else { 0 }
+    $StorageWarn = if ($FreePct -lt 15) { "LOW DISK: $FreePct% Free" } else { "" }
+    
+    # Local Users
+    $LocalUsers = (Get-LocalUser -EA SilentlyContinue).Name -join ", "
+    $AdminList = if ($AdminGroup) { ($AdminGroup.Name | ForEach-Object { "<li>$_</li>" }) -join "" } else { "<li>Unknown</li>" }
+    
+    # Password Policy
+    $PassComplex = "Unknown"
+    try {
+        $secFile = "$env:TEMP\secpol.cfg"
+        secedit /export /cfg $secFile /quiet 2>$null
+        $secPol = Get-Content $secFile -EA SilentlyContinue
+        if ($secPol -match "PasswordComplexity\s*=\s*1") { $PassComplex = "Yes" }
+        elseif ($secPol -match "PasswordComplexity\s*=\s*0") { $PassComplex = "No" }
+        Remove-Item $secFile -EA SilentlyContinue
+    } catch {}
+    
+    # Open Ports
+    $OpenPorts = (Get-NetTCPConnection -State Listen -EA SilentlyContinue | Select-Object -ExpandProperty LocalPort -Unique | Sort-Object {[int]$_}) -join ", "
+    
+    # Event Log Errors
+    $CritEvents = Get-WinEvent -FilterHashtable @{LogName='System','Application'; Level=1,2; StartTime=(Get-Date).AddDays(-30)} -MaxEvents 10 -EA SilentlyContinue
+    $EventsHTML = if ($CritEvents) {
+        "<table><tr><th>Source</th><th>ID</th><th>Message</th></tr>" +
+        ($CritEvents | ForEach-Object { "<tr><td>$($_.ProviderName)</td><td>$($_.Id)</td><td>$($_.Message.Substring(0,[Math]::Min(80,$_.Message.Length)))...</td></tr>" }) +
+        "</table>"
+    } else { "None found in last 30 days" }
+    
+    # Override with Ninja data if available
+    if ($ninjaAV) { $AVName = $ninjaAV }
+    if ($ninjaPatches) { $LastUpdateDate += " ($ninjaPatches)" }
+    if ($ninjaBackupStatus) { $DetectedBackup += " - Last: $ninjaBackupStatus" }
+    if ($ninjaBackupTime) { $DetectedBackup += " @ $ninjaBackupTime" }
+
+    # --- Generate HTML ---
+    $html = @"
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Security Audit: $env:COMPUTERNAME</title>
+    <style>
+        :root { --accent: #0056b3; --good: #27ae60; --warn: #f39c12; --alert: #e74c3c; }
+        body { font-family: 'Segoe UI', sans-serif; background: #f4f7f6; color: #2c3e50; padding: 20px; }
+        h1 { color: var(--accent); border-bottom: 3px solid var(--accent); padding-bottom: 10px; }
+        h2 { background: #e8f4f8; color: var(--accent); padding: 10px; border-top: 3px solid var(--accent); margin-top: 30px; }
+        h3 { color: var(--accent); border-left: 4px solid var(--accent); padding-left: 10px; }
+        table { border-collapse: collapse; width: 100%; background: white; box-shadow: 0 2px 5px rgba(0,0,0,0.1); margin-bottom: 15px; }
+        th, td { padding: 12px; border-bottom: 1px solid #ecf0f1; text-align: left; }
+        th { background: #ecf0f1; width: 40%; font-weight: bold; }
+        .alert { color: var(--alert); font-weight: bold; }
+        .good { color: var(--good); font-weight: bold; }
+        .warn { color: var(--warn); font-weight: bold; }
+        .input { border: 1px solid #bdc3c7; padding: 5px; border-radius: 4px; width: 90%; }
+        select { border: 1px solid #bdc3c7; padding: 5px; border-radius: 4px; }
+        .ninja-tag { background: #17a2b8; color: white; padding: 2px 6px; border-radius: 3px; font-size: 0.8em; }
+        .copy-btn { background: var(--accent); color: white; border: none; padding: 10px 20px; border-radius: 5px; cursor: pointer; position: fixed; bottom: 30px; right: 30px; }
+    </style>
+    <script>
+        function copyReport() {
+            var clone = document.body.cloneNode(true);
+            clone.querySelectorAll('.copy-btn').forEach(b => b.remove());
+            clone.querySelectorAll('input, select, textarea').forEach(el => {
+                var val = el.tagName === 'SELECT' ? el.options[el.selectedIndex]?.text : el.value;
+                var span = document.createElement('span');
+                span.textContent = val || 'N/A';
+                span.style.fontWeight = 'bold';
+                el.parentNode.replaceChild(span, el);
+            });
+            var temp = document.createElement('div');
+            temp.innerHTML = clone.innerHTML;
+            document.body.appendChild(temp);
+            var range = document.createRange();
+            range.selectNodeContents(temp);
+            window.getSelection().removeAllRanges();
+            window.getSelection().addRange(range);
+            document.execCommand('copy');
+            document.body.removeChild(temp);
+            alert('Report copied to clipboard!');
+        }
+    </script>
+</head>
+<body>
+<h1>Server Security & Backup Audit</h1>
+<p><strong>Server:</strong> $($CompInfo.Name) | <strong>Date:</strong> $(Get-Date -Format 'yyyy-MM-dd HH:mm') | <strong>Auditor:</strong> $env:USERNAME</p>
+$(if($global:NinjaToken){"<p><span class='ninja-tag'>NinjaOne Connected</span> - RAID and backup data pulled from RMM</p>"})
+
+<h3>Server Information</h3>
+<table>
+    <tr><th>Server Name</th><td>$($CompInfo.Name)</td></tr>
+    <tr><th>OS Version</th><td>$($OSInfo.Caption) (Build $($OSInfo.BuildNumber)) $EOSWarning</td></tr>
+    <tr><th>Location</th><td><input class='input' placeholder='e.g., Server Closet'></td></tr>
+    <tr><th>Role(s)</th><td><input class='input' value='$DetectedRoles'></td></tr>
+    <tr><th>Administrators</th><td><ul>$AdminList</ul></td></tr>
+    <tr><th>Virtual Machine</th><td>$(if($IsVM){"<span class='good'>Yes</span>"}else{"No (Physical)"})</td></tr>
+</table>
+
+<h2>1. Backup & Data Retention</h2>
+<table>
+    <tr><th>Backup Solution</th><td><input class='input' value='$DetectedBackup'></td></tr>
+    <tr><th>Backups Successful?</th><td><select><option>Select...</option><option>Yes</option><option>No</option><option>N/A</option></select></td></tr>
+    <tr><th>Last Backup</th><td><input class='input' value='$ninjaBackupTime' placeholder='Check backup console'></td></tr>
+    <tr><th>Backup Frequency</th><td><input class='input' placeholder='Hourly/Daily'></td></tr>
+    <tr><th>Encrypted at Rest?</th><td><select><option>Select...</option><option>Yes (AES-256)</option><option>No</option><option>N/A</option></select></td></tr>
+    <tr><th>Offsite/Cloud Copy?</th><td><select><option>Select...</option><option>Yes</option><option>No</option></select></td></tr>
+    <tr><th>Test Restore in 90 Days?</th><td><select><option>Select...</option><option>Yes</option><option>No</option></select></td></tr>
+</table>
+
+<h2>2. Security & Patching</h2>
+<table>
+    <tr><th>Windows Updates Current?</th><td>$(if($PendingReboot){"<span class='warn'>Reboot Pending</span>"}else{"<span class='good'>Yes</span>"}) - Last: $LastUpdateDate</td></tr>
+    <tr><th>Antivirus/EDR</th><td>$AVName</td></tr>
+    <tr><th>Real-Time Protection</th><td>$(if($RTPEnabled -eq 'Yes'){"<span class='good'>Enabled</span>"}else{"<span class='alert'>Disabled</span>"})</td></tr>
+    <tr><th>Last AV Scan</th><td>$LastScan</td></tr>
+    <tr><th>Password Complexity</th><td>$(if($PassComplex -eq 'Yes'){"<span class='good'>Enforced</span>"}else{"<span class='warn'>$PassComplex</span>"})</td></tr>
+    <tr><th>Local Users</th><td>$LocalUsers</td></tr>
+</table>
+
+<h2>3. Encryption</h2>
+<table>
+    <tr><th>BitLocker Status</th><td>$(if($BitLockerStatus -eq 'Encrypted'){"<span class='good'>$BitLockerStatus</span>"}else{"<span class='warn'>$BitLockerStatus</span>"})</td></tr>
+    <tr><th>If Not Encrypted, Reason</th><td><input class='input' value='$(if($IsVM){"Virtual Machine"})'></td></tr>
+</table>
+
+<h2>4. Firewall & Network</h2>
+<table>
+    <tr><th>Windows Firewall</th><td>$(if($FWProfiles -ne 'DISABLED'){"<span class='good'>Enabled ($FWProfiles)</span>"}else{"<span class='alert'>DISABLED</span>"})</td></tr>
+    <tr><th>Open Ports</th><td style='font-size:0.85em;'>$OpenPorts</td></tr>
+    <tr><th>RDP Status</th><td>$(if($RDPStatus -eq 'Disabled'){"<span class='good'>Disabled</span>"}else{"<span class='warn'>Enabled</span>"})</td></tr>
+    <tr><th>RDP via VPN Only?</th><td><select><option>Select...</option><option>Yes</option><option>No</option><option>N/A</option></select></td></tr>
+    <tr><th>MFA Required?</th><td><select><option>Select...</option><option>Yes</option><option>No</option><option>N/A</option></select></td></tr>
+</table>
+
+<h2>5. Hardware & RAID</h2>
+<table>
+    <tr><th>RAID Status $(if($global:NinjaToken){"<span class='ninja-tag'>Ninja</span>"})</th><td><input class='input' value='$ninjaRAID'></td></tr>
+    <tr><th>Disk Health</th><td>$DiskHealth</td></tr>
+    <tr><th>Storage Warnings</th><td>$(if($StorageWarn){"<span class='alert'>$StorageWarn</span>"}else{"<span class='good'>OK ($FreePct% free)</span>"})</td></tr>
+</table>
+
+<h2>6. Logs & Monitoring</h2>
+<table>
+    <tr><th>Critical Events (30 days)</th><td>$EventsHTML</td></tr>
+    <tr><th>Huntress/EDR Incidents?</th><td><select><option>Select...</option><option>Yes</option><option>No</option></select> <input class='input' placeholder='Details if yes' style='width:50%;'></td></tr>
+</table>
+
+<h2>7. Physical Security</h2>
+<table>
+    <tr><th>Server Location</th><td><input class='input' placeholder='Closet, rack, office'></td></tr>
+    <tr><th>Room Locked?</th><td><select><option>Select...</option><option>Yes</option><option>No</option></select></td></tr>
+    <tr><th>Environmental Risks?</th><td><input class='input' placeholder='Heat, water, etc.'></td></tr>
+</table>
+
+<h2>8. Disaster Recovery</h2>
+<table>
+    <tr><th>Recovery Method</th><td><input class='input' placeholder='Bare metal restore, cloud failover, etc.'></td></tr>
+    <tr><th>Estimated RTO</th><td><input class='input' placeholder='e.g., 4 hours'></td></tr>
+</table>
+
+<h2>9. Exceptions & Notes</h2>
+<table>
+    <tr><th>Non-Compliant Items</th><td><textarea class='input' rows='3' placeholder='List any exceptions...'></textarea></td></tr>
+    <tr><th>Additional Notes</th><td><textarea class='input' rows='3' placeholder='Other observations...'></textarea></td></tr>
+</table>
+
+<button class='copy-btn' onclick='copyReport()'>Copy Report</button>
+<p style='text-align:center; margin-top:50px; color:#95a5a6; font-size:0.8em;'>WinFix Polar Nite Audit v2.0</p>
+</body>
+</html>
+"@
+
+    # Save and open
+    $reportPath = "$env:TEMP\SecurityAudit_$env:COMPUTERNAME`_$(Get-Date -Format 'yyyyMMdd_HHmm').html"
+    $html | Out-File -FilePath $reportPath -Encoding UTF8
+    Start-Process $reportPath
+    
+    Log "Audit report saved to $reportPath"
     $this.Text = "Generate Audit Report"
     $this.Enabled = $true
-    Log "Audit complete: $pass pass, $warn warn, $fail fail"
+    [System.Windows.Forms.MessageBox]::Show("Audit report opened in browser.`n`nFile saved to:`n$reportPath", "Audit Complete", "OK", "Information")
 })
 
-$btnExportAudit = New-Object System.Windows.Forms.Button
-$btnExportAudit.Text = "Export Report"
-$btnExportAudit.Location = New-Object System.Drawing.Point(170, 60)
-$btnExportAudit.Size = New-Object System.Drawing.Size(100, 32)
-$btnExportAudit.FlatStyle = "Flat"
-$btnExportAudit.BackColor = $script:Theme.Card
-$btnExportAudit.ForeColor = $script:Theme.Text
-$btnExportAudit.FlatAppearance.BorderSize = 0
-$btnExportAudit.Add_Click({
-    if ($txtAudit.Text.Length -lt 100) {
-        [System.Windows.Forms.MessageBox]::Show("Generate a report first.", "No Report", "OK", "Warning")
-        return
-    }
-    $saveDialog = New-Object System.Windows.Forms.SaveFileDialog
-    $saveDialog.Filter = "Text Files (*.txt)|*.txt|All Files (*.*)|*.*"
-    $saveDialog.FileName = "$env:COMPUTERNAME`_SecurityAudit_$(Get-Date -Format 'yyyyMMdd').txt"
-    if ($saveDialog.ShowDialog() -eq "OK") {
-        $txtAudit.Text | Out-File -FilePath $saveDialog.FileName -Encoding UTF8
-        [System.Windows.Forms.MessageBox]::Show("Report saved to:`n$($saveDialog.FileName)", "Export Complete", "OK", "Information")
-    }
-})
-
-$pageAudit.Controls.AddRange(@($lblAuditTitle, $lblAuditDesc, $btnAudit, $btnExportAudit, $txtAudit))
+$pageAudit.Controls.AddRange(@($lblAuditTitle, $lblAuditDesc, $btnAudit))
 $pages["Audit"] = $pageAudit
 
 # --- Navigation ---
