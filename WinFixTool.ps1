@@ -506,6 +506,203 @@ function Add-Button($parent, $text, $scriptBlock) {
     $parent.Controls.Add($btn)
 }
 
+# --- Tab 0: Dashboard ---
+$tabDashboard = New-Object System.Windows.Forms.TabPage
+$tabDashboard.Text = "Dashboard"
+$tabDashboard.BackColor = $Theme.Background
+$tabDashboard.Padding = New-Object System.Windows.Forms.Padding(20)
+
+$flowDash = New-Object System.Windows.Forms.FlowLayoutPanel
+$flowDash.Dock = "Fill"
+$flowDash.AutoScroll = $true
+$flowDash.FlowDirection = "TopDown"
+$flowDash.WrapContents = $false
+
+# System Status Panel
+$panelStatus = New-Object System.Windows.Forms.Panel
+$panelStatus.Width = 820
+$panelStatus.Height = 550
+$panelStatus.BackColor = $Theme.Panel
+$panelStatus.Margin = New-Object System.Windows.Forms.Padding(10)
+
+$lblDashTitle = New-Object System.Windows.Forms.Label
+$lblDashTitle.Text = "System Status Dashboard"
+$lblDashTitle.Location = New-Object System.Drawing.Point(20, 15)
+$lblDashTitle.AutoSize = $true
+$lblDashTitle.Font = New-Object System.Drawing.Font("Segoe UI", 16, [System.Drawing.FontStyle]::Bold)
+$lblDashTitle.ForeColor = $Theme.Accent
+
+$txtDashboard = New-Object System.Windows.Forms.TextBox
+$txtDashboard.Multiline = $true
+$txtDashboard.ScrollBars = "Vertical"
+$txtDashboard.ReadOnly = $true
+$txtDashboard.Location = New-Object System.Drawing.Point(20, 50)
+$txtDashboard.Size = New-Object System.Drawing.Size(780, 430)
+$txtDashboard.Font = New-Object System.Drawing.Font("Consolas", 10)
+$txtDashboard.BackColor = $Theme.OutputBg
+$txtDashboard.ForeColor = $Theme.OutputFg
+$txtDashboard.BorderStyle = "FixedSingle"
+
+$btnRefreshDash = New-Object System.Windows.Forms.Button
+$btnRefreshDash.Text = "Refresh Dashboard"
+$btnRefreshDash.Location = New-Object System.Drawing.Point(20, 490)
+$btnRefreshDash.Width = 200
+$btnRefreshDash.Height = 40
+$btnRefreshDash.FlatStyle = "Flat"
+$btnRefreshDash.BackColor = $Theme.Accent
+$btnRefreshDash.ForeColor = "White"
+$btnRefreshDash.FlatAppearance.BorderSize = 0
+$btnRefreshDash.Add_Click({
+    Log-Output "Refreshing Dashboard..."
+    $txtDashboard.Clear()
+    
+    $dash = @()
+    $dash += "=" * 80
+    $dash += "SYSTEM OVERVIEW"
+    $dash += "=" * 80
+    $dash += ""
+    
+    try {
+        $os = Get-CimInstance Win32_OperatingSystem
+        $cs = Get-CimInstance Win32_ComputerSystem
+        $cpu = Get-CimInstance Win32_Processor | Select-Object -First 1
+        $bios = Get-CimInstance Win32_Bios
+        
+        $dash += "Computer Name:    $($cs.Name)"
+        $dash += "Manufacturer:     $($cs.Manufacturer)"
+        $dash += "Model:            $($cs.Model)"
+        $dash += "Serial Number:    $($bios.SerialNumber)"
+        $dash += "OS:               $($os.Caption) (Build $($os.BuildNumber))"
+        $dash += "OS Architecture:  $($os.OSArchitecture)"
+        $dash += ""
+        
+        # CPU
+        $dash += "=" * 80
+        $dash += "CPU INFORMATION"
+        $dash += "=" * 80
+        $dash += "Processor:        $($cpu.Name)"
+        $dash += "Cores:            $($cpu.NumberOfCores)"
+        $dash += "Logical Proc:     $($cpu.NumberOfLogicalProcessors)"
+        $dash += ""
+        
+        # Memory
+        $dash += "=" * 80
+        $dash += "MEMORY USAGE"
+        $dash += "=" * 80
+        $totalRAM = [math]::Round($os.TotalVisibleMemorySize / 1MB, 2)
+        $freeRAM = [math]::Round($os.FreePhysicalMemory / 1MB, 2)
+        $usedRAM = $totalRAM - $freeRAM
+        $usedPct = [math]::Round(($usedRAM / $totalRAM) * 100, 1)
+        $dash += "Total RAM:        $totalRAM GB"
+        $dash += "Used RAM:         $usedRAM GB ($usedPct%)"
+        $dash += "Free RAM:         $freeRAM GB"
+        if ($usedPct -gt 90) { $dash += "WARNING: High memory usage!" }
+        $dash += ""
+        
+        # Disk Usage
+        $dash += "=" * 80
+        $dash += "DISK USAGE"
+        $dash += "=" * 80
+        $disks = Get-CimInstance Win32_LogicalDisk -Filter "DriveType=3"
+        foreach ($d in $disks) {
+            $size = [math]::Round($d.Size / 1GB, 2)
+            $free = [math]::Round($d.FreeSpace / 1GB, 2)
+            $used = $size - $free
+            $pct = [math]::Round(($used / $size) * 100, 1)
+            $dash += "Drive $($d.DeviceID)       Total: $size GB | Used: $used GB ($pct%) | Free: $free GB"
+            if ($pct -gt 85) { $dash += "  [WARNING] Low disk space on $($d.DeviceID)!" }
+        }
+        $dash += ""
+        
+        # Physical Disks Health
+        $dash += "=" * 80
+        $dash += "PHYSICAL DISK HEALTH"
+        $dash += "=" * 80
+        $physDisks = Get-PhysicalDisk -ErrorAction SilentlyContinue
+        if ($physDisks) {
+            foreach ($pd in $physDisks) {
+                $dash += "$($pd.FriendlyName)"
+                $dash += "  Type: $($pd.MediaType) | Health: $($pd.HealthStatus) | Op Status: $($pd.OperationalStatus)"
+                if ($pd.HealthStatus -ne "Healthy") { $dash += "  [ALERT] Disk health issue detected!" }
+            }
+        } else {
+            $dash += "Unable to query physical disks (WMI limitation)"
+        }
+        $dash += ""
+        
+        # Uptime
+        $dash += "=" * 80
+        $dash += "UPTIME & PERFORMANCE"
+        $dash += "=" * 80
+        $uptime = (Get-Date) - $os.LastBootUpTime
+        $dash += "Last Boot:        $($os.LastBootUpTime.ToString('yyyy-MM-dd HH:mm:ss'))"
+        $dash += "Uptime:           $($uptime.Days) days, $($uptime.Hours) hours, $($uptime.Minutes) minutes"
+        if ($uptime.Days -gt 30) { $dash += "WARNING: System has not rebooted in over 30 days!" }
+        $dash += ""
+        
+        # Network
+        $dash += "=" * 80
+        $dash += "NETWORK ADAPTERS"
+        $dash += "=" * 80
+        $adapters = Get-NetAdapter | Where-Object Status -eq "Up"
+        foreach ($a in $adapters) {
+            $dash += "$($a.Name) ($($a.InterfaceDescription))"
+            $dash += "  Status: $($a.Status) | Speed: $($a.LinkSpeed)"
+            $ip = (Get-NetIPAddress -InterfaceIndex $a.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue).IPAddress
+            if ($ip) { $dash += "  IP: $ip" }
+        }
+        $dash += ""
+        
+        # Event Log Errors
+        $dash += "=" * 80
+        $dash += "RECENT CRITICAL EVENTS (Last 7 Days)"
+        $dash += "=" * 80
+        $criticalEvents = Get-WinEvent -FilterHashtable @{LogName='System','Application'; Level=1,2; StartTime=(Get-Date).AddDays(-7)} -MaxEvents 10 -ErrorAction SilentlyContinue
+        if ($criticalEvents) {
+            foreach ($e in $criticalEvents) {
+                $dash += "[$($e.TimeCreated.ToString('MM-dd HH:mm'))] $($e.LogName)/$($e.ProviderName) - ID:$($e.Id)"
+                $dash += "  $($e.Message.Substring(0, [Math]::Min(120, $e.Message.Length)))..."
+            }
+        } else {
+            $dash += "No critical events in the last 7 days."
+        }
+        $dash += ""
+        
+        # NinjaOne Status
+        if ($global:NinjaDeviceData) {
+            $dash += "=" * 80
+            $dash += "NINJARMM STATUS"
+            $dash += "=" * 80
+            $dash += "Device ID:        $($global:NinjaDeviceData.id)"
+            $dash += "Organization:     $(if($global:NinjaDeviceData.organizationName){$global:NinjaDeviceData.organizationName}else{'ID: ' + $global:NinjaDeviceData.organizationId})"
+            $dash += "Last Contact:     $($global:NinjaDeviceData.lastContact)"
+            if ($global:NinjaDeviceData.publicIP) { $dash += "Public IP:        $($global:NinjaDeviceData.publicIP)" }
+            $dash += ""
+        }
+        
+        $dash += "=" * 80
+        $dash += "Dashboard refreshed at $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
+        $dash += "=" * 80
+        
+    } catch {
+        $dash += "Error gathering system information: $_"
+        Log-Output "Dashboard error: $_"
+    }
+    
+    $txtDashboard.Lines = $dash
+})
+
+$panelStatus.Controls.Add($lblDashTitle)
+$panelStatus.Controls.Add($txtDashboard)
+$panelStatus.Controls.Add($btnRefreshDash)
+$flowDash.Controls.Add($panelStatus)
+$tabDashboard.Controls.Add($flowDash)
+
+# Auto-load dashboard on startup
+$form.Add_Shown({
+    $btnRefreshDash.PerformClick()
+})
+
 # --- Tab 1: Common Fixes ---
 $tabFixes = New-Object System.Windows.Forms.TabPage
 $tabFixes.Text = "Common Fixes"
@@ -1091,6 +1288,7 @@ $tabAudit.Controls.Add($btnRunAudit)
 $tabAudit.Controls.Add($lblAudit)
 
 # --- Assemble Form ---
+$tabControl.Controls.Add($tabDashboard)
 $tabControl.Controls.Add($tabFixes)
 $tabControl.Controls.Add($tabInfo)
 $tabControl.Controls.Add($tabNet)
