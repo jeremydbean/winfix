@@ -1,14 +1,12 @@
 <#
 .SYNOPSIS
-    WinFix Tool v2.0 - All-in-One Windows Maintenance & Diagnostics
+    WinFix Tool v2.1 - Lightweight Windows Maintenance & Diagnostics
 .DESCRIPTION
-    A modern GUI tool to diagnose, fix, and maintain Windows systems.
-    Integrates with NinjaOne RMM for enhanced monitoring.
-    Features: Health Score, One-Click Fixes, Network Tools, Security Audit
+    Fast, snappy GUI tool for Windows maintenance. No auto-loading - refresh on demand.
 .NOTES
     Requires Administrator Privileges.
     Author: Jeremy Bean IT
-    Version: 2.0
+    Version: 2.1
 #>
 
 # --- Request Admin Privileges ---
@@ -28,46 +26,40 @@ Add-Type -AssemblyName System.Drawing
 [System.Windows.Forms.Application]::EnableVisualStyles()
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
-# --- Modern Theme Colors ---
-$Theme = @{
-    Background    = [System.Drawing.Color]::FromArgb(18, 18, 18)
-    Surface       = [System.Drawing.Color]::FromArgb(30, 30, 30)
-    Card          = [System.Drawing.Color]::FromArgb(40, 40, 40)
-    CardHover     = [System.Drawing.Color]::FromArgb(50, 50, 50)
-    Text          = [System.Drawing.Color]::FromArgb(255, 255, 255)
-    TextSecondary = [System.Drawing.Color]::FromArgb(180, 180, 180)
-    Accent        = [System.Drawing.Color]::FromArgb(0, 150, 255)
-    Success       = [System.Drawing.Color]::FromArgb(76, 175, 80)
-    Warning       = [System.Drawing.Color]::FromArgb(255, 193, 7)
-    Error         = [System.Drawing.Color]::FromArgb(244, 67, 54)
-    Purple        = [System.Drawing.Color]::FromArgb(156, 39, 176)
+# --- Theme ---
+$script:Theme = @{
+    Bg       = [System.Drawing.Color]::FromArgb(22, 22, 26)
+    Surface  = [System.Drawing.Color]::FromArgb(32, 32, 38)
+    Card     = [System.Drawing.Color]::FromArgb(42, 42, 50)
+    Text     = [System.Drawing.Color]::White
+    Dim      = [System.Drawing.Color]::FromArgb(140, 140, 150)
+    Accent   = [System.Drawing.Color]::FromArgb(66, 135, 245)
+    Green    = [System.Drawing.Color]::FromArgb(46, 204, 113)
+    Yellow   = [System.Drawing.Color]::FromArgb(241, 196, 15)
+    Red      = [System.Drawing.Color]::FromArgb(231, 76, 60)
 }
 
-# --- Global Variables ---
-$global:NinjaToken = $null
-$global:NinjaInstance = $null
-$global:NinjaDeviceData = $null
-$global:HealthScore = 100
-$global:Issues = @()
 $global:LogPath = "$env:TEMP\WinFix_Debug.log"
 
-# --- Logging Function ---
-function Log-Output {
-    param([string]$Message)
-    $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss.fff"
-    $logLine = "[$timestamp] $Message"
-    
-    # Write to log file
-    Add-Content -Path $global:LogPath -Value $logLine -ErrorAction SilentlyContinue
-    
-    # Update GUI if available
+# --- Status Indicator Characters ---
+$script:StatusOK = "[OK]"
+$script:StatusWarn = "[!!]"
+$script:StatusBad = "[XX]"
+$script:StatusPending = "[..]"
+
+# --- Logging ---
+function Log {
+    param([string]$Msg)
+    $ts = Get-Date -Format "HH:mm:ss"
+    $line = "[$ts] $Msg"
+    Add-Content -Path $global:LogPath -Value $line -ErrorAction SilentlyContinue
     if ($script:txtLog) {
-        $script:txtLog.AppendText("$logLine`r`n")
+        $script:txtLog.AppendText("$line`r`n")
         $script:txtLog.ScrollToCaret()
     }
 }
 
-# --- NinjaOne Functions ---
+# --- NinjaOne Settings ---
 function Get-NinjaSettings {
     $regPath = "HKCU:\Software\WinFixTool"
     try {
@@ -93,996 +85,635 @@ function Save-NinjaSettings {
 
 function Connect-NinjaOne {
     param($ClientId, $ClientSecret, $InstanceUrl)
-    
-    Log-Output "Connecting to NinjaOne..."
-    
-    # Clean URL
+    Log "Connecting to NinjaOne..."
     $InstanceUrl = $InstanceUrl -replace "^https?://", "" -replace "/$", "" -replace "/apidocs.*", "" -replace "/ws/.*", ""
-    
-    # Transform app URL to API URL
-    $apiHost = $InstanceUrl
-    if ($InstanceUrl -match "^app\.") { $apiHost = $InstanceUrl -replace "^app\.", "api." }
-    elseif ($InstanceUrl -match "^eu\.") { $apiHost = $InstanceUrl -replace "^eu\.", "eu-api." }
-    elseif ($InstanceUrl -match "^oc\.") { $apiHost = $InstanceUrl -replace "^oc\.", "oc-api." }
-    elseif ($InstanceUrl -match "^ca\.") { $apiHost = $InstanceUrl -replace "^ca\.", "ca-api." }
-    elseif ($InstanceUrl -notmatch "api\.") { $apiHost = "api." + $InstanceUrl }
-    
-    $global:NinjaInstance = $apiHost
-    $authUrl = "https://$apiHost/ws/oauth/token"
-    
-    Log-Output "Auth URL: $authUrl"
+    $global:NinjaInstance = $InstanceUrl
     
     try {
-        $body = @{
-            grant_type = "client_credentials"
-            client_id = $ClientId
-            client_secret = $ClientSecret
-            scope = "monitoring management"
-        }
-        
+        $authUrl = "https://$InstanceUrl/ws/oauth/token"
+        $body = @{ grant_type = "client_credentials"; client_id = $ClientId; client_secret = $ClientSecret; scope = "monitoring management" }
         $response = Invoke-RestMethod -Uri $authUrl -Method Post -Body $body -ContentType "application/x-www-form-urlencoded"
         $global:NinjaToken = $response.access_token
-        Log-Output "Connected to NinjaOne successfully!"
-        
-        # Auto-detect device
-        Get-NinjaDeviceData
+        Log "NinjaOne connected!"
         return $true
     } catch {
-        Log-Output "NinjaOne connection failed: $($_.Exception.Message)"
+        Log "NinjaOne connection failed: $_"
         return $false
-    }
-}
-
-function Get-LocalNinjaNodeId {
-    $regPaths = @(
-        "HKLM:\SOFTWARE\NinjaRMM LLC\NinjaRMMAgent",
-        "HKLM:\SOFTWARE\NinjaRMM\Agent",
-        "HKLM:\SOFTWARE\WOW6432Node\NinjaRMM LLC\NinjaRMMAgent"
-    )
-    
-    foreach ($path in $regPaths) {
-        if (Test-Path $path) {
-            $props = Get-ItemProperty -Path $path -ErrorAction SilentlyContinue
-            foreach ($name in @("NodeID", "DeviceID", "id", "agent_id")) {
-                if ($props.$name) { return $props.$name }
-            }
-        }
-    }
-    return $null
-}
-
-function Get-NinjaDeviceData {
-    if (-not $global:NinjaToken) { return }
-    
-    $headers = @{ Authorization = "Bearer $global:NinjaToken" }
-    
-    # Try local Node ID first
-    $localId = Get-LocalNinjaNodeId
-    if ($localId) {
-        try {
-            $device = Invoke-RestMethod -Uri "https://$($global:NinjaInstance)/v2/devices/$localId" -Headers $headers
-            if ($device) {
-                $global:NinjaDeviceData = $device
-                Log-Output "Device found: $($device.systemName) (ID: $($device.id))"
-                Get-NinjaExtendedData
-                return
-            }
-        } catch { Log-Output "Node ID lookup failed: $_" }
-    }
-    
-    # Search by hostname/serial
-    $serial = (Get-CimInstance Win32_Bios).SerialNumber
-    $hostname = $env:COMPUTERNAME
-    
-    try {
-        $devices = Invoke-RestMethod -Uri "https://$($global:NinjaInstance)/v2/devices?pageSize=1000" -Headers $headers
-        
-        $match = $devices | Where-Object { $_.serialNumber -eq $serial -or $_.systemName -eq $hostname }
-        if ($match) {
-            $global:NinjaDeviceData = $match | Select-Object -First 1
-            Log-Output "Device matched: $($global:NinjaDeviceData.systemName)"
-            Get-NinjaExtendedData
-        }
-    } catch { Log-Output "Device search failed: $_" }
-}
-
-function Get-NinjaExtendedData {
-    if (-not $global:NinjaDeviceData -or -not $global:NinjaToken) { return }
-    
-    $headers = @{ Authorization = "Bearer $global:NinjaToken" }
-    $devId = $global:NinjaDeviceData.id
-    
-    # Get additional data from various endpoints
-    $endpoints = @{
-        "disks" = "/v2/device/$devId/disks"
-        "software" = "/v2/device/$devId/software"
-        "osPatches" = "/v2/device/$devId/os-patches"
-        "activities" = "/v2/device/$devId/activities?pageSize=20"
-        "alerts" = "/v2/device/$devId/alerts"
-        "customFields" = "/v2/device/$devId/custom-fields"
-    }
-    
-    foreach ($key in $endpoints.Keys) {
-        try {
-            $url = "https://$($global:NinjaInstance)$($endpoints[$key])"
-            $data = Invoke-RestMethod -Uri $url -Headers $headers -ErrorAction Stop
-            $global:NinjaDeviceData | Add-Member -NotePropertyName $key -NotePropertyValue $data -Force
-            Log-Output "Fetched $key data"
-        } catch {
-            Log-Output "Could not fetch $key`: $_"
-        }
-    }
-    
-    # Get organization name
-    if ($global:NinjaDeviceData.organizationId) {
-        try {
-            $org = Invoke-RestMethod -Uri "https://$($global:NinjaInstance)/v2/organizations/$($global:NinjaDeviceData.organizationId)" -Headers $headers
-            $global:NinjaDeviceData | Add-Member -NotePropertyName "organizationName" -NotePropertyValue $org.name -Force
-        } catch { }
-    }
-}
-
-# --- System Health Functions ---
-function Get-SystemHealth {
-    $health = @{
-        Score = 100
-        Issues = @()
-        Warnings = @()
-        Good = @()
-    }
-    
-    # CPU Usage
-    $cpu = (Get-CimInstance Win32_Processor).LoadPercentage
-    if ($cpu -gt 90) { $health.Issues += "CPU usage critical: ${cpu}%"; $health.Score -= 15 }
-    elseif ($cpu -gt 70) { $health.Warnings += "CPU usage high: ${cpu}%"; $health.Score -= 5 }
-    else { $health.Good += "CPU: ${cpu}%" }
-    
-    # Memory Usage
-    $os = Get-CimInstance Win32_OperatingSystem
-    $memUsed = [math]::Round(($os.TotalVisibleMemorySize - $os.FreePhysicalMemory) / $os.TotalVisibleMemorySize * 100)
-    if ($memUsed -gt 90) { $health.Issues += "Memory critical: ${memUsed}%"; $health.Score -= 15 }
-    elseif ($memUsed -gt 80) { $health.Warnings += "Memory high: ${memUsed}%"; $health.Score -= 5 }
-    else { $health.Good += "Memory: ${memUsed}%" }
-    
-    # Disk Space
-    $disks = Get-CimInstance Win32_LogicalDisk -Filter "DriveType=3"
-    foreach ($d in $disks) {
-        $pct = [math]::Round(($d.Size - $d.FreeSpace) / $d.Size * 100)
-        if ($pct -gt 95) { $health.Issues += "Disk $($d.DeviceID) critical: ${pct}%"; $health.Score -= 20 }
-        elseif ($pct -gt 85) { $health.Warnings += "Disk $($d.DeviceID) low: ${pct}%"; $health.Score -= 10 }
-        else { $health.Good += "Disk $($d.DeviceID): ${pct}%" }
-    }
-    
-    # Uptime
-    $uptime = (Get-Date) - $os.LastBootUpTime
-    if ($uptime.Days -gt 30) { $health.Warnings += "System uptime: $($uptime.Days) days (consider reboot)"; $health.Score -= 5 }
-    
-    # Windows Updates
-    try {
-        $updates = (New-Object -ComObject Microsoft.Update.Session).CreateUpdateSearcher()
-        $pending = $updates.Search("IsInstalled=0 and IsHidden=0").Updates.Count
-        if ($pending -gt 10) { $health.Issues += "$pending pending Windows updates"; $health.Score -= 10 }
-        elseif ($pending -gt 0) { $health.Warnings += "$pending pending Windows updates"; $health.Score -= 5 }
-    } catch { }
-    
-    # Services Check
-    $criticalServices = @("wuauserv", "Spooler", "BITS", "EventLog")
-    foreach ($svc in $criticalServices) {
-        $service = Get-Service -Name $svc -ErrorAction SilentlyContinue
-        if ($service -and $service.Status -ne "Running") {
-            $health.Warnings += "Service stopped: $($service.DisplayName)"
-            $health.Score -= 3
-        }
-    }
-    
-    # Event Log Errors (last 24h)
-    try {
-        $errors = Get-WinEvent -FilterHashtable @{LogName='System'; Level=2; StartTime=(Get-Date).AddDays(-1)} -MaxEvents 50 -ErrorAction SilentlyContinue
-        if ($errors.Count -gt 20) { $health.Issues += "$($errors.Count) system errors in 24h"; $health.Score -= 10 }
-        elseif ($errors.Count -gt 5) { $health.Warnings += "$($errors.Count) system errors in 24h"; $health.Score -= 5 }
-    } catch { }
-    
-    $health.Score = [Math]::Max(0, $health.Score)
-    return $health
-}
-
-# --- Quick Fix Functions ---
-$QuickFixes = @{
-    "Clear Temp Files" = {
-        Remove-Item -Path "$env:TEMP\*" -Recurse -Force -ErrorAction SilentlyContinue
-        Remove-Item -Path "C:\Windows\Temp\*" -Recurse -Force -ErrorAction SilentlyContinue
-        Clear-RecycleBin -Force -ErrorAction SilentlyContinue
-        "Temporary files cleared!"
-    }
-    
-    "Flush DNS Cache" = {
-        ipconfig /flushdns
-        "DNS cache flushed!"
-    }
-    
-    "Reset Network Stack" = {
-        netsh winsock reset
-        netsh int ip reset
-        ipconfig /release
-        ipconfig /renew
-        ipconfig /flushdns
-        "Network stack reset! Restart recommended."
-    }
-    
-    "Fix Windows Update" = {
-        Stop-Service -Name wuauserv, cryptSvc, bits, msiserver -Force -ErrorAction SilentlyContinue
-        Remove-Item -Path "C:\Windows\SoftwareDistribution\*" -Recurse -Force -ErrorAction SilentlyContinue
-        Remove-Item -Path "C:\Windows\System32\catroot2\*" -Recurse -Force -ErrorAction SilentlyContinue
-        Start-Service -Name wuauserv, cryptSvc, bits, msiserver -ErrorAction SilentlyContinue
-        "Windows Update components reset!"
-    }
-    
-    "Clear Print Spooler" = {
-        Stop-Service -Name Spooler -Force
-        Remove-Item -Path "C:\Windows\System32\spool\PRINTERS\*" -Force -ErrorAction SilentlyContinue
-        Start-Service -Name Spooler
-        "Print spooler cleared!"
-    }
-    
-    "Run SFC Scan" = {
-        sfc /scannow
-        "System File Checker complete!"
-    }
-    
-    "Run DISM Repair" = {
-        DISM /Online /Cleanup-Image /RestoreHealth
-        "DISM repair complete!"
-    }
-    
-    "Sync System Time" = {
-        w32tm /resync /force
-        "Time synchronized!"
-    }
-    
-    "Restart Explorer" = {
-        Stop-Process -Name explorer -Force
-        Start-Process explorer
-        "Explorer restarted!"
-    }
-    
-    "Check Disk (Schedule)" = {
-        $drive = "C:"
-        chkdsk $drive /F /R
-        "Check Disk scheduled for next restart."
     }
 }
 
 # --- Create Main Form ---
 $form = New-Object System.Windows.Forms.Form
-$form.Text = "WinFix Tool v2.0"
-$form.Size = New-Object System.Drawing.Size(1100, 750)
-$form.MinimumSize = New-Object System.Drawing.Size(900, 600)
+$form.Text = "WinFix Tool v2.1"
+$form.Size = New-Object System.Drawing.Size(950, 650)
+$form.MinimumSize = New-Object System.Drawing.Size(800, 500)
 $form.StartPosition = "CenterScreen"
-$form.BackColor = $Theme.Background
-$form.ForeColor = $Theme.Text
+$form.BackColor = $script:Theme.Bg
+$form.ForeColor = $script:Theme.Text
 $form.Font = New-Object System.Drawing.Font("Segoe UI", 9)
 $form.FormBorderStyle = "Sizable"
-$form.MaximizeBox = $true
 
-# --- Header Panel ---
+# --- Header ---
 $panelHeader = New-Object System.Windows.Forms.Panel
 $panelHeader.Dock = "Top"
-$panelHeader.Height = 60
-$panelHeader.BackColor = $Theme.Surface
+$panelHeader.Height = 50
+$panelHeader.BackColor = $script:Theme.Surface
 
 $lblTitle = New-Object System.Windows.Forms.Label
 $lblTitle.Text = "WinFix Tool"
-$lblTitle.Location = New-Object System.Drawing.Point(20, 15)
+$lblTitle.Location = New-Object System.Drawing.Point(15, 12)
 $lblTitle.AutoSize = $true
-$lblTitle.Font = New-Object System.Drawing.Font("Segoe UI", 18, [System.Drawing.FontStyle]::Bold)
-$lblTitle.ForeColor = $Theme.Accent
+$lblTitle.Font = New-Object System.Drawing.Font("Segoe UI", 14, [System.Drawing.FontStyle]::Bold)
+$lblTitle.ForeColor = $script:Theme.Accent
 
-$lblVersion = New-Object System.Windows.Forms.Label
-$lblVersion.Text = "v2.0 - Windows Maintenance and Diagnostics"
-$lblVersion.Location = New-Object System.Drawing.Point(170, 25)
-$lblVersion.AutoSize = $true
-$lblVersion.ForeColor = $Theme.TextSecondary
+$lblPC = New-Object System.Windows.Forms.Label
+$lblPC.Text = "$env:COMPUTERNAME"
+$lblPC.Location = New-Object System.Drawing.Point(750, 15)
+$lblPC.AutoSize = $true
+$lblPC.Anchor = "Top, Right"
+$lblPC.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
 
-$lblComputer = New-Object System.Windows.Forms.Label
-$lblComputer.Text = "$env:COMPUTERNAME"
-$lblComputer.Location = New-Object System.Drawing.Point(850, 20)
-$lblComputer.AutoSize = $true
-$lblComputer.Anchor = "Top, Right"
-$lblComputer.Font = New-Object System.Drawing.Font("Segoe UI", 11, [System.Drawing.FontStyle]::Bold)
-$lblComputer.ForeColor = $Theme.Text
+$panelHeader.Controls.AddRange(@($lblTitle, $lblPC))
 
-$panelHeader.Controls.AddRange(@($lblTitle, $lblVersion, $lblComputer))
-
-# --- Side Navigation ---
+# --- Nav Panel ---
 $panelNav = New-Object System.Windows.Forms.Panel
 $panelNav.Dock = "Left"
-$panelNav.Width = 180
-$panelNav.BackColor = $Theme.Surface
+$panelNav.Width = 140
+$panelNav.BackColor = $script:Theme.Surface
 
+$navItems = @("Dashboard", "Quick Fix", "Diagnostics", "Network", "NinjaOne", "Audit")
 $navButtons = @()
-$navItems = @(
-    @{Text = "Dashboard"; Icon = "D"}
-    @{Text = "Quick Fixes"; Icon = "F"}
-    @{Text = "Diagnostics"; Icon = "I"}
-    @{Text = "Network"; Icon = "N"}
-    @{Text = "NinjaOne"; Icon = "R"}
-    @{Text = "Security Audit"; Icon = "A"}
-)
+$navY = 10
 
-$navY = 20
-foreach ($item in $navItems) {
+foreach ($nav in $navItems) {
     $btn = New-Object System.Windows.Forms.Button
-    $btn.Text = $item.Text
-    $btn.Location = New-Object System.Drawing.Point(10, $navY)
-    $btn.Size = New-Object System.Drawing.Size(160, 45)
+    $btn.Text = $nav
+    $btn.Location = New-Object System.Drawing.Point(5, $navY)
+    $btn.Size = New-Object System.Drawing.Size(130, 35)
     $btn.FlatStyle = "Flat"
+    $btn.BackColor = $script:Theme.Card
+    $btn.ForeColor = $script:Theme.Text
     $btn.FlatAppearance.BorderSize = 0
-    $btn.BackColor = $Theme.Card
-    $btn.ForeColor = $Theme.Text
-    $btn.TextAlign = "MiddleLeft"
-    $btn.Padding = New-Object System.Windows.Forms.Padding(15, 0, 0, 0)
-    $btn.Tag = $item.Text
-    $btn.Cursor = "Hand"
-    
-    $btn.Add_MouseEnter({ $this.BackColor = $Theme.CardHover })
-    $btn.Add_MouseLeave({ 
-        if ($this.Tag -ne $script:ActiveTab) { $this.BackColor = $Theme.Card }
-    })
-    
+    $btn.Tag = $nav
+    $btn.Add_Click({ Show-Page $this.Tag })
     $panelNav.Controls.Add($btn)
     $navButtons += $btn
-    $navY += 55
+    $navY += 40
 }
 
-# --- Main Content Area ---
-$panelContent = New-Object System.Windows.Forms.Panel
-$panelContent.Dock = "Fill"
-$panelContent.BackColor = $Theme.Background
-$panelContent.Padding = New-Object System.Windows.Forms.Padding(20)
-
-# --- Log Panel (Bottom) ---
+# --- Log Panel (collapsible) ---
 $panelLog = New-Object System.Windows.Forms.Panel
 $panelLog.Dock = "Bottom"
-$panelLog.Height = 150
-$panelLog.BackColor = $Theme.Surface
-$panelLog.Padding = New-Object System.Windows.Forms.Padding(10)
+$panelLog.Height = 80
+$panelLog.BackColor = $script:Theme.Surface
 
 $lblLog = New-Object System.Windows.Forms.Label
-$lblLog.Text = "Activity Log"
+$lblLog.Text = "Log"
 $lblLog.Dock = "Top"
-$lblLog.Height = 25
-$lblLog.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
+$lblLog.Height = 18
+$lblLog.ForeColor = $script:Theme.Dim
+$lblLog.Font = New-Object System.Drawing.Font("Segoe UI", 8)
 
 $script:txtLog = New-Object System.Windows.Forms.TextBox
 $script:txtLog.Multiline = $true
 $script:txtLog.ScrollBars = "Vertical"
 $script:txtLog.ReadOnly = $true
 $script:txtLog.Dock = "Fill"
-$script:txtLog.BackColor = [System.Drawing.Color]::FromArgb(20, 20, 20)
-$script:txtLog.ForeColor = [System.Drawing.Color]::FromArgb(0, 255, 0)
-$script:txtLog.Font = New-Object System.Drawing.Font("Consolas", 9)
+$script:txtLog.BackColor = [System.Drawing.Color]::FromArgb(18, 18, 20)
+$script:txtLog.ForeColor = [System.Drawing.Color]::FromArgb(0, 200, 0)
+$script:txtLog.Font = New-Object System.Drawing.Font("Consolas", 8)
 $script:txtLog.BorderStyle = "None"
 
 $panelLog.Controls.AddRange(@($lblLog, $script:txtLog))
 
-# --- Content Pages ---
+# --- Content Panel ---
+$panelContent = New-Object System.Windows.Forms.Panel
+$panelContent.Dock = "Fill"
+$panelContent.BackColor = $script:Theme.Bg
+
 $pages = @{}
 
 # === DASHBOARD PAGE ===
-$pageDashboard = New-Object System.Windows.Forms.Panel
-$pageDashboard.Dock = "Fill"
-$pageDashboard.BackColor = $Theme.Background
-$pageDashboard.AutoScroll = $true
+$pageDash = New-Object System.Windows.Forms.Panel
+$pageDash.Dock = "Fill"
+$pageDash.BackColor = $script:Theme.Bg
 
-# Health Score Card
-$cardHealth = New-Object System.Windows.Forms.Panel
-$cardHealth.Location = New-Object System.Drawing.Point(20, 20)
-$cardHealth.Size = New-Object System.Drawing.Size(250, 150)
-$cardHealth.BackColor = $Theme.Card
+# Status Grid - Left column
+$lblStatus = New-Object System.Windows.Forms.Label
+$lblStatus.Text = "SYSTEM STATUS"
+$lblStatus.Location = New-Object System.Drawing.Point(20, 15)
+$lblStatus.AutoSize = $true
+$lblStatus.Font = New-Object System.Drawing.Font("Segoe UI", 11, [System.Drawing.FontStyle]::Bold)
+$lblStatus.ForeColor = $script:Theme.Dim
 
-$lblHealthTitle = New-Object System.Windows.Forms.Label
-$lblHealthTitle.Text = "System Health"
-$lblHealthTitle.Location = New-Object System.Drawing.Point(15, 10)
-$lblHealthTitle.AutoSize = $true
-$lblHealthTitle.ForeColor = $Theme.TextSecondary
+$script:lblCPU = New-Object System.Windows.Forms.Label
+$script:lblCPU.Text = "$($script:StatusPending) CPU: --"
+$script:lblCPU.Location = New-Object System.Drawing.Point(20, 50)
+$script:lblCPU.Size = New-Object System.Drawing.Size(300, 22)
+$script:lblCPU.Font = New-Object System.Drawing.Font("Consolas", 10)
 
-$lblHealthScore = New-Object System.Windows.Forms.Label
-$lblHealthScore.Text = "..."
-$lblHealthScore.Location = New-Object System.Drawing.Point(15, 40)
-$lblHealthScore.AutoSize = $true
-$lblHealthScore.Font = New-Object System.Drawing.Font("Segoe UI", 48, [System.Drawing.FontStyle]::Bold)
+$script:lblRAM = New-Object System.Windows.Forms.Label
+$script:lblRAM.Text = "$($script:StatusPending) Memory: --"
+$script:lblRAM.Location = New-Object System.Drawing.Point(20, 75)
+$script:lblRAM.Size = New-Object System.Drawing.Size(300, 22)
+$script:lblRAM.Font = New-Object System.Drawing.Font("Consolas", 10)
 
-$lblHealthStatus = New-Object System.Windows.Forms.Label
-$lblHealthStatus.Text = "Analyzing..."
-$lblHealthStatus.Location = New-Object System.Drawing.Point(15, 115)
-$lblHealthStatus.AutoSize = $true
+$script:lblDisk = New-Object System.Windows.Forms.Label
+$script:lblDisk.Text = "$($script:StatusPending) Disk C: --"
+$script:lblDisk.Location = New-Object System.Drawing.Point(20, 100)
+$script:lblDisk.Size = New-Object System.Drawing.Size(300, 22)
+$script:lblDisk.Font = New-Object System.Drawing.Font("Consolas", 10)
 
-$cardHealth.Controls.AddRange(@($lblHealthTitle, $lblHealthScore, $lblHealthStatus))
+$script:lblUptime = New-Object System.Windows.Forms.Label
+$script:lblUptime.Text = "$($script:StatusPending) Uptime: --"
+$script:lblUptime.Location = New-Object System.Drawing.Point(20, 125)
+$script:lblUptime.Size = New-Object System.Drawing.Size(300, 22)
+$script:lblUptime.Font = New-Object System.Drawing.Font("Consolas", 10)
 
-# System Info Card
-$cardSystem = New-Object System.Windows.Forms.Panel
-$cardSystem.Location = New-Object System.Drawing.Point(290, 20)
-$cardSystem.Size = New-Object System.Drawing.Size(400, 150)
-$cardSystem.BackColor = $Theme.Card
+$script:lblUpdates = New-Object System.Windows.Forms.Label
+$script:lblUpdates.Text = "$($script:StatusPending) Updates: --"
+$script:lblUpdates.Location = New-Object System.Drawing.Point(20, 150)
+$script:lblUpdates.Size = New-Object System.Drawing.Size(300, 22)
+$script:lblUpdates.Font = New-Object System.Drawing.Font("Consolas", 10)
 
-$lblSystemTitle = New-Object System.Windows.Forms.Label
-$lblSystemTitle.Text = "System Information"
-$lblSystemTitle.Location = New-Object System.Drawing.Point(15, 10)
-$lblSystemTitle.AutoSize = $true
-$lblSystemTitle.ForeColor = $Theme.TextSecondary
+$script:lblServices = New-Object System.Windows.Forms.Label
+$script:lblServices.Text = "$($script:StatusPending) Services: --"
+$script:lblServices.Location = New-Object System.Drawing.Point(20, 175)
+$script:lblServices.Size = New-Object System.Drawing.Size(300, 22)
+$script:lblServices.Font = New-Object System.Drawing.Font("Consolas", 10)
 
-$lblSystemInfo = New-Object System.Windows.Forms.Label
-$lblSystemInfo.Text = "Loading..."
-$lblSystemInfo.Location = New-Object System.Drawing.Point(15, 35)
-$lblSystemInfo.Size = New-Object System.Drawing.Size(370, 105)
+$script:lblNinjaStatus = New-Object System.Windows.Forms.Label
+$script:lblNinjaStatus.Text = "$($script:StatusPending) NinjaOne: --"
+$script:lblNinjaStatus.Location = New-Object System.Drawing.Point(20, 200)
+$script:lblNinjaStatus.Size = New-Object System.Drawing.Size(300, 22)
+$script:lblNinjaStatus.Font = New-Object System.Drawing.Font("Consolas", 10)
 
-$cardSystem.Controls.AddRange(@($lblSystemTitle, $lblSystemInfo))
+# Right side - System Info
+$lblInfoTitle = New-Object System.Windows.Forms.Label
+$lblInfoTitle.Text = "SYSTEM INFO"
+$lblInfoTitle.Location = New-Object System.Drawing.Point(350, 15)
+$lblInfoTitle.AutoSize = $true
+$lblInfoTitle.Font = New-Object System.Drawing.Font("Segoe UI", 11, [System.Drawing.FontStyle]::Bold)
+$lblInfoTitle.ForeColor = $script:Theme.Dim
 
-# Issues Card
-$cardIssues = New-Object System.Windows.Forms.Panel
-$cardIssues.Location = New-Object System.Drawing.Point(20, 190)
-$cardIssues.Size = New-Object System.Drawing.Size(670, 200)
-$cardIssues.BackColor = $Theme.Card
-$cardIssues.Anchor = "Top, Left, Right"
-
-$lblIssuesTitle = New-Object System.Windows.Forms.Label
-$lblIssuesTitle.Text = "Issues and Warnings"
-$lblIssuesTitle.Location = New-Object System.Drawing.Point(15, 10)
-$lblIssuesTitle.AutoSize = $true
-$lblIssuesTitle.ForeColor = $Theme.TextSecondary
-
-$txtIssues = New-Object System.Windows.Forms.TextBox
-$txtIssues.Multiline = $true
-$txtIssues.ScrollBars = "Vertical"
-$txtIssues.ReadOnly = $true
-$txtIssues.Location = New-Object System.Drawing.Point(15, 35)
-$txtIssues.Size = New-Object System.Drawing.Size(640, 150)
-$txtIssues.BackColor = $Theme.Surface
-$txtIssues.ForeColor = $Theme.Text
-$txtIssues.BorderStyle = "None"
-$txtIssues.Font = New-Object System.Drawing.Font("Consolas", 9)
-$txtIssues.Anchor = "Top, Left, Right, Bottom"
-
-$cardIssues.Controls.AddRange(@($lblIssuesTitle, $txtIssues))
+$script:lblSysInfo = New-Object System.Windows.Forms.Label
+$script:lblSysInfo.Text = "Click Refresh to load system info..."
+$script:lblSysInfo.Location = New-Object System.Drawing.Point(350, 50)
+$script:lblSysInfo.Size = New-Object System.Drawing.Size(380, 180)
+$script:lblSysInfo.Font = New-Object System.Drawing.Font("Consolas", 9)
+$script:lblSysInfo.Anchor = "Top, Left, Right"
 
 # Refresh Button
-$btnRefreshDash = New-Object System.Windows.Forms.Button
-$btnRefreshDash.Text = "Refresh Dashboard"
-$btnRefreshDash.Location = New-Object System.Drawing.Point(20, 410)
-$btnRefreshDash.Size = New-Object System.Drawing.Size(200, 40)
-$btnRefreshDash.FlatStyle = "Flat"
-$btnRefreshDash.BackColor = $Theme.Accent
-$btnRefreshDash.ForeColor = "White"
-$btnRefreshDash.FlatAppearance.BorderSize = 0
-$btnRefreshDash.Add_Click({
-    Log-Output "Refreshing dashboard..."
+$btnRefresh = New-Object System.Windows.Forms.Button
+$btnRefresh.Text = "Refresh Status"
+$btnRefresh.Location = New-Object System.Drawing.Point(20, 240)
+$btnRefresh.Size = New-Object System.Drawing.Size(150, 35)
+$btnRefresh.FlatStyle = "Flat"
+$btnRefresh.BackColor = $script:Theme.Accent
+$btnRefresh.ForeColor = "White"
+$btnRefresh.FlatAppearance.BorderSize = 0
+$btnRefresh.Add_Click({
+    Log "Refreshing status..."
+    $this.Enabled = $false
+    $this.Text = "Loading..."
+    [System.Windows.Forms.Application]::DoEvents()
     
-    # Get health data
-    $health = Get-SystemHealth
+    # CPU
+    try {
+        $cpu = (Get-CimInstance Win32_Processor).LoadPercentage
+        if ($cpu -lt 80) {
+            $script:lblCPU.Text = "$($script:StatusOK) CPU: ${cpu}%"
+            $script:lblCPU.ForeColor = $script:Theme.Green
+        } elseif ($cpu -lt 95) {
+            $script:lblCPU.Text = "$($script:StatusWarn) CPU: ${cpu}%"
+            $script:lblCPU.ForeColor = $script:Theme.Yellow
+        } else {
+            $script:lblCPU.Text = "$($script:StatusBad) CPU: ${cpu}%"
+            $script:lblCPU.ForeColor = $script:Theme.Red
+        }
+    } catch { $script:lblCPU.Text = "$($script:StatusBad) CPU: Error"; $script:lblCPU.ForeColor = $script:Theme.Red }
+    [System.Windows.Forms.Application]::DoEvents()
     
-    # Update health score
-    $lblHealthScore.Text = "$($health.Score)"
-    if ($health.Score -ge 80) {
-        $lblHealthScore.ForeColor = $Theme.Success
-        $lblHealthStatus.Text = "System Healthy"
-        $lblHealthStatus.ForeColor = $Theme.Success
-    } elseif ($health.Score -ge 50) {
-        $lblHealthScore.ForeColor = $Theme.Warning
-        $lblHealthStatus.Text = "Needs Attention"
-        $lblHealthStatus.ForeColor = $Theme.Warning
+    # RAM
+    try {
+        $os = Get-CimInstance Win32_OperatingSystem
+        $ramPct = [math]::Round(($os.TotalVisibleMemorySize - $os.FreePhysicalMemory) / $os.TotalVisibleMemorySize * 100)
+        $ramGB = [math]::Round($os.TotalVisibleMemorySize / 1MB, 1)
+        if ($ramPct -lt 80) {
+            $script:lblRAM.Text = "$($script:StatusOK) Memory: ${ramPct}% of ${ramGB}GB"
+            $script:lblRAM.ForeColor = $script:Theme.Green
+        } elseif ($ramPct -lt 95) {
+            $script:lblRAM.Text = "$($script:StatusWarn) Memory: ${ramPct}% of ${ramGB}GB"
+            $script:lblRAM.ForeColor = $script:Theme.Yellow
+        } else {
+            $script:lblRAM.Text = "$($script:StatusBad) Memory: ${ramPct}% of ${ramGB}GB"
+            $script:lblRAM.ForeColor = $script:Theme.Red
+        }
+    } catch { $script:lblRAM.Text = "$($script:StatusBad) Memory: Error"; $script:lblRAM.ForeColor = $script:Theme.Red }
+    [System.Windows.Forms.Application]::DoEvents()
+    
+    # Disk
+    try {
+        $disk = Get-CimInstance Win32_LogicalDisk -Filter "DeviceID='C:'"
+        $diskPct = [math]::Round(($disk.Size - $disk.FreeSpace) / $disk.Size * 100)
+        $diskFree = [math]::Round($disk.FreeSpace / 1GB)
+        if ($diskPct -lt 85) {
+            $script:lblDisk.Text = "$($script:StatusOK) Disk C: ${diskPct}% (${diskFree}GB free)"
+            $script:lblDisk.ForeColor = $script:Theme.Green
+        } elseif ($diskPct -lt 95) {
+            $script:lblDisk.Text = "$($script:StatusWarn) Disk C: ${diskPct}% (${diskFree}GB free)"
+            $script:lblDisk.ForeColor = $script:Theme.Yellow
+        } else {
+            $script:lblDisk.Text = "$($script:StatusBad) Disk C: ${diskPct}% (${diskFree}GB free)"
+            $script:lblDisk.ForeColor = $script:Theme.Red
+        }
+    } catch { $script:lblDisk.Text = "$($script:StatusBad) Disk: Error"; $script:lblDisk.ForeColor = $script:Theme.Red }
+    [System.Windows.Forms.Application]::DoEvents()
+    
+    # Uptime
+    try {
+        $os = Get-CimInstance Win32_OperatingSystem
+        $uptime = (Get-Date) - $os.LastBootUpTime
+        if ($uptime.Days -lt 14) {
+            $script:lblUptime.Text = "$($script:StatusOK) Uptime: $($uptime.Days)d $($uptime.Hours)h"
+            $script:lblUptime.ForeColor = $script:Theme.Green
+        } elseif ($uptime.Days -lt 30) {
+            $script:lblUptime.Text = "$($script:StatusWarn) Uptime: $($uptime.Days)d $($uptime.Hours)h"
+            $script:lblUptime.ForeColor = $script:Theme.Yellow
+        } else {
+            $script:lblUptime.Text = "$($script:StatusBad) Uptime: $($uptime.Days)d (reboot needed)"
+            $script:lblUptime.ForeColor = $script:Theme.Red
+        }
+    } catch { $script:lblUptime.Text = "$($script:StatusBad) Uptime: Error"; $script:lblUptime.ForeColor = $script:Theme.Red }
+    [System.Windows.Forms.Application]::DoEvents()
+    
+    # Windows Updates (slow - do last)
+    try {
+        $updates = (New-Object -ComObject Microsoft.Update.Session).CreateUpdateSearcher()
+        $pending = $updates.Search("IsInstalled=0 and IsHidden=0").Updates.Count
+        if ($pending -eq 0) {
+            $script:lblUpdates.Text = "$($script:StatusOK) Updates: All current"
+            $script:lblUpdates.ForeColor = $script:Theme.Green
+        } elseif ($pending -lt 5) {
+            $script:lblUpdates.Text = "$($script:StatusWarn) Updates: $pending pending"
+            $script:lblUpdates.ForeColor = $script:Theme.Yellow
+        } else {
+            $script:lblUpdates.Text = "$($script:StatusBad) Updates: $pending pending"
+            $script:lblUpdates.ForeColor = $script:Theme.Red
+        }
+    } catch { 
+        $script:lblUpdates.Text = "$($script:StatusPending) Updates: Unable to check"
+        $script:lblUpdates.ForeColor = $script:Theme.Dim
+    }
+    [System.Windows.Forms.Application]::DoEvents()
+    
+    # Critical Services
+    try {
+        $stopped = @()
+        foreach ($svc in @("wuauserv", "Spooler", "BITS", "EventLog", "Dnscache")) {
+            $s = Get-Service -Name $svc -ErrorAction SilentlyContinue
+            if ($s -and $s.Status -ne "Running") { $stopped += $svc }
+        }
+        if ($stopped.Count -eq 0) {
+            $script:lblServices.Text = "$($script:StatusOK) Services: All running"
+            $script:lblServices.ForeColor = $script:Theme.Green
+        } else {
+            $script:lblServices.Text = "$($script:StatusWarn) Services: $($stopped.Count) stopped"
+            $script:lblServices.ForeColor = $script:Theme.Yellow
+        }
+    } catch { $script:lblServices.Text = "$($script:StatusBad) Services: Error"; $script:lblServices.ForeColor = $script:Theme.Red }
+    [System.Windows.Forms.Application]::DoEvents()
+    
+    # NinjaOne
+    if ($global:NinjaToken) {
+        $script:lblNinjaStatus.Text = "$($script:StatusOK) NinjaOne: Connected"
+        $script:lblNinjaStatus.ForeColor = $script:Theme.Green
     } else {
-        $lblHealthScore.ForeColor = $Theme.Error
-        $lblHealthStatus.Text = "Critical Issues"
-        $lblHealthStatus.ForeColor = $Theme.Error
+        $script:lblNinjaStatus.Text = "$($script:StatusPending) NinjaOne: Not connected"
+        $script:lblNinjaStatus.ForeColor = $script:Theme.Dim
     }
     
-    # Update system info
-    $cs = Get-CimInstance Win32_ComputerSystem
-    $os = Get-CimInstance Win32_OperatingSystem
-    $cpu = Get-CimInstance Win32_Processor | Select-Object -First 1
-    $uptime = (Get-Date) - $os.LastBootUpTime
-    
-    $sysInfo = @"
-Computer: $($cs.Name)
-OS: $($os.Caption)
-CPU: $($cpu.Name)
-RAM: $([math]::Round($cs.TotalPhysicalMemory / 1GB, 1)) GB
-Uptime: $($uptime.Days)d $($uptime.Hours)h $($uptime.Minutes)m
+    # System Info
+    try {
+        $cs = Get-CimInstance Win32_ComputerSystem
+        $os = Get-CimInstance Win32_OperatingSystem
+        $bios = Get-CimInstance Win32_Bios
+        $cpu = Get-CimInstance Win32_Processor | Select-Object -First 1
+        
+        $script:lblSysInfo.Text = @"
+$($cs.Manufacturer) $($cs.Model)
+Serial: $($bios.SerialNumber)
+
+$($os.Caption)
+Build: $($os.BuildNumber)
+
+$($cpu.Name)
+Cores: $($cpu.NumberOfCores) / Threads: $($cpu.NumberOfLogicalProcessors)
 "@
+    } catch { $script:lblSysInfo.Text = "Error loading system info" }
     
-    if ($global:NinjaDeviceData) {
-        $sysInfo += "`nNinja Org: $($global:NinjaDeviceData.organizationName)"
-    }
-    
-    $lblSystemInfo.Text = $sysInfo
-    
-    # Update issues
-    $issueText = ""
-    foreach ($issue in $health.Issues) {
-        $issueText += "[ERROR] $issue`r`n"
-    }
-    foreach ($warn in $health.Warnings) {
-        $issueText += "[WARN] $warn`r`n"
-    }
-    if (-not $issueText) {
-        $issueText = "No issues detected. System is healthy!"
-    }
-    $txtIssues.Text = $issueText
-    
-    Log-Output "Dashboard refreshed. Health Score: $($health.Score)"
+    $this.Text = "Refresh Status"
+    $this.Enabled = $true
+    Log "Status refresh complete"
 })
 
-$pageDashboard.Controls.AddRange(@($cardHealth, $cardSystem, $cardIssues, $btnRefreshDash))
-$pages["Dashboard"] = $pageDashboard
+$pageDash.Controls.AddRange(@($lblStatus, $script:lblCPU, $script:lblRAM, $script:lblDisk, $script:lblUptime, $script:lblUpdates, $script:lblServices, $script:lblNinjaStatus, $lblInfoTitle, $script:lblSysInfo, $btnRefresh))
+$pages["Dashboard"] = $pageDash
 
-# === QUICK FIXES PAGE ===
-$pageQuickFixes = New-Object System.Windows.Forms.Panel
-$pageQuickFixes.Dock = "Fill"
-$pageQuickFixes.BackColor = $Theme.Background
-$pageQuickFixes.AutoScroll = $true
+# === QUICK FIX PAGE ===
+$pageQuick = New-Object System.Windows.Forms.Panel
+$pageQuick.Dock = "Fill"
+$pageQuick.BackColor = $script:Theme.Bg
+$pageQuick.AutoScroll = $true
 
-$lblFixesTitle = New-Object System.Windows.Forms.Label
-$lblFixesTitle.Text = "One-Click Quick Fixes"
-$lblFixesTitle.Location = New-Object System.Drawing.Point(20, 20)
-$lblFixesTitle.AutoSize = $true
-$lblFixesTitle.Font = New-Object System.Drawing.Font("Segoe UI", 14, [System.Drawing.FontStyle]::Bold)
+$lblQuickTitle = New-Object System.Windows.Forms.Label
+$lblQuickTitle.Text = "QUICK FIXES"
+$lblQuickTitle.Location = New-Object System.Drawing.Point(20, 15)
+$lblQuickTitle.AutoSize = $true
+$lblQuickTitle.Font = New-Object System.Drawing.Font("Segoe UI", 11, [System.Drawing.FontStyle]::Bold)
+$lblQuickTitle.ForeColor = $script:Theme.Dim
 
-$pageQuickFixes.Controls.Add($lblFixesTitle)
+$pageQuick.Controls.Add($lblQuickTitle)
 
-$fixY = 60
-$fixX = 20
-$fixCol = 0
+$fixes = @(
+    @{Name = "Clear Temp Files"; Cmd = { Remove-Item "$env:TEMP\*","C:\Windows\Temp\*" -Recurse -Force -EA 0; Clear-RecycleBin -Force -EA 0; "Done!" }}
+    @{Name = "Flush DNS"; Cmd = { ipconfig /flushdns }}
+    @{Name = "Reset Network"; Cmd = { netsh winsock reset; netsh int ip reset; ipconfig /release; ipconfig /renew; "Done! Restart recommended." }}
+    @{Name = "Fix Windows Update"; Cmd = { Stop-Service wuauserv,cryptSvc,bits,msiserver -Force -EA 0; Remove-Item "C:\Windows\SoftwareDistribution\*","C:\Windows\System32\catroot2\*" -Recurse -Force -EA 0; Start-Service wuauserv,cryptSvc,bits,msiserver -EA 0; "Done!" }}
+    @{Name = "Clear Print Spooler"; Cmd = { Stop-Service Spooler -Force; Remove-Item "C:\Windows\System32\spool\PRINTERS\*" -Force -EA 0; Start-Service Spooler; "Done!" }}
+    @{Name = "SFC Scan"; Cmd = { sfc /scannow }}
+    @{Name = "DISM Repair"; Cmd = { DISM /Online /Cleanup-Image /RestoreHealth }}
+    @{Name = "Sync Time"; Cmd = { w32tm /resync /force }}
+    @{Name = "Restart Explorer"; Cmd = { Stop-Process -Name explorer -Force; Start-Process explorer; "Done!" }}
+)
 
-foreach ($fixName in $QuickFixes.Keys) {
+$fixY = 50; $fixX = 20; $fixCol = 0
+foreach ($fix in $fixes) {
     $btn = New-Object System.Windows.Forms.Button
-    $btn.Text = $fixName
+    $btn.Text = $fix.Name
     $btn.Location = New-Object System.Drawing.Point($fixX, $fixY)
-    $btn.Size = New-Object System.Drawing.Size(200, 50)
+    $btn.Size = New-Object System.Drawing.Size(160, 40)
     $btn.FlatStyle = "Flat"
-    $btn.BackColor = $Theme.Card
-    $btn.ForeColor = $Theme.Text
+    $btn.BackColor = $script:Theme.Card
+    $btn.ForeColor = $script:Theme.Text
     $btn.FlatAppearance.BorderSize = 0
-    $btn.Tag = $QuickFixes[$fixName]
-    
+    $btn.Tag = $fix.Cmd
     $btn.Add_Click({
-        $action = $this.Tag
-        Log-Output "Running: $($this.Text)..."
+        Log "Running: $($this.Text)..."
         try {
-            $result = & $action
-            if ($result) { Log-Output $result }
-            Log-Output "Completed: $($this.Text)"
-            [System.Windows.Forms.MessageBox]::Show("Completed: $($this.Text)", "WinFix", "OK", "Information")
-        } catch {
-            Log-Output "Error: $_"
-            [System.Windows.Forms.MessageBox]::Show("Error: $_", "WinFix", "OK", "Error")
-        }
+            $result = & $this.Tag
+            if ($result) { Log $result }
+            [System.Windows.Forms.MessageBox]::Show("$($this.Text) complete!", "WinFix", "OK", "Information")
+        } catch { Log "Error: $_"; [System.Windows.Forms.MessageBox]::Show("Error: $_", "WinFix", "OK", "Error") }
     })
-    
-    $btn.Add_MouseEnter({ $this.BackColor = $Theme.CardHover })
-    $btn.Add_MouseLeave({ $this.BackColor = $Theme.Card })
-    
-    $pageQuickFixes.Controls.Add($btn)
+    $pageQuick.Controls.Add($btn)
     
     $fixCol++
-    if ($fixCol -ge 3) {
-        $fixCol = 0
-        $fixX = 20
-        $fixY += 60
-    } else {
-        $fixX += 220
-    }
+    if ($fixCol -ge 4) { $fixCol = 0; $fixX = 20; $fixY += 50 }
+    else { $fixX += 170 }
 }
 
-$pages["Quick Fixes"] = $pageQuickFixes
+$pages["Quick Fix"] = $pageQuick
 
 # === DIAGNOSTICS PAGE ===
-$pageDiagnostics = New-Object System.Windows.Forms.Panel
-$pageDiagnostics.Dock = "Fill"
-$pageDiagnostics.BackColor = $Theme.Background
-$pageDiagnostics.AutoScroll = $true
+$pageDiag = New-Object System.Windows.Forms.Panel
+$pageDiag.Dock = "Fill"
+$pageDiag.BackColor = $script:Theme.Bg
 
 $lblDiagTitle = New-Object System.Windows.Forms.Label
-$lblDiagTitle.Text = "System Diagnostics"
-$lblDiagTitle.Location = New-Object System.Drawing.Point(20, 20)
+$lblDiagTitle.Text = "DIAGNOSTICS"
+$lblDiagTitle.Location = New-Object System.Drawing.Point(20, 15)
 $lblDiagTitle.AutoSize = $true
-$lblDiagTitle.Font = New-Object System.Drawing.Font("Segoe UI", 14, [System.Drawing.FontStyle]::Bold)
+$lblDiagTitle.Font = New-Object System.Drawing.Font("Segoe UI", 11, [System.Drawing.FontStyle]::Bold)
+$lblDiagTitle.ForeColor = $script:Theme.Dim
 
 $txtDiag = New-Object System.Windows.Forms.TextBox
 $txtDiag.Multiline = $true
 $txtDiag.ScrollBars = "Both"
 $txtDiag.ReadOnly = $true
-$txtDiag.Location = New-Object System.Drawing.Point(20, 60)
-$txtDiag.Size = New-Object System.Drawing.Size(650, 300)
-$txtDiag.BackColor = $Theme.Surface
-$txtDiag.ForeColor = $Theme.Text
+$txtDiag.Location = New-Object System.Drawing.Point(20, 50)
+$txtDiag.Size = New-Object System.Drawing.Size(500, 350)
+$txtDiag.BackColor = $script:Theme.Surface
+$txtDiag.ForeColor = $script:Theme.Text
 $txtDiag.Font = New-Object System.Drawing.Font("Consolas", 9)
 $txtDiag.Anchor = "Top, Left, Right, Bottom"
 
-$diagButtons = @(
-    @{Text = "System Specs"; Action = {
+$diagBtns = @(
+    @{Name = "System Specs"; Cmd = {
         $cs = Get-CimInstance Win32_ComputerSystem
         $os = Get-CimInstance Win32_OperatingSystem
         $cpu = Get-CimInstance Win32_Processor
-        $disk = Get-CimInstance Win32_LogicalDisk -Filter "DriveType=3"
         $bios = Get-CimInstance Win32_Bios
-        
-        $info = "=== SYSTEM SPECIFICATIONS ===`r`n`r`n"
-        $info += "Computer: $($cs.Name)`r`n"
-        $info += "Manufacturer: $($cs.Manufacturer)`r`n"
-        $info += "Model: $($cs.Model)`r`n"
-        $info += "Serial: $($bios.SerialNumber)`r`n`r`n"
-        $info += "OS: $($os.Caption) ($($os.OSArchitecture))`r`n"
-        $info += "Build: $($os.BuildNumber)`r`n`r`n"
-        $info += "CPU: $($cpu.Name)`r`n"
-        $info += "Cores: $($cpu.NumberOfCores) / Threads: $($cpu.NumberOfLogicalProcessors)`r`n`r`n"
-        $info += "RAM: $([math]::Round($cs.TotalPhysicalMemory / 1GB, 2)) GB`r`n`r`n"
+        $disk = Get-CimInstance Win32_LogicalDisk -Filter "DriveType=3"
+        $info = "=== SYSTEM ===`r`n$($cs.Manufacturer) $($cs.Model)`r`nSerial: $($bios.SerialNumber)`r`n`r`n"
+        $info += "=== OS ===`r`n$($os.Caption) ($($os.OSArchitecture))`r`nBuild: $($os.BuildNumber)`r`n`r`n"
+        $info += "=== CPU ===`r`n$($cpu.Name)`r`nCores: $($cpu.NumberOfCores)`r`n`r`n"
+        $info += "=== RAM ===`r`n$([math]::Round($cs.TotalPhysicalMemory/1GB,1)) GB`r`n`r`n"
         $info += "=== DISKS ===`r`n"
-        foreach ($d in $disk) {
-            $info += "$($d.DeviceID) $([math]::Round($d.Size/1GB))GB (Free: $([math]::Round($d.FreeSpace/1GB))GB)`r`n"
-        }
-        return $info
+        foreach ($d in $disk) { $info += "$($d.DeviceID) $([math]::Round($d.Size/1GB))GB (Free: $([math]::Round($d.FreeSpace/1GB))GB)`r`n" }
+        $info
     }}
-    @{Text = "List Printers"; Action = {
-        $printers = Get-Printer
-        $ports = Get-PrinterPort
-        $info = "=== INSTALLED PRINTERS ===`r`n`r`n"
-        foreach ($p in $printers) {
-            $port = $ports | Where-Object { $_.Name -eq $p.PortName }
-            $ip = if ($port.PrinterHostAddress) { $port.PrinterHostAddress } else { "Local" }
-            $info += "$($p.Name)`r`n  Driver: $($p.DriverName)`r`n  IP: $ip`r`n`r`n"
-        }
-        return $info
-    }}
-    @{Text = "List Software"; Action = {
-        $keys = "HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*",
-                "HKLM:\Software\Wow6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*"
-        $software = Get-ItemProperty $keys -ErrorAction SilentlyContinue | 
-            Where-Object { $_.DisplayName } | 
-            Sort-Object DisplayName |
-            Select-Object DisplayName, DisplayVersion
-        
-        $info = "=== INSTALLED SOFTWARE ===`r`n`r`n"
-        foreach ($s in $software) {
-            $info += "$($s.DisplayName) - $($s.DisplayVersion)`r`n"
-        }
-        return $info
-    }}
-    @{Text = "Event Log Errors"; Action = {
-        $info = "=== RECENT SYSTEM ERRORS (7 Days) ===`r`n`r`n"
-        $events = Get-WinEvent -FilterHashtable @{LogName='System','Application'; Level=1,2; StartTime=(Get-Date).AddDays(-7)} -MaxEvents 30 -ErrorAction SilentlyContinue
-        if ($events) {
-            foreach ($e in $events) {
-                $info += "[$($e.TimeCreated.ToString('MM-dd HH:mm'))] $($e.ProviderName)`r`n"
-                $info += "  $($e.Message.Substring(0, [Math]::Min(150, $e.Message.Length)))...`r`n`r`n"
-            }
-        } else {
-            $info += "No critical errors found!"
-        }
-        return $info
-    }}
-    @{Text = "Running Services"; Action = {
-        $services = Get-Service | Where-Object { $_.Status -eq "Running" } | Sort-Object DisplayName
-        $info = "=== RUNNING SERVICES ===`r`n`r`n"
-        foreach ($s in $services) {
-            $info += "$($s.DisplayName) [$($s.Name)]`r`n"
-        }
-        return $info
-    }}
-    @{Text = "Startup Programs"; Action = {
-        $info = "=== STARTUP PROGRAMS ===`r`n`r`n"
-        $startup = Get-CimInstance Win32_StartupCommand
-        foreach ($s in $startup) {
-            $info += "$($s.Name)`r`n  Command: $($s.Command)`r`n  Location: $($s.Location)`r`n`r`n"
-        }
-        return $info
-    }}
+    @{Name = "Printers"; Cmd = { Get-Printer | Format-Table Name, DriverName, PortName -AutoSize | Out-String }}
+    @{Name = "Software"; Cmd = { Get-ItemProperty "HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*","HKLM:\Software\Wow6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*" -EA 0 | Where-Object DisplayName | Sort-Object DisplayName | Select-Object DisplayName, DisplayVersion | Format-Table -AutoSize | Out-String }}
+    @{Name = "Event Errors"; Cmd = { Get-WinEvent -FilterHashtable @{LogName='System','Application';Level=1,2;StartTime=(Get-Date).AddDays(-7)} -MaxEvents 20 -EA 0 | Format-Table TimeCreated, ProviderName, Message -Wrap | Out-String }}
+    @{Name = "Services"; Cmd = { Get-Service | Where-Object Status -eq Running | Sort-Object DisplayName | Format-Table DisplayName, Name -AutoSize | Out-String }}
+    @{Name = "Startup"; Cmd = { Get-CimInstance Win32_StartupCommand | Format-Table Name, Command, Location -Wrap | Out-String }}
 )
 
-$btnY = 60
-foreach ($diag in $diagButtons) {
+$btnY = 50
+foreach ($diag in $diagBtns) {
     $btn = New-Object System.Windows.Forms.Button
-    $btn.Text = $diag.Text
-    $btn.Location = New-Object System.Drawing.Point(690, $btnY)
-    $btn.Size = New-Object System.Drawing.Size(150, 40)
+    $btn.Text = $diag.Name
+    $btn.Location = New-Object System.Drawing.Point(540, $btnY)
+    $btn.Size = New-Object System.Drawing.Size(120, 32)
     $btn.FlatStyle = "Flat"
-    $btn.BackColor = $Theme.Card
-    $btn.ForeColor = $Theme.Text
+    $btn.BackColor = $script:Theme.Card
+    $btn.ForeColor = $script:Theme.Text
     $btn.FlatAppearance.BorderSize = 0
-    $btn.Tag = $diag.Action
     $btn.Anchor = "Top, Right"
-    
-    $btn.Add_Click({
-        Log-Output "Running diagnostic: $($this.Text)..."
-        $result = & $this.Tag
-        $txtDiag.Text = $result
-        Log-Output "Diagnostic complete."
-    })
-    
-    $pageDiagnostics.Controls.Add($btn)
-    $btnY += 50
+    $btn.Tag = $diag.Cmd
+    $btn.Add_Click({ Log "Running: $($this.Text)..."; $txtDiag.Text = & $this.Tag; Log "Done." })
+    $pageDiag.Controls.Add($btn)
+    $btnY += 40
 }
 
-$pageDiagnostics.Controls.AddRange(@($lblDiagTitle, $txtDiag))
-$pages["Diagnostics"] = $pageDiagnostics
+$pageDiag.Controls.AddRange(@($lblDiagTitle, $txtDiag))
+$pages["Diagnostics"] = $pageDiag
 
 # === NETWORK PAGE ===
-$pageNetwork = New-Object System.Windows.Forms.Panel
-$pageNetwork.Dock = "Fill"
-$pageNetwork.BackColor = $Theme.Background
-$pageNetwork.AutoScroll = $true
+$pageNet = New-Object System.Windows.Forms.Panel
+$pageNet.Dock = "Fill"
+$pageNet.BackColor = $script:Theme.Bg
 
 $lblNetTitle = New-Object System.Windows.Forms.Label
-$lblNetTitle.Text = "Network Tools"
-$lblNetTitle.Location = New-Object System.Drawing.Point(20, 20)
+$lblNetTitle.Text = "NETWORK TOOLS"
+$lblNetTitle.Location = New-Object System.Drawing.Point(20, 15)
 $lblNetTitle.AutoSize = $true
-$lblNetTitle.Font = New-Object System.Drawing.Font("Segoe UI", 14, [System.Drawing.FontStyle]::Bold)
+$lblNetTitle.Font = New-Object System.Drawing.Font("Segoe UI", 11, [System.Drawing.FontStyle]::Bold)
+$lblNetTitle.ForeColor = $script:Theme.Dim
 
 $txtNet = New-Object System.Windows.Forms.TextBox
 $txtNet.Multiline = $true
 $txtNet.ScrollBars = "Both"
 $txtNet.ReadOnly = $true
-$txtNet.Location = New-Object System.Drawing.Point(20, 60)
-$txtNet.Size = New-Object System.Drawing.Size(650, 300)
-$txtNet.BackColor = $Theme.Surface
-$txtNet.ForeColor = $Theme.Text
+$txtNet.Location = New-Object System.Drawing.Point(20, 50)
+$txtNet.Size = New-Object System.Drawing.Size(500, 350)
+$txtNet.BackColor = $script:Theme.Surface
+$txtNet.ForeColor = $script:Theme.Text
 $txtNet.Font = New-Object System.Drawing.Font("Consolas", 9)
 $txtNet.Anchor = "Top, Left, Right, Bottom"
 
-$netButtons = @(
-    @{Text = "IP Configuration"; Action = { ipconfig /all | Out-String }}
-    @{Text = "ARP Table"; Action = { arp -a | Out-String }}
-    @{Text = "Test Internet"; Action = { 
-        "Testing connectivity...`r`n"
-        Test-Connection -ComputerName 8.8.8.8 -Count 4 | Format-Table Address, ResponseTime, Status | Out-String 
-    }}
-    @{Text = "Active Connections"; Action = { netstat -an | Out-String }}
-    @{Text = "DNS Servers"; Action = { Get-DnsClientServerAddress | Format-Table InterfaceAlias, ServerAddresses | Out-String }}
-    @{Text = "Routing Table"; Action = { route print | Out-String }}
+$netBtns = @(
+    @{Name = "IP Config"; Cmd = { ipconfig /all | Out-String }}
+    @{Name = "ARP Table"; Cmd = { arp -a | Out-String }}
+    @{Name = "Test Internet"; Cmd = { Test-Connection 8.8.8.8 -Count 4 | Format-Table Address, ResponseTime, Status | Out-String }}
+    @{Name = "Connections"; Cmd = { netstat -an | Out-String }}
+    @{Name = "DNS Servers"; Cmd = { Get-DnsClientServerAddress | Format-Table InterfaceAlias, ServerAddresses | Out-String }}
+    @{Name = "Routes"; Cmd = { route print | Out-String }}
 )
 
-$btnY = 60
-foreach ($net in $netButtons) {
+$btnY = 50
+foreach ($net in $netBtns) {
     $btn = New-Object System.Windows.Forms.Button
-    $btn.Text = $net.Text
-    $btn.Location = New-Object System.Drawing.Point(690, $btnY)
-    $btn.Size = New-Object System.Drawing.Size(150, 40)
+    $btn.Text = $net.Name
+    $btn.Location = New-Object System.Drawing.Point(540, $btnY)
+    $btn.Size = New-Object System.Drawing.Size(120, 32)
     $btn.FlatStyle = "Flat"
-    $btn.BackColor = $Theme.Card
-    $btn.ForeColor = $Theme.Text
+    $btn.BackColor = $script:Theme.Card
+    $btn.ForeColor = $script:Theme.Text
     $btn.FlatAppearance.BorderSize = 0
-    $btn.Tag = $net.Action
     $btn.Anchor = "Top, Right"
-    
-    $btn.Add_Click({
-        Log-Output "Running: $($this.Text)..."
-        $result = & $this.Tag
-        $txtNet.Text = $result
-    })
-    
-    $pageNetwork.Controls.Add($btn)
-    $btnY += 50
+    $btn.Tag = $net.Cmd
+    $btn.Add_Click({ Log "Running: $($this.Text)..."; $txtNet.Text = & $this.Tag; Log "Done." })
+    $pageNet.Controls.Add($btn)
+    $btnY += 40
 }
 
-$pageNetwork.Controls.AddRange(@($lblNetTitle, $txtNet))
-$pages["Network"] = $pageNetwork
+$pageNet.Controls.AddRange(@($lblNetTitle, $txtNet))
+$pages["Network"] = $pageNet
 
 # === NINJAONE PAGE ===
 $pageNinja = New-Object System.Windows.Forms.Panel
 $pageNinja.Dock = "Fill"
-$pageNinja.BackColor = $Theme.Background
+$pageNinja.BackColor = $script:Theme.Bg
 
 $lblNinjaTitle = New-Object System.Windows.Forms.Label
-$lblNinjaTitle.Text = "NinjaOne RMM Integration"
-$lblNinjaTitle.Location = New-Object System.Drawing.Point(20, 20)
+$lblNinjaTitle.Text = "NINJAONE RMM"
+$lblNinjaTitle.Location = New-Object System.Drawing.Point(20, 15)
 $lblNinjaTitle.AutoSize = $true
-$lblNinjaTitle.Font = New-Object System.Drawing.Font("Segoe UI", 14, [System.Drawing.FontStyle]::Bold)
-
-# Connection Panel
-$panelNinjaConn = New-Object System.Windows.Forms.Panel
-$panelNinjaConn.Location = New-Object System.Drawing.Point(20, 60)
-$panelNinjaConn.Size = New-Object System.Drawing.Size(400, 200)
-$panelNinjaConn.BackColor = $Theme.Card
+$lblNinjaTitle.Font = New-Object System.Drawing.Font("Segoe UI", 11, [System.Drawing.FontStyle]::Bold)
+$lblNinjaTitle.ForeColor = $script:Theme.Dim
 
 $savedSettings = Get-NinjaSettings
 
-$lblNinjaUrl = New-Object System.Windows.Forms.Label
-$lblNinjaUrl.Text = "Instance URL:"
-$lblNinjaUrl.Location = New-Object System.Drawing.Point(15, 15)
-$lblNinjaUrl.AutoSize = $true
+$lblUrl = New-Object System.Windows.Forms.Label
+$lblUrl.Text = "Instance URL:"
+$lblUrl.Location = New-Object System.Drawing.Point(20, 50)
+$lblUrl.AutoSize = $true
 
-$txtNinjaUrl = New-Object System.Windows.Forms.TextBox
-$txtNinjaUrl.Location = New-Object System.Drawing.Point(15, 35)
-$txtNinjaUrl.Size = New-Object System.Drawing.Size(370, 25)
-$txtNinjaUrl.Text = if ($savedSettings.Url) { $savedSettings.Url } else { "app.ninjarmm.com" }
+$txtUrl = New-Object System.Windows.Forms.TextBox
+$txtUrl.Location = New-Object System.Drawing.Point(20, 70)
+$txtUrl.Size = New-Object System.Drawing.Size(300, 25)
+$txtUrl.Text = if ($savedSettings.Url) { $savedSettings.Url } else { "app.ninjarmm.com" }
 
-$lblNinjaCid = New-Object System.Windows.Forms.Label
-$lblNinjaCid.Text = "Client ID:"
-$lblNinjaCid.Location = New-Object System.Drawing.Point(15, 65)
-$lblNinjaCid.AutoSize = $true
+$lblCid = New-Object System.Windows.Forms.Label
+$lblCid.Text = "Client ID:"
+$lblCid.Location = New-Object System.Drawing.Point(20, 100)
+$lblCid.AutoSize = $true
 
-$txtNinjaCid = New-Object System.Windows.Forms.TextBox
-$txtNinjaCid.Location = New-Object System.Drawing.Point(15, 85)
-$txtNinjaCid.Size = New-Object System.Drawing.Size(370, 25)
-$txtNinjaCid.Text = $savedSettings.ClientId
+$txtCid = New-Object System.Windows.Forms.TextBox
+$txtCid.Location = New-Object System.Drawing.Point(20, 120)
+$txtCid.Size = New-Object System.Drawing.Size(300, 25)
+$txtCid.Text = $savedSettings.ClientId
 
-$lblNinjaSec = New-Object System.Windows.Forms.Label
-$lblNinjaSec.Text = "Client Secret:"
-$lblNinjaSec.Location = New-Object System.Drawing.Point(15, 115)
-$lblNinjaSec.AutoSize = $true
+$lblSec = New-Object System.Windows.Forms.Label
+$lblSec.Text = "Client Secret:"
+$lblSec.Location = New-Object System.Drawing.Point(20, 150)
+$lblSec.AutoSize = $true
 
-$txtNinjaSec = New-Object System.Windows.Forms.TextBox
-$txtNinjaSec.Location = New-Object System.Drawing.Point(15, 135)
-$txtNinjaSec.Size = New-Object System.Drawing.Size(370, 25)
-$txtNinjaSec.UseSystemPasswordChar = $true
-$txtNinjaSec.Text = $savedSettings.ClientSecret
+$txtSec = New-Object System.Windows.Forms.TextBox
+$txtSec.Location = New-Object System.Drawing.Point(20, 170)
+$txtSec.Size = New-Object System.Drawing.Size(300, 25)
+$txtSec.UseSystemPasswordChar = $true
+$txtSec.Text = $savedSettings.ClientSecret
 
-$btnNinjaConnect = New-Object System.Windows.Forms.Button
-$btnNinjaConnect.Text = "Connect"
-$btnNinjaConnect.Location = New-Object System.Drawing.Point(15, 165)
-$btnNinjaConnect.Size = New-Object System.Drawing.Size(100, 30)
-$btnNinjaConnect.FlatStyle = "Flat"
-$btnNinjaConnect.BackColor = $Theme.Accent
-$btnNinjaConnect.ForeColor = "White"
-$btnNinjaConnect.FlatAppearance.BorderSize = 0
-$btnNinjaConnect.Add_Click({
-    Save-NinjaSettings -Url $txtNinjaUrl.Text -Id $txtNinjaCid.Text -Secret $txtNinjaSec.Text
-    $result = Connect-NinjaOne -ClientId $txtNinjaCid.Text -ClientSecret $txtNinjaSec.Text -InstanceUrl $txtNinjaUrl.Text
-    if ($result) {
-        $lblNinjaStatus.Text = "Connected!"
-        $lblNinjaStatus.ForeColor = $Theme.Success
-        Update-NinjaDeviceInfo
+$lblNinjaConn = New-Object System.Windows.Forms.Label
+$lblNinjaConn.Text = "$($script:StatusPending) Not connected"
+$lblNinjaConn.Location = New-Object System.Drawing.Point(140, 210)
+$lblNinjaConn.AutoSize = $true
+$lblNinjaConn.Font = New-Object System.Drawing.Font("Consolas", 10)
+$lblNinjaConn.ForeColor = $script:Theme.Dim
+
+$btnConnect = New-Object System.Windows.Forms.Button
+$btnConnect.Text = "Connect"
+$btnConnect.Location = New-Object System.Drawing.Point(20, 205)
+$btnConnect.Size = New-Object System.Drawing.Size(100, 30)
+$btnConnect.FlatStyle = "Flat"
+$btnConnect.BackColor = $script:Theme.Accent
+$btnConnect.ForeColor = "White"
+$btnConnect.FlatAppearance.BorderSize = 0
+$btnConnect.Add_Click({
+    Save-NinjaSettings -Url $txtUrl.Text -Id $txtCid.Text -Secret $txtSec.Text
+    $lblNinjaConn.Text = "$($script:StatusPending) Connecting..."
+    $lblNinjaConn.ForeColor = $script:Theme.Dim
+    [System.Windows.Forms.Application]::DoEvents()
+    
+    if (Connect-NinjaOne -ClientId $txtCid.Text -ClientSecret $txtSec.Text -InstanceUrl $txtUrl.Text) {
+        $lblNinjaConn.Text = "$($script:StatusOK) Connected!"
+        $lblNinjaConn.ForeColor = $script:Theme.Green
     } else {
-        $lblNinjaStatus.Text = "Connection Failed"
-        $lblNinjaStatus.ForeColor = $Theme.Error
+        $lblNinjaConn.Text = "$($script:StatusBad) Failed"
+        $lblNinjaConn.ForeColor = $script:Theme.Red
     }
 })
 
-$lblNinjaStatus = New-Object System.Windows.Forms.Label
-$lblNinjaStatus.Text = "Not Connected"
-$lblNinjaStatus.Location = New-Object System.Drawing.Point(130, 172)
-$lblNinjaStatus.AutoSize = $true
-$lblNinjaStatus.ForeColor = $Theme.TextSecondary
-
-$panelNinjaConn.Controls.AddRange(@($lblNinjaUrl, $txtNinjaUrl, $lblNinjaCid, $txtNinjaCid, $lblNinjaSec, $txtNinjaSec, $btnNinjaConnect, $lblNinjaStatus))
-
-# Device Info Panel
-$panelNinjaDevice = New-Object System.Windows.Forms.Panel
-$panelNinjaDevice.Location = New-Object System.Drawing.Point(440, 60)
-$panelNinjaDevice.Size = New-Object System.Drawing.Size(400, 300)
-$panelNinjaDevice.BackColor = $Theme.Card
-$panelNinjaDevice.Anchor = "Top, Left, Right, Bottom"
-
-$lblNinjaDevTitle = New-Object System.Windows.Forms.Label
-$lblNinjaDevTitle.Text = "Device Information (from Ninja)"
-$lblNinjaDevTitle.Location = New-Object System.Drawing.Point(15, 10)
-$lblNinjaDevTitle.AutoSize = $true
-$lblNinjaDevTitle.ForeColor = $Theme.TextSecondary
-
-$txtNinjaDevice = New-Object System.Windows.Forms.TextBox
-$txtNinjaDevice.Multiline = $true
-$txtNinjaDevice.ScrollBars = "Vertical"
-$txtNinjaDevice.ReadOnly = $true
-$txtNinjaDevice.Location = New-Object System.Drawing.Point(15, 35)
-$txtNinjaDevice.Size = New-Object System.Drawing.Size(370, 250)
-$txtNinjaDevice.BackColor = $Theme.Surface
-$txtNinjaDevice.ForeColor = $Theme.Text
-$txtNinjaDevice.Font = New-Object System.Drawing.Font("Consolas", 9)
-$txtNinjaDevice.Anchor = "Top, Left, Right, Bottom"
-
-function Update-NinjaDeviceInfo {
-    if (-not $global:NinjaDeviceData) {
-        $txtNinjaDevice.Text = "No device data available."
-        return
-    }
-    
-    $d = $global:NinjaDeviceData
-    $info = "=== DEVICE INFO ===`r`n"
-    $info += "Name: $($d.systemName)`r`n"
-    $info += "ID: $($d.id)`r`n"
-    $info += "Org: $($d.organizationName)`r`n"
-    $info += "Last Contact: $($d.lastContact)`r`n"
-    $info += "Public IP: $($d.publicIP)`r`n`r`n"
-    
-    if ($d.alerts) {
-        $info += "=== ACTIVE ALERTS ===`r`n"
-        foreach ($a in $d.alerts) {
-            $info += "- $($a.message)`r`n"
-        }
-        $info += "`r`n"
-    }
-    
-    if ($d.osPatches) {
-        $pending = ($d.osPatches | Where-Object { $_.status -ne "INSTALLED" }).Count
-        $info += "=== PATCHES ===`r`n"
-        $info += "Pending Updates: $pending`r`n`r`n"
-    }
-    
-    if ($d.disks) {
-        $info += "=== DISKS (Ninja) ===`r`n"
-        foreach ($disk in $d.disks) {
-            $info += "$($disk.name): $($disk.health)`r`n"
-        }
-        $info += "`r`n"
-    }
-    
-    if ($d.activities) {
-        $info += "=== RECENT ACTIVITIES ===`r`n"
-        foreach ($act in ($d.activities | Select-Object -First 5)) {
-            $info += "- $($act.activityType): $($act.statusCode)`r`n"
-        }
-    }
-    
-    $txtNinjaDevice.Text = $info
-}
-
-$panelNinjaDevice.Controls.AddRange(@($lblNinjaDevTitle, $txtNinjaDevice))
-
-$pageNinja.Controls.AddRange(@($lblNinjaTitle, $panelNinjaConn, $panelNinjaDevice))
+$pageNinja.Controls.AddRange(@($lblNinjaTitle, $lblUrl, $txtUrl, $lblCid, $txtCid, $lblSec, $txtSec, $btnConnect, $lblNinjaConn))
 $pages["NinjaOne"] = $pageNinja
 
-# === SECURITY AUDIT PAGE ===
+# === AUDIT PAGE ===
 $pageAudit = New-Object System.Windows.Forms.Panel
 $pageAudit.Dock = "Fill"
-$pageAudit.BackColor = $Theme.Background
+$pageAudit.BackColor = $script:Theme.Bg
 
 $lblAuditTitle = New-Object System.Windows.Forms.Label
-$lblAuditTitle.Text = "Security Audit Report"
-$lblAuditTitle.Location = New-Object System.Drawing.Point(20, 20)
+$lblAuditTitle.Text = "SECURITY AUDIT"
+$lblAuditTitle.Location = New-Object System.Drawing.Point(20, 15)
 $lblAuditTitle.AutoSize = $true
-$lblAuditTitle.Font = New-Object System.Drawing.Font("Segoe UI", 14, [System.Drawing.FontStyle]::Bold)
+$lblAuditTitle.Font = New-Object System.Drawing.Font("Segoe UI", 11, [System.Drawing.FontStyle]::Bold)
+$lblAuditTitle.ForeColor = $script:Theme.Dim
 
 $lblAuditDesc = New-Object System.Windows.Forms.Label
-$lblAuditDesc.Text = "Generate a comprehensive HIPAA-compliant security audit report for this system."
-$lblAuditDesc.Location = New-Object System.Drawing.Point(20, 55)
+$lblAuditDesc.Text = "Generate a comprehensive security audit report for this system."
+$lblAuditDesc.Location = New-Object System.Drawing.Point(20, 50)
 $lblAuditDesc.AutoSize = $true
-$lblAuditDesc.ForeColor = $Theme.TextSecondary
 
-$btnGenerateAudit = New-Object System.Windows.Forms.Button
-$btnGenerateAudit.Text = "Generate Security Audit Report"
-$btnGenerateAudit.Location = New-Object System.Drawing.Point(20, 100)
-$btnGenerateAudit.Size = New-Object System.Drawing.Size(300, 50)
-$btnGenerateAudit.FlatStyle = "Flat"
-$btnGenerateAudit.BackColor = $Theme.Accent
-$btnGenerateAudit.ForeColor = "White"
-$btnGenerateAudit.FlatAppearance.BorderSize = 0
-$btnGenerateAudit.Font = New-Object System.Drawing.Font("Segoe UI", 11)
-$btnGenerateAudit.Add_Click({
-    Log-Output "Generating Security Audit Report..."
-    [System.Windows.Forms.MessageBox]::Show("Security Audit generation would run here.`n`nThis connects to the full audit report generator from the original tool.", "Security Audit", "OK", "Information")
+$btnAudit = New-Object System.Windows.Forms.Button
+$btnAudit.Text = "Generate Audit Report"
+$btnAudit.Location = New-Object System.Drawing.Point(20, 90)
+$btnAudit.Size = New-Object System.Drawing.Size(200, 40)
+$btnAudit.FlatStyle = "Flat"
+$btnAudit.BackColor = $script:Theme.Accent
+$btnAudit.ForeColor = "White"
+$btnAudit.FlatAppearance.BorderSize = 0
+$btnAudit.Add_Click({
+    Log "Generating audit report..."
+    [System.Windows.Forms.MessageBox]::Show("Audit report generation would run here.", "Security Audit", "OK", "Information")
 })
 
-$pageAudit.Controls.AddRange(@($lblAuditTitle, $lblAuditDesc, $btnGenerateAudit))
-$pages["Security Audit"] = $pageAudit
+$pageAudit.Controls.AddRange(@($lblAuditTitle, $lblAuditDesc, $btnAudit))
+$pages["Audit"] = $pageAudit
 
-# --- Navigation Logic ---
-$script:ActiveTab = "Dashboard"
-
+# --- Navigation ---
 function Show-Page {
     param($PageName)
-    
     $panelContent.Controls.Clear()
     if ($pages.ContainsKey($PageName)) {
         $panelContent.Controls.Add($pages[$PageName])
-        $script:ActiveTab = $PageName
-        
-        # Update nav button colors
         foreach ($btn in $navButtons) {
-            if ($btn.Tag -eq $PageName) {
-                $btn.BackColor = $Theme.Accent
-            } else {
-                $btn.BackColor = $Theme.Card
-            }
+            $btn.BackColor = if ($btn.Tag -eq $PageName) { $script:Theme.Accent } else { $script:Theme.Card }
         }
-        
-        Log-Output "Switched to: $PageName"
+        Log "View: $PageName"
     }
-}
-
-# Wire up nav buttons
-foreach ($btn in $navButtons) {
-    $btn.Add_Click({
-        Show-Page $this.Tag
-    })
 }
 
 # --- Assemble Form ---
@@ -1094,20 +725,7 @@ $form.Controls.Add($panelHeader)
 # --- Initialize ---
 $form.Add_Shown({
     Show-Page "Dashboard"
-    $btnRefreshDash.PerformClick()
-    
-    # Auto-connect to Ninja if credentials saved
-    $settings = Get-NinjaSettings
-    if ($settings.ClientId -and $settings.ClientSecret) {
-        Log-Output "Auto-connecting to NinjaOne..."
-        $result = Connect-NinjaOne -ClientId $settings.ClientId -ClientSecret $settings.ClientSecret -InstanceUrl $settings.Url
-        if ($result) {
-            $lblNinjaStatus.Text = "Connected!"
-            $lblNinjaStatus.ForeColor = $Theme.Success
-        }
-    }
+    Log "WinFix Tool v2.1 ready - click Refresh to scan"
 })
 
-# --- Run ---
-Log-Output "WinFix Tool v2.0 Started"
 [void]$form.ShowDialog()
