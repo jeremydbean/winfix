@@ -570,6 +570,34 @@ $netBtns = @(
     @{Name = "Connections"; Cmd = { netstat -an | Out-String }}
     @{Name = "DNS Servers"; Cmd = { Get-DnsClientServerAddress | Format-Table InterfaceAlias, ServerAddresses | Out-String }}
     @{Name = "Routes"; Cmd = { route print | Out-String }}
+    @{Name = "WiFi Passwords"; Cmd = {
+        $output = "=== SAVED WIFI NETWORKS & PASSWORDS ===`r`n`r`n"
+        $profiles = netsh wlan show profiles | Select-String "All User Profile" | ForEach-Object {
+            ($_ -split ":")[-1].Trim()
+        }
+        if ($profiles) {
+            foreach ($profile in $profiles) {
+                $output += "Network: $profile`r`n"
+                $details = netsh wlan show profile name="$profile" key=clear 2>$null
+                $keyContent = $details | Select-String "Key Content"
+                if ($keyContent) {
+                    $password = ($keyContent -split ":")[-1].Trim()
+                    $output += "Password: $password`r`n"
+                } else {
+                    $output += "Password: (none/open network)`r`n"
+                }
+                $auth = $details | Select-String "Authentication"
+                if ($auth) {
+                    $authType = ($auth[0] -split ":")[-1].Trim()
+                    $output += "Auth: $authType`r`n"
+                }
+                $output += "`r`n"
+            }
+        } else {
+            $output += "No saved WiFi profiles found.`r`n"
+        }
+        $output
+    }}
 )
 
 $btnY = 50
