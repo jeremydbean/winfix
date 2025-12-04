@@ -3,7 +3,7 @@
     WinFix Tool - All-in-One Windows Maintenance & Security Audit Utility
 .DESCRIPTION
     A standalone GUI tool to perform common Windows fixes, gather system info, 
-    run network scans, and generate the "Polar Nite" Security Audit report.
+    run network scans, and generate the "Jeremy Bean" Security Audit report.
     Designed to be compiled into an EXE.
 .NOTES
     Requires Administrator Privileges.
@@ -212,19 +212,30 @@ function Connect-NinjaOne {
     if ([string]::IsNullOrWhiteSpace($ClientId)) { Log-Output "Using embedded Client ID..."; $ClientId = Decrypt-String -EncryptedString $EncId -Password $Pass }
     if ([string]::IsNullOrWhiteSpace($ClientSecret)) { Log-Output "Using embedded Client Secret..."; $ClientSecret = Decrypt-String -EncryptedString $EncSec -Password $Pass }
 
-    Log-Output "Connecting to NinjaOne ($InstanceUrl)..."
-    $tokenUrl = "https://$InstanceUrl/v2/oauth/token"
-    $body = @{ grant_type = "client_credentials"; client_id = $ClientId; client_secret = $ClientSecret; scope = "monitoring management" }
+    # Fix API URL if user enters dashboard URL
+    $ApiUrl = $InstanceUrl
+    if ($ApiUrl -match "^app\.") { $ApiUrl = $ApiUrl -replace "^app\.", "api." }
+    elseif ($ApiUrl -match "^eu\.") { $ApiUrl = $ApiUrl -replace "^eu\.", "eu-api." }
+    elseif ($ApiUrl -match "^oc\.") { $ApiUrl = $ApiUrl -replace "^oc\.", "oc-api." }
+    elseif ($ApiUrl -match "^ca\.") { $ApiUrl = $ApiUrl -replace "^ca\.", "ca-api." }
+
+    Log-Output "Connecting to NinjaOne ($ApiUrl)..."
+    $tokenUrl = "https://$ApiUrl/v2/oauth/token"
+    # Scope: monitoring only (Read Only)
+    $body = @{ grant_type = "client_credentials"; client_id = $ClientId; client_secret = $ClientSecret; scope = "monitoring" }
     
     try {
         $response = Invoke-RestMethod -Uri $tokenUrl -Method Post -Body $body -ErrorAction Stop
         $global:NinjaToken = $response.access_token
-        $global:NinjaInstance = $InstanceUrl
+        $global:NinjaInstance = $ApiUrl
         Log-Output "Successfully connected to NinjaOne!"
         Get-NinjaDeviceData
     } catch {
         Log-Output "Failed to connect: $($_.Exception.Message)"
         if ($_.ErrorDetails) { Log-Output "Details: $($_.ErrorDetails.Message)" }
+        if ($ApiUrl -ne $InstanceUrl) {
+             Log-Output "Note: Tried API URL '$ApiUrl' derived from '$InstanceUrl'."
+        }
     }
 }
 
@@ -275,7 +286,8 @@ $tabControl.Add_DrawItem({
     $sf = New-Object System.Drawing.StringFormat
     $sf.Alignment = "Center"
     $sf.LineAlignment = "Center"
-    $g.DrawString($text, $sender.Font, (New-Object System.Drawing.SolidBrush $textColor), $rect, $sf)
+    $rectF = New-Object System.Drawing.RectangleF $rect.X, $rect.Y, $rect.Width, $rect.Height
+    $g.DrawString($text, $sender.Font, (New-Object System.Drawing.SolidBrush $textColor), $rectF, $sf)
 })
 
 # --- Helper to add buttons ---
@@ -556,7 +568,7 @@ $tabAudit.BackColor = $Theme.Background
 $tabAudit.Padding = New-Object System.Windows.Forms.Padding(20)
 
 $lblAudit = New-Object System.Windows.Forms.Label
-$lblAudit.Text = "Generates the 'Polar Nite' Security & Backup Audit HTML Report."
+$lblAudit.Text = "Generates the 'Jeremy Bean' Security & Backup Audit HTML Report."
 $lblAudit.AutoSize = $true
 $lblAudit.Dock = "Top"
 $lblAudit.Padding = New-Object System.Windows.Forms.Padding(0,0,0,20)
@@ -591,18 +603,18 @@ $form.Controls.Add($panelOutput)
 function Invoke-SecurityAudit {
     # This function contains the logic provided by the user
     
-    Log-Output "Initializing Polar Nite Audit..."
+    Log-Output "Initializing Jeremy Bean Audit..."
     
     # --- Configuration & Path Robustness ---
     # Robustly find the Desktop path (handles OneDrive redirection)
     $DesktopPath = [Environment]::GetFolderPath("Desktop")
     if (-not (Test-Path $DesktopPath)) { $DesktopPath = $env:TEMP } # Fallback to Temp if Desktop fails
 
-    $ReportPath = Join-Path -Path $DesktopPath -ChildPath "PolarNite_SecurityAudit_$(Get-Date -Format 'yyyyMMdd_HHmm').html"
+    $ReportPath = Join-Path -Path $DesktopPath -ChildPath "JeremyBean_SecurityAudit_$(Get-Date -Format 'yyyyMMdd_HHmm').html"
     $EventLookbackDays = 30
     $MaxEventsToShow = 15
 
-    # --- Styling & Scripting (Polar Nite - Light Theme) ---
+    # --- Styling & Scripting (Jeremy Bean - Light Theme) ---
     $style = @"
     <style>
         :root {
@@ -1366,7 +1378,7 @@ function Invoke-SecurityAudit {
             <td>$(Get-HtmlTextArea)</td>
             <td>$(Get-HtmlInput "Safeguard")</td>
             <td>$(Get-HtmlSelect @("Low", "Moderate", "High"))</td>
-            <td>$(Get-HtmlSelect @("Polar Nite IT", "Client"))</td>
+            <td>$(Get-HtmlSelect @("Jeremy Bean IT", "Client"))</td>
             <td>$(Get-HtmlSelect @("Planned", "In Progress", "Not Scheduled"))</td>
         </tr>
         <tr><td colspan="5"><strong>Notes:</strong> $(Get-HtmlInput "Additional Notes")</td></tr>
