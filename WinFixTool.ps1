@@ -794,28 +794,67 @@ $tabUsers.Padding = New-Object System.Windows.Forms.Padding(20)
 $grpUser = New-Object System.Windows.Forms.GroupBox
 $grpUser.Text = "User Management"
 $grpUser.Location = New-Object System.Drawing.Point(20, 20)
-$grpUser.Size = New-Object System.Drawing.Size(400, 300)
+$grpUser.Size = New-Object System.Drawing.Size(400, 360)
 $grpUser.ForeColor = $Theme.Text
+
+$lblUserList = New-Object System.Windows.Forms.Label
+$lblUserList.Text = "Local Users:"
+$lblUserList.Location = New-Object System.Drawing.Point(20, 25)
+$lblUserList.AutoSize = $true
+$grpUser.Controls.Add($lblUserList)
+
+$lstUsers = New-Object System.Windows.Forms.ListBox
+$lstUsers.Location = New-Object System.Drawing.Point(20, 45)
+$lstUsers.Size = New-Object System.Drawing.Size(350, 80)
+$lstUsers.BackColor = $Theme.OutputBg
+$lstUsers.ForeColor = $Theme.OutputFg
+$lstUsers.Add_SelectedIndexChanged({
+    if ($lstUsers.SelectedItem) {
+        $txtUName.Text = $lstUsers.SelectedItem
+        Log-Output "Selected user: $($lstUsers.SelectedItem)"
+    }
+})
+$grpUser.Controls.Add($lstUsers)
+
+$btnRefreshUsers = New-Object System.Windows.Forms.Button
+$btnRefreshUsers.Text = "Refresh"
+$btnRefreshUsers.Location = New-Object System.Drawing.Point(295, 20)
+$btnRefreshUsers.Width = 75
+$btnRefreshUsers.Height = 22
+$btnRefreshUsers.FlatStyle = "Flat"
+$btnRefreshUsers.BackColor = $Theme.Button
+$btnRefreshUsers.ForeColor = $Theme.Text
+$btnRefreshUsers.FlatAppearance.BorderSize = 0
+$btnRefreshUsers.Add_Click({
+    Log-Output "Refreshing user list..."
+    $lstUsers.Items.Clear()
+    try {
+        $users = Get-LocalUser | Select-Object -ExpandProperty Name
+        foreach ($u in $users) { $lstUsers.Items.Add($u) | Out-Null }
+        Log-Output "Loaded $($users.Count) users"
+    } catch { Log-Output "Error loading users: $_" }
+})
+$grpUser.Controls.Add($btnRefreshUsers)
 
 $lblUName = New-Object System.Windows.Forms.Label
 $lblUName.Text = "Username:"
-$lblUName.Location = New-Object System.Drawing.Point(20, 30)
+$lblUName.Location = New-Object System.Drawing.Point(20, 135)
 $lblUName.AutoSize = $true
 $grpUser.Controls.Add($lblUName)
 
 $txtUName = New-Object System.Windows.Forms.TextBox
-$txtUName.Location = New-Object System.Drawing.Point(20, 50)
+$txtUName.Location = New-Object System.Drawing.Point(20, 155)
 $txtUName.Width = 350
 $grpUser.Controls.Add($txtUName)
 
 $lblUPass = New-Object System.Windows.Forms.Label
 $lblUPass.Text = "Password:"
-$lblUPass.Location = New-Object System.Drawing.Point(20, 80)
+$lblUPass.Location = New-Object System.Drawing.Point(20, 185)
 $lblUPass.AutoSize = $true
 $grpUser.Controls.Add($lblUPass)
 
 $txtUPass = New-Object System.Windows.Forms.TextBox
-$txtUPass.Location = New-Object System.Drawing.Point(20, 100)
+$txtUPass.Location = New-Object System.Drawing.Point(20, 205)
 $txtUPass.Width = 350
 $grpUser.Controls.Add($txtUPass)
 
@@ -834,7 +873,7 @@ function Add-UserButton($parent, $text, $x, $y, $script) {
     $parent.Controls.Add($btn)
 }
 
-Add-UserButton $grpUser "Create User" 20 140 {
+Add-UserButton $grpUser "Create User" 20 245 {
     $u = $txtUName.Text; $p = $txtUPass.Text
     if (-not $u) { Log-Output "Username required."; return }
     Start-WorkerJob -Name "Create User" -ArgumentList @($u, $p) -ScriptBlock {
@@ -848,7 +887,7 @@ Add-UserButton $grpUser "Create User" 20 140 {
     }
 }
 
-Add-UserButton $grpUser "Reset Password" 20 180 {
+Add-UserButton $grpUser "Reset Password" 20 285 {
     $u = $txtUName.Text; $p = $txtUPass.Text
     if (-not $u -or -not $p) { Log-Output "Username and Password required."; return }
     Start-WorkerJob -Name "Reset Password" -ArgumentList @($u, $p) -ScriptBlock {
@@ -861,7 +900,7 @@ Add-UserButton $grpUser "Reset Password" 20 180 {
     }
 }
 
-Add-UserButton $grpUser "Add to Administrators" 20 220 {
+Add-UserButton $grpUser "Add to Administrators" 20 325 {
     $u = $txtUName.Text
     if (-not $u) { Log-Output "Username required."; return }
     Start-WorkerJob -Name "Add Admin" -ArgumentList @($u) -ScriptBlock {
@@ -873,19 +912,19 @@ Add-UserButton $grpUser "Add to Administrators" 20 220 {
     }
 }
 
-Add-UserButton $grpUser "Enable User" 200 140 {
+Add-UserButton $grpUser "Enable User" 200 245 {
     $u = $txtUName.Text
     if (-not $u) { Log-Output "Username required."; return }
     Start-WorkerJob -Name "Enable User" -ArgumentList @($u) -ScriptBlock { param($u); Enable-LocalUser $u; "User '$u' enabled." }
 }
 
-Add-UserButton $grpUser "Disable User" 200 180 {
+Add-UserButton $grpUser "Disable User" 200 285 {
     $u = $txtUName.Text
     if (-not $u) { Log-Output "Username required."; return }
     Start-WorkerJob -Name "Disable User" -ArgumentList @($u) -ScriptBlock { param($u); Disable-LocalUser $u; "User '$u' disabled." }
 }
 
-Add-UserButton $grpUser "Delete User" 200 220 {
+Add-UserButton $grpUser "Delete User" 200 325 {
     $u = $txtUName.Text
     if (-not $u) { Log-Output "Username required."; return }
     Start-WorkerJob -Name "Delete User" -ArgumentList @($u) -ScriptBlock { param($u); Remove-LocalUser $u -ErrorAction Stop; "User '$u' deleted." }
@@ -895,32 +934,76 @@ Add-UserButton $grpUser "Delete User" 200 220 {
 $grpShare = New-Object System.Windows.Forms.GroupBox
 $grpShare.Text = "Network Shares"
 $grpShare.Location = New-Object System.Drawing.Point(440, 20)
-$grpShare.Size = New-Object System.Drawing.Size(400, 300)
+$grpShare.Size = New-Object System.Drawing.Size(400, 360)
 $grpShare.ForeColor = $Theme.Text
+
+$lblShareList = New-Object System.Windows.Forms.Label
+$lblShareList.Text = "Network Shares:"
+$lblShareList.Location = New-Object System.Drawing.Point(20, 25)
+$lblShareList.AutoSize = $true
+$grpShare.Controls.Add($lblShareList)
+
+$lstShares = New-Object System.Windows.Forms.ListBox
+$lstShares.Location = New-Object System.Drawing.Point(20, 45)
+$lstShares.Size = New-Object System.Drawing.Size(350, 80)
+$lstShares.BackColor = $Theme.OutputBg
+$lstShares.ForeColor = $Theme.OutputFg
+$lstShares.Add_SelectedIndexChanged({
+    if ($lstShares.SelectedItem) {
+        $shareName = $lstShares.SelectedItem -replace " \(.*\)$", ""
+        $txtSName.Text = $shareName
+        try {
+            $share = Get-SmbShare -Name $shareName -ErrorAction Stop
+            $txtSPath.Text = $share.Path
+            Log-Output "Selected share: $shareName -> $($share.Path)"
+        } catch { Log-Output "Error loading share details: $_" }
+    }
+})
+$grpShare.Controls.Add($lstShares)
+
+$btnRefreshShares = New-Object System.Windows.Forms.Button
+$btnRefreshShares.Text = "Refresh"
+$btnRefreshShares.Location = New-Object System.Drawing.Point(295, 20)
+$btnRefreshShares.Width = 75
+$btnRefreshShares.Height = 22
+$btnRefreshShares.FlatStyle = "Flat"
+$btnRefreshShares.BackColor = $Theme.Button
+$btnRefreshShares.ForeColor = $Theme.Text
+$btnRefreshShares.FlatAppearance.BorderSize = 0
+$btnRefreshShares.Add_Click({
+    Log-Output "Refreshing share list..."
+    $lstShares.Items.Clear()
+    try {
+        $shares = Get-SmbShare | Where-Object { $_.Name -notin @("IPC$", "ADMIN$", "C$", "D$", "E$") }
+        foreach ($s in $shares) { $lstShares.Items.Add("$($s.Name) ($($s.Path))") | Out-Null }
+        Log-Output "Loaded $($shares.Count) shares"
+    } catch { Log-Output "Error loading shares: $_" }
+})
+$grpShare.Controls.Add($btnRefreshShares)
 
 $lblSPath = New-Object System.Windows.Forms.Label
 $lblSPath.Text = "Folder Path (e.g. C:\Share):"
-$lblSPath.Location = New-Object System.Drawing.Point(20, 30)
+$lblSPath.Location = New-Object System.Drawing.Point(20, 135)
 $lblSPath.AutoSize = $true
 $grpShare.Controls.Add($lblSPath)
 
 $txtSPath = New-Object System.Windows.Forms.TextBox
-$txtSPath.Location = New-Object System.Drawing.Point(20, 50)
+$txtSPath.Location = New-Object System.Drawing.Point(20, 155)
 $txtSPath.Width = 350
 $grpShare.Controls.Add($txtSPath)
 
 $lblSName = New-Object System.Windows.Forms.Label
 $lblSName.Text = "Share Name:"
-$lblSName.Location = New-Object System.Drawing.Point(20, 80)
+$lblSName.Location = New-Object System.Drawing.Point(20, 185)
 $lblSName.AutoSize = $true
 $grpShare.Controls.Add($lblSName)
 
 $txtSName = New-Object System.Windows.Forms.TextBox
-$txtSName.Location = New-Object System.Drawing.Point(20, 100)
+$txtSName.Location = New-Object System.Drawing.Point(20, 205)
 $txtSName.Width = 350
 $grpShare.Controls.Add($txtSName)
 
-Add-UserButton $grpShare "Create Share (Full Access)" 20 140 {
+Add-UserButton $grpShare "Create Share (Full Access)" 20 245 {
     $p = $txtSPath.Text; $n = $txtSName.Text
     if (-not $p -or -not $n) { Log-Output "Path and Name required."; return }
     Start-WorkerJob -Name "Create Share" -ArgumentList @($p, $n) -ScriptBlock {
@@ -934,7 +1017,7 @@ Add-UserButton $grpShare "Create Share (Full Access)" 20 140 {
 }
 $grpShare.Controls[$grpShare.Controls.Count-1].Width = 350
 
-Add-UserButton $grpShare "Delete Share" 20 180 {
+Add-UserButton $grpShare "Delete Share" 20 285 {
     $n = $txtSName.Text
     if (-not $n) { Log-Output "Share Name required."; return }
     Start-WorkerJob -Name "Delete Share" -ArgumentList @($n) -ScriptBlock {
@@ -947,8 +1030,17 @@ Add-UserButton $grpShare "Delete Share" 20 180 {
 }
 $grpShare.Controls[$grpShare.Controls.Count-1].Width = 350
 
+# Auto-load on tab open
 $tabUsers.Controls.Add($grpUser)
 $tabUsers.Controls.Add($grpShare)
+
+# Trigger initial load when tab is selected
+$tabControl.Add_Selected({
+    if ($tabControl.SelectedTab -eq $tabUsers) {
+        if ($lstUsers.Items.Count -eq 0) { $btnRefreshUsers.PerformClick() }
+        if ($lstShares.Items.Count -eq 0) { $btnRefreshShares.PerformClick() }
+    }
+})
 
 # --- Tab 5: Security Audit ---
 $tabAudit = New-Object System.Windows.Forms.TabPage
@@ -971,6 +1063,26 @@ $btnRunAudit.BackColor = $Theme.Accent
 $btnRunAudit.ForeColor = "White"
 $btnRunAudit.FlatAppearance.BorderSize = 0
 $btnRunAudit.Add_Click({
+    Log-Output "=== Generate Audit Report Clicked ==="
+    
+    # Auto-connect to NinjaOne if not already connected
+    if (-not $global:NinjaToken) {
+        Log-Output "Not connected to NinjaOne. Attempting auto-connect..."
+        $savedSettings = Get-NinjaSettings
+        if ($savedSettings -and $savedSettings.Url) {
+            Connect-NinjaOne -ClientId $savedSettings.ClientId -ClientSecret $savedSettings.ClientSecret -InstanceUrl $savedSettings.Url
+        } else {
+            Log-Output "No saved NinjaOne settings. Please connect manually first."
+        }
+    } else {
+        Log-Output "Already connected to NinjaOne. Token exists."
+        # Refresh device data if we have a token but no device data
+        if (-not $global:NinjaDeviceData) {
+            Log-Output "No device data cached. Fetching..."
+            Get-NinjaDeviceData
+        }
+    }
+    
     Log-Output "Starting Security Audit..."
     Invoke-SecurityAudit
 })
@@ -1604,23 +1716,116 @@ function Invoke-SecurityAudit {
     # Ninja Extra Data Integration
     $ClientNameVal = ""
     $LocationDefault = ""
+    $NinjaOrgName = ""
+    $NinjaLocationName = ""
+    $NinjaRAIDStatus = ""
+    $NinjaDiskInfo = ""
+    $NinjaLastReboot = ""
+    $NinjaLastLoggedUser = ""
+    $NinjaCustomFields = @{}
+    
     if ($global:NinjaDeviceData) {
+        Log-Output "[-] Fetching extended NinjaOne device data..."
+        
+        # Basic identifiers
         if ($global:NinjaDeviceData.organizationId) { $ClientNameVal = "Ninja Org ID: $($global:NinjaDeviceData.organizationId)" }
         if ($global:NinjaDeviceData.locationId) { $LocationDefault += " (Ninja Loc: $($global:NinjaDeviceData.locationId))" }
         if ($global:NinjaDeviceData.publicIP) { $OpenPortsStr += " [Public IP: $($global:NinjaDeviceData.publicIP)]" }
         
-        # Fetch Detailed Info (Software/Disks)
+        # Last Reboot
+        if ($global:NinjaDeviceData.lastReboot) { 
+            $NinjaLastReboot = $global:NinjaDeviceData.lastReboot 
+            Log-Output "Ninja Last Reboot: $NinjaLastReboot"
+        }
+        
+        # Last Logged In User
+        if ($global:NinjaDeviceData.lastLoggedInUser) { 
+            $NinjaLastLoggedUser = $global:NinjaDeviceData.lastLoggedInUser 
+            Log-Output "Ninja Last User: $NinjaLastLoggedUser"
+        }
+        
+        # Fetch Detailed Info (Software/Disks/RAID/Custom Fields)
         try {
             $headers = @{ Authorization = "Bearer $global:NinjaToken" }
             $devId = $global:NinjaDeviceData.id
+            Log-Output "Device ID for extended queries: $devId"
             
-            # Check Software for ChiroTouch
-            $nSoft = Invoke-RestMethod -Uri "https://$($global:NinjaInstance)/v2/devices/$devId/software" -Headers $headers -ErrorAction SilentlyContinue
-            if ($nSoft -and ($nSoft | Where-Object { $_.name -match "ChiroTouch" })) { 
-                $ChiroInstalled = $true
-                if ($ChiroEncryptedSel -eq "N/A") { $ChiroEncryptedSel = if ($C_Encrypted) { "Yes" } else { "No" } }
-            }
-        } catch { Log-Output "Ninja Detail Fetch Error: $_" }
+            # Organization Name
+            try {
+                if ($global:NinjaDeviceData.organizationId) {
+                    $orgUrl = "https://$($global:NinjaInstance)/v2/organizations/$($global:NinjaDeviceData.organizationId)"
+                    $org = Invoke-RestMethod -Uri $orgUrl -Headers $headers -ErrorAction Stop
+                    $NinjaOrgName = $org.name
+                    $ClientNameVal = $NinjaOrgName
+                    Log-Output "Organization Name: $NinjaOrgName"
+                }
+            } catch { Log-Output "Could not fetch organization name: $_" }
+            
+            # Location Name
+            try {
+                if ($global:NinjaDeviceData.locationId) {
+                    $locUrl = "https://$($global:NinjaInstance)/v2/organization/$($global:NinjaDeviceData.organizationId)/locations/$($global:NinjaDeviceData.locationId)"
+                    $loc = Invoke-RestMethod -Uri $locUrl -Headers $headers -ErrorAction Stop
+                    $NinjaLocationName = $loc.name
+                    $LocationDefault = $NinjaLocationName
+                    Log-Output "Location Name: $NinjaLocationName"
+                }
+            } catch { Log-Output "Could not fetch location name: $_" }
+            
+            # Software Inventory (ChiroTouch)
+            try {
+                $nSoft = Invoke-RestMethod -Uri "https://$($global:NinjaInstance)/v2/device/$devId/software" -Headers $headers -ErrorAction Stop
+                if ($nSoft -and ($nSoft | Where-Object { $_.name -match "ChiroTouch" })) { 
+                    $ChiroInstalled = $true
+                    if ($ChiroEncryptedSel -eq "N/A") { $ChiroEncryptedSel = if ($C_Encrypted) { "Yes" } else { "No" } }
+                    Log-Output "ChiroTouch detected via Ninja"
+                }
+            } catch { Log-Output "Could not fetch software inventory: $_" }
+            
+            # Disk/RAID Status
+            try {
+                $nDisks = Invoke-RestMethod -Uri "https://$($global:NinjaInstance)/v2/device/$devId/disks" -Headers $headers -ErrorAction Stop
+                if ($nDisks) {
+                    Log-Output "Disk data retrieved from Ninja: $($nDisks.Count) disks"
+                    
+                    # Look for RAID information
+                    $raidDisks = $nDisks | Where-Object { $_.raidType -or $_.volumeType -match "RAID" }
+                    if ($raidDisks) {
+                        $NinjaRAIDStatus = ($raidDisks | ForEach-Object { 
+                            "$($_.name): $($_.raidType) - $($_.health)" 
+                        }) -join "; "
+                        Log-Output "RAID Status from Ninja: $NinjaRAIDStatus"
+                    }
+                    
+                    # Disk health summary
+                    $unhealthyDisks = $nDisks | Where-Object { $_.health -ne "Healthy" -and $_.health -ne $null }
+                    if ($unhealthyDisks) {
+                        $NinjaDiskInfo = "WARNING: " + ($unhealthyDisks | ForEach-Object { 
+                            "$($_.name) ($($_.health))" 
+                        }) -join ", "
+                    } else {
+                        $NinjaDiskInfo = "All disks healthy"
+                    }
+                    Log-Output "Disk Health: $NinjaDiskInfo"
+                }
+            } catch { Log-Output "Could not fetch disk data: $_" }
+            
+            # Custom Fields (for client-specific data)
+            try {
+                $nCustom = Invoke-RestMethod -Uri "https://$($global:NinjaInstance)/v2/device/$devId/custom-fields" -Headers $headers -ErrorAction Stop
+                if ($nCustom) {
+                    foreach ($prop in $nCustom.PSObject.Properties) {
+                        $NinjaCustomFields[$prop.Name] = $prop.Value
+                    }
+                    Log-Output "Custom Fields: $($NinjaCustomFields.Keys -join ', ')"
+                }
+            } catch { Log-Output "Could not fetch custom fields: $_" }
+            
+        } catch { 
+            Log-Output "Ninja Detail Fetch Error: $_" 
+        }
+    } else {
+        Log-Output "No NinjaOne device data available for extended queries."
     }
 
     # --- HTML GENERATION ---
@@ -1648,6 +1853,8 @@ function Invoke-SecurityAudit {
         <tr><th>OS Version</th><td>$($OSInfo.Caption) (Build $($OSInfo.BuildNumber)) $EOSWarning</td></tr>
         <tr><th>Role(s)</th><td>$(Get-HtmlInput "e.g., DC, Database" -Value $DetectedRoles)</td></tr>
         <tr><th>Who has administrative access?</th><td><ul>$($AdminGroup.Name | ForEach-Object { "<li>$_</li>" })</ul></td></tr>
+        $(if($NinjaLastLoggedUser){"<tr><th>Last Logged User (Ninja)</th><td>$NinjaLastLoggedUser</td></tr>"})
+        $(if($NinjaLastReboot){"<tr><th>Last Reboot (Ninja)</th><td>$NinjaLastReboot</td></tr>"})
     </table>
 
     <h2>1. Backup & Data Retention (HIPAA §164.308(a)(7))</h2>
@@ -1795,8 +2002,8 @@ function Invoke-SecurityAudit {
     </table>
     <h3>B. Redundancy</h3>
     <table>
-        <tr><th>RAID status</th><td>$(Get-HtmlInput "e.g., RAID 5 Healthy")</td></tr>
-        <tr><th>Storage warnings?</th><td>$(Get-HtmlInput "Describe..." -Value $StorageWarning)</td></tr>
+        <tr><th>RAID status</th><td>$(Get-HtmlInput "e.g., RAID 5 Healthy" -Value $NinjaRAIDStatus)</td></tr>
+        <tr><th>Storage warnings?</th><td>$(Get-HtmlInput "Describe..." -Value "$StorageWarning $(if($NinjaDiskInfo){" | Ninja: $NinjaDiskInfo"})")</td></tr>
         <tr><th>Drive SMART status (any failing drives?)</th><td>$(Get-HtmlInput "Describe..." -Value $DiskHealthStr) (Check App Logs above)</td></tr>
     </table>
 
