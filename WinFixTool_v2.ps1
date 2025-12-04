@@ -1431,7 +1431,7 @@ $btnAudit.Add_Click({
     $AdminGroup = Get-LocalGroupMember -Group "Administrators" -EA SilentlyContinue
     
     $Uptime = if ($OSInfo) { (Get-Date) - $OSInfo.LastBootUpTime; "{0}D {1}H" -f $_.Days, $_.Hours } else { "Unknown" }
-    $IsVM = $CompInfo.Model -match "Virtual|VMware"
+    $IsVM = $CompInfo.Model -match "Virtual|VMware|Hyper-V|KVM|Xen"
     
     # EOS Check
     $EOSWarning = ""
@@ -1464,8 +1464,21 @@ $btnAudit.Add_Click({
     $LastScan = if ($Defender.QuickScanEndTime) { $Defender.QuickScanEndTime.ToString("yyyy-MM-dd") } else { "Unknown" }
     
     # BitLocker
-    $BitLocker = Get-BitLockerVolume -EA SilentlyContinue | Where-Object MountPoint -eq "C:"
-    $BitLockerStatus = if ($BitLocker.ProtectionStatus -eq "On") { "Encrypted" } else { "Not Encrypted" }
+    $BitLockerStatus = "Unknown"
+    if ($IsVM) {
+        $BitLockerStatus = "Virtual Machine - Check Host Encryption"
+    } else {
+        if (Get-Command Get-BitLockerVolume -ErrorAction SilentlyContinue) {
+            try {
+                $bl = Get-BitLockerVolume -MountPoint "C:" -ErrorAction Stop
+                $BitLockerStatus = if ($bl.ProtectionStatus -eq "On") { "Encrypted" } else { "Not Encrypted" }
+            } catch {
+                $BitLockerStatus = "Error checking BitLocker"
+            }
+        } else {
+            $BitLockerStatus = "BitLocker Cmdlet Not Available"
+        }
+    }
     
     # Firewall
     $FWProfiles = (Get-NetFirewallProfile -EA SilentlyContinue | Where-Object Enabled).Name -join ", "
@@ -1475,9 +1488,22 @@ $btnAudit.Add_Click({
     $RDP = Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server" -Name fDenyTSConnections -EA SilentlyContinue
     $RDPStatus = if ($RDP.fDenyTSConnections -eq 1) { "Disabled" } else { "Enabled" }
     
-    # Disk Health
+    # Disk Health & RAID
     $Disks = Get-PhysicalDisk -EA SilentlyContinue | Select-Object FriendlyName, MediaType, HealthStatus
     $DiskHealth = if ($Disks) { ($Disks | ForEach-Object { "$($_.MediaType): $($_.HealthStatus)" }) -join "; " } else { "Unknown" }
+    
+    $RAIDStatus = "Unknown"
+    if ($IsVM) {
+        $RAIDStatus = "Virtual Machine - Check Host RAID"
+    } elseif ($ninjaRAID -and $ninjaRAID -ne "Check manually or connect NinjaOne") {
+        $RAIDStatus = $ninjaRAID
+    } else {
+        # Try local
+        $pDisks = Get-PhysicalDisk -ErrorAction SilentlyContinue
+        if ($pDisks) {
+             $RAIDStatus = ($pDisks | Select-Object -ExpandProperty MediaType -Unique) -join ", "
+        }
+    }
     
     # Storage Warning
     $CDrive = Get-CimInstance Win32_LogicalDisk -Filter "DeviceID='C:'" -EA SilentlyContinue
@@ -1564,90 +1590,176 @@ $btnAudit.Add_Click({
     </script>
 </head>
 <body>
-<h1>Server Security & Backup Audit</h1>
-<p><strong>Server:</strong> $($CompInfo.Name) | <strong>Date:</strong> $(Get-Date -Format 'yyyy-MM-dd HH:mm') | <strong>Auditor:</strong> $env:USERNAME</p>
+<h1>INTERNAL SERVER SECURITY & BACKUP AUDIT FORM</h1>
+
+<p><strong>Client:</strong> <input class='input' style='width:300px;'></p>
+<p><strong>Audit Month:</strong> $(Get-Date -Format 'MMMM yyyy')</p>
+<p><strong>Completed By:</strong> $env:USERNAME</p>
+
 $(if($global:NinjaToken){"<p><span class='ninja-tag'>NinjaOne Connected</span> - RAID and backup data pulled from RMM</p>"})
 
-<h3>Server Information</h3>
+<h3>Server Identifying Information</h3>
 <table>
     <tr><th>Server Name</th><td>$($CompInfo.Name)</td></tr>
-    <tr><th>OS Version</th><td>$($OSInfo.Caption) (Build $($OSInfo.BuildNumber)) $EOSWarning</td></tr>
-    <tr><th>Location</th><td><input class='input' placeholder='e.g., Server Closet'></td></tr>
+    <tr><th>Location (onsite/offsite)</th><td><input class='input' value='Onsite'></td></tr>
+    <tr><th>OS Version</th><td>$($OSInfo.Caption) (Build $($OSInfo.BuildNumber)) ($($OSInfo.OSArchitecture)) $EOSWarning</td></tr>
     <tr><th>Role(s)</th><td><input class='input' value='$DetectedRoles'></td></tr>
-    <tr><th>Administrators</th><td><ul>$AdminList</ul></td></tr>
-    <tr><th>Virtual Machine</th><td>$(if($IsVM){"<span class='good'>Yes</span>"}else{"No (Physical)"})</td></tr>
+    <tr><th>Who has administrative access</th><td><ul>$AdminList</ul></td></tr>
 </table>
 
-<h2>1. Backup & Data Retention</h2>
+<h2>1. Backup & Data Retention (HIPAA §164.308(a)(7))</h2>
+<h3>A. Backup System Review</h3>
 <table>
-    <tr><th>Backup Solution</th><td><input class='input' value='$DetectedBackup'></td></tr>
-    <tr><th>Backups Successful?</th><td><select><option>Select...</option><option>Yes</option><option>No</option><option>N/A</option></select></td></tr>
-    <tr><th>Last Backup</th><td><input class='input' value='$ninjaBackupTime' placeholder='Check backup console'></td></tr>
-    <tr><th>Backup Frequency</th><td><input class='input' placeholder='Hourly/Daily'></td></tr>
-    <tr><th>Encrypted at Rest?</th><td><select><option>Select...</option><option>Yes (AES-256)</option><option>No</option><option>N/A</option></select></td></tr>
-    <tr><th>Offsite/Cloud Copy?</th><td><select><option>Select...</option><option>Yes</option><option>No</option></select></td></tr>
-    <tr><th>Test Restore in 90 Days?</th><td><select><option>Select...</option><option>Yes</option><option>No</option></select></td></tr>
+    <tr><th>Backup solution used</th><td><input class='input' value='$DetectedBackup'></td></tr>
+    <tr><th>Are backups completing successfully?</th><td><select><option>Select...</option><option>Yes</option><option>No</option><option>Unknown</option></select> $(if($ninjaBackupStatus){"($ninjaBackupStatus)"})</td></tr>
+    <tr><th>Last successful backup date & time</th><td><input class='input' value='$ninjaBackupTime'></td></tr>
+    <tr><th>Backup frequency</th><td><input class='input' placeholder='Hourly/Daily'></td></tr>
+    <tr><th>Are there any failed backups this month?</th><td><select><option>Select...</option><option>Yes</option><option>No</option></select></td></tr>
 </table>
 
-<h2>2. Security & Patching</h2>
+<h3>B. Backup Encryption</h3>
 <table>
-    <tr><th>Windows Updates Current?</th><td>$(if($PendingReboot){"<span class='warn'>Reboot Pending</span>"}else{"<span class='good'>Yes</span>"}) - Last: $LastUpdateDate</td></tr>
-    <tr><th>Antivirus/EDR</th><td>$AVName</td></tr>
-    <tr><th>Real-Time Protection</th><td>$(if($RTPEnabled -eq 'Yes'){"<span class='good'>Enabled</span>"}else{"<span class='alert'>Disabled</span>"})</td></tr>
-    <tr><th>Last AV Scan</th><td>$LastScan</td></tr>
-    <tr><th>Password Complexity</th><td>$(if($PassComplex -eq 'Yes'){"<span class='good'>Enforced</span>"}else{"<span class='warn'>$PassComplex</span>"})</td></tr>
-    <tr><th>Local Users</th><td>$LocalUsers</td></tr>
+    <tr><th>Are backups encrypted at rest?</th><td><select><option>Select...</option><option>Yes</option><option>No</option><option>Unknown</option></select></td></tr>
+    <tr><th>Encryption standard used</th><td><input class='input' placeholder='AES-256 preferred'></td></tr>
+    <tr><th>Are backup transfer channels encrypted?</th><td><select><option>Select...</option><option>Yes</option><option>No</option><option>Unknown</option></select></td></tr>
 </table>
 
-<h2>3. Encryption</h2>
+<h3>C. Backup Retention</h3>
 <table>
-    <tr><th>BitLocker Status</th><td>$(if($BitLockerStatus -eq 'Encrypted'){"<span class='good'>$BitLockerStatus</span>"}else{"<span class='warn'>$BitLockerStatus</span>"})</td></tr>
-    <tr><th>If Not Encrypted, Reason</th><td><input class='input' value='$(if($IsVM){"Virtual Machine"})'></td></tr>
+    <tr><th>Retention period</th><td><input class='input' placeholder='days/weeks/months/years'></td></tr>
+    <tr><th>Does retention meet HIPAA’s 6-year requirement?</th><td><select><option>Select...</option><option>Yes</option><option>No</option></select></td></tr>
 </table>
 
-<h2>4. Firewall & Network</h2>
+<h3>D. Restore Testing</h3>
 <table>
-    <tr><th>Windows Firewall</th><td>$(if($FWProfiles -ne 'DISABLED'){"<span class='good'>Enabled ($FWProfiles)</span>"}else{"<span class='alert'>DISABLED</span>"})</td></tr>
-    <tr><th>Open Ports</th><td style='font-size:0.85em;'>$OpenPorts</td></tr>
-    <tr><th>RDP Status</th><td>$(if($RDPStatus -eq 'Disabled'){"<span class='good'>Disabled</span>"}else{"<span class='warn'>Enabled</span>"})</td></tr>
-    <tr><th>RDP via VPN Only?</th><td><select><option>Select...</option><option>Yes</option><option>No</option><option>N/A</option></select></td></tr>
-    <tr><th>MFA Required?</th><td><select><option>Select...</option><option>Yes</option><option>No</option><option>N/A</option></select></td></tr>
+    <tr><th>Was a test restore performed in the last 90 days?</th><td><select><option>Select...</option><option>Yes</option><option>No</option></select></td></tr>
+    <tr><th>Date of last verification restore</th><td><input class='input' type='date'></td></tr>
+    <tr><th>Result</th><td><select><option>Select...</option><option>Successful</option><option>Issues found</option></select></td></tr>
 </table>
 
-<h2>5. Hardware & RAID</h2>
+<h2>2. Server Security & Patch Compliance (HIPAA §164.308(a)(1), §164.312(c))</h2>
+<h3>A. Update Status</h3>
 <table>
-    <tr><th>RAID Status $(if($global:NinjaToken){"<span class='ninja-tag'>Ninja</span>"})</th><td><input class='input' value='$ninjaRAID'></td></tr>
-    <tr><th>Disk Health</th><td>$DiskHealth</td></tr>
-    <tr><th>Storage Warnings</th><td>$(if($StorageWarn){"<span class='alert'>$StorageWarn</span>"}else{"<span class='good'>OK ($FreePct% free)</span>"})</td></tr>
+    <tr><th>Are Windows Updates current?</th><td>$(if($PendingReboot){"<span class='warn'>Reboot Pending</span>"}else{"<span class='good'>Yes</span>"})</td></tr>
+    <tr><th>Last update date</th><td>$LastUpdateDate</td></tr>
+    <tr><th>Pending patches?</th><td><input class='input' value='$ninjaPatches'></td></tr>
 </table>
 
-<h2>6. Logs & Monitoring</h2>
+<h3>B. Antivirus / EDR</h3>
 <table>
-    <tr><th>Critical Events (30 days)</th><td>$EventsHTML</td></tr>
-    <tr><th>Huntress/EDR Incidents?</th><td><select><option>Select...</option><option>Yes</option><option>No</option></select> <input class='input' placeholder='Details if yes' style='width:50%;'></td></tr>
+    <tr><th>AV/EDR installed</th><td>$AVName</td></tr>
+    <tr><th>Real-time protection enabled?</th><td>$(if($RTPEnabled -eq 'Yes'){"<span class='good'>Yes</span>"}else{"<span class='alert'>No</span>"})</td></tr>
+    <tr><th>Last scan date</th><td>$LastScan</td></tr>
+    <tr><th>Any detections this month?</th><td><input class='input' placeholder='Attach or summarize if yes'></td></tr>
 </table>
 
-<h2>7. Physical Security</h2>
+<h3>C. Local User Accounts</h3>
 <table>
-    <tr><th>Server Location</th><td><input class='input' placeholder='Closet, rack, office'></td></tr>
-    <tr><th>Room Locked?</th><td><select><option>Select...</option><option>Yes</option><option>No</option></select></td></tr>
-    <tr><th>Environmental Risks?</th><td><input class='input' placeholder='Heat, water, etc.'></td></tr>
+    <tr><th>List all local server accounts</th><td>$LocalUsers</td></tr>
+    <tr><th>Any accounts without MFA?</th><td><input class='input'></td></tr>
+    <tr><th>Any disabled but unremoved accounts?</th><td><input class='input'></td></tr>
+    <tr><th>Any unexpected accounts?</th><td><select><option>Select...</option><option>Yes</option><option>No</option></select></td></tr>
 </table>
 
-<h2>8. Disaster Recovery</h2>
+<h3>D. Administrator Access</h3>
 <table>
-    <tr><th>Recovery Method</th><td><input class='input' placeholder='Bare metal restore, cloud failover, etc.'></td></tr>
-    <tr><th>Estimated RTO</th><td><input class='input' placeholder='e.g., 4 hours'></td></tr>
+    <tr><th>Who has administrative credentials</th><td><input class='input' placeholder='See list above'></td></tr>
+    <tr><th>Are admin passwords changed regularly?</th><td><select><option>Select...</option><option>Yes</option><option>No</option></select></td></tr>
+    <tr><th>Is password complexity enforced?</th><td>$(if($PassComplex -eq 'Yes'){"<span class='good'>Yes</span>"}else{"<span class='warn'>$PassComplex</span>"})</td></tr>
+    <tr><th>Are there any shared admin accounts?</th><td><select><option>Select...</option><option>Yes</option><option>No</option></select></td></tr>
 </table>
 
-<h2>9. Exceptions & Notes</h2>
+<h2>3. Server Encryption (HIPAA §164.312(a)(2)(iv))</h2>
+<h3>A. Disk Encryption</h3>
 <table>
-    <tr><th>Non-Compliant Items</th><td><textarea class='input' rows='3' placeholder='List any exceptions...'></textarea></td></tr>
-    <tr><th>Additional Notes</th><td><textarea class='input' rows='3' placeholder='Other observations...'></textarea></td></tr>
+    <tr><th>Is full-disk encryption enabled?</th><td>$(if($BitLockerStatus -eq 'Encrypted'){"<span class='good'>Yes (BitLocker)</span>"}else{"<span class='warn'>$BitLockerStatus</span>"})</td></tr>
+    <tr><th>Encryption status</th><td>$BitLockerStatus</td></tr>
+    <tr><th>TPM present/enabled</th><td><select><option>Select...</option><option>Yes</option><option>No</option></select></td></tr>
+    <tr><th>If not encrypted, reason why</th><td><input class='input' value='$(if($IsVM){"Virtual Machine"})'></td></tr>
+</table>
+
+<h3>B. Data Encryption</h3>
+<table>
+    <tr><th>Are ChiroTouch data files stored in encrypted form?</th><td><select><option>Select...</option><option>Yes</option><option>No</option><option>N/A</option></select></td></tr>
+    <tr><th>Are database backups encrypted?</th><td><select><option>Select...</option><option>Yes</option><option>No</option><option>N/A</option></select></td></tr>
+</table>
+
+<h2>4. Server Firewall & Network Security (HIPAA §164.312(e))</h2>
+<h3>A. Local Firewall</h3>
+<table>
+    <tr><th>Windows Firewall enabled?</th><td>$(if($FWProfiles -ne 'DISABLED'){"<span class='good'>Yes</span>"}else{"<span class='alert'>No</span>"})</td></tr>
+    <tr><th>Inbound rule review</th><td><textarea class='input' rows='2' placeholder='List allowed inbound ports'></textarea></td></tr>
+    <tr><th>Outbound rule review</th><td><textarea class='input' rows='2' placeholder='Confirm non-essential ports are blocked'></textarea></td></tr>
+</table>
+
+<h3>B. Remote Access</h3>
+<table>
+    <tr><th>Does anyone RDP to the server?</th><td>$(if($RDPStatus -eq 'Enabled'){"<span class='warn'>Yes</span>"}else{"<span class='good'>No</span>"})</td></tr>
+    <tr><th>If yes: Is RDP protected by VPN?</th><td><select><option>Select...</option><option>Yes</option><option>No</option></select></td></tr>
+    <tr><th>MFA required?</th><td><select><option>Select...</option><option>Yes</option><option>No</option></select></td></tr>
+    <tr><th>External RDP open to internet?</th><td><select><option>Select...</option><option>No</option><option>Yes</option></select></td></tr>
+    <tr><th>Any failed RDP attempts this month?</th><td><select><option>Select...</option><option>Yes</option><option>No</option></select></td></tr>
+</table>
+
+<h2>5. Server Monitoring & Logs (HIPAA §164.312(b))</h2>
+<h3>A. Event Logs</h3>
+<table>
+    <tr><th>Security logs enabled?</th><td><select><option>Select...</option><option>Yes</option><option>No</option></select></td></tr>
+    <tr><th>Retention period (in days)</th><td><input class='input'></td></tr>
+    <tr><th>Any critical events found this month?</th><td>$EventsHTML</td></tr>
+</table>
+
+<h3>B. Application Logs</h3>
+<table>
+    <tr><th>Any application errors?</th><td><input class='input'></td></tr>
+    <tr><th>Any database errors?</th><td><input class='input'></td></tr>
+    <tr><th>Any performance concerns logged?</th><td><input class='input'></td></tr>
+</table>
+
+<h3>C. Huntress / EDR Logs</h3>
+<table>
+    <tr><th>Any incidents detected on the server?</th><td><select><option>Select...</option><option>Yes</option><option>No</option></select></td></tr>
+</table>
+
+<h2>6. Physical Security (HIPAA §164.310)</h2>
+<h3>A. Server Location</h3>
+<table>
+    <tr><th>Where is the server physically located?</th><td><input class='input' placeholder='closet, office, rack'></td></tr>
+    <tr><th>Is the room locked?</th><td><select><option>Select...</option><option>Yes</option><option>No</option></select></td></tr>
+    <tr><th>Who has physical access?</th><td><input class='input'></td></tr>
+    <tr><th>Any environmental risks?</th><td><input class='input' placeholder='Heat, water, unlocked room'></td></tr>
+</table>
+
+<h2>7. Contingency & Failover (HIPAA §164.308(a)(7)(ii)(C))</h2>
+<h3>A. Disaster Recovery</h3>
+<table>
+    <tr><th>If the server failed, how would be restored?</th><td><input class='input' placeholder='Bare metal restore, cloud failover, etc.'></td></tr>
+    <tr><th>Estimated recovery time (RTO)</th><td><input class='input' placeholder='e.g., 4 hours'></td></tr>
+    <tr><th>Are offsite backups present?</th><td><select><option>Select...</option><option>Yes</option><option>No</option></select></td></tr>
+</table>
+
+<h3>B. Redundancy</h3>
+<table>
+    <tr><th>RAID status</th><td><input class='input' value='$RAIDStatus'></td></tr>
+    <tr><th>Storage warnings?</th><td>$(if($StorageWarn){"<span class='alert'>$StorageWarn</span>"}else{"<span class='good'>None ($FreePct% free)</span>"})</td></tr>
+    <tr><th>Drive SMART status</th><td>$DiskHealth</td></tr>
+</table>
+
+<h2>8. Server Exceptions (Anything Not Compliant)</h2>
+<table>
+    <tr><th>Description of issue</th><th>Safeguard</th><th>Risk rating</th><th>Owner</th><th>Status</th><th>Notes</th></tr>
+    <tr>
+        <td><textarea class='input' rows='2'></textarea></td>
+        <td><input class='input'></td>
+        <td><select><option>Low</option><option>Moderate</option><option>High</option></select></td>
+        <td><select><option>Polar Nite IT</option><option>Client</option></select></td>
+        <td><select><option>Planned</option><option>In Progress</option><option>Not Scheduled</option></select></td>
+        <td><textarea class='input' rows='2'></textarea></td>
+    </tr>
 </table>
 
 <button class='copy-btn' onclick='copyReport()'>Copy Report</button>
-<p style='text-align:center; margin-top:50px; color:#95a5a6; font-size:0.8em;'>WinFix Polar Nite Audit v2.0</p>
+<p style='text-align:center; margin-top:50px; color:#95a5a6; font-size:0.8em;'>WinFix Polar Nite Audit v2.1</p>
 </body>
 </html>
 "@
