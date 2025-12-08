@@ -6,235 +6,38 @@
 .NOTES
 #>
 
-    # --- Generate HTML ---
-    $html = @"
-<!DOCTYPE html>
-<html>
-<head>
-    <title>Security Audit: $env:COMPUTERNAME</title>
-    <style>
-        :root { --accent: #0056b3; --good: #27ae60; --warn: #f39c12; --alert: #e74c3c; }
-        body { font-family: 'Segoe UI', sans-serif; background: #f4f7f6; color: #2c3e50; padding: 20px; font-size: 12px; line-height: 1.3; }
-        h1 { color: var(--accent); border-bottom: 3px solid var(--accent); padding-bottom: 10px; }
-        h2 { background: #e8f4f8; color: var(--accent); padding: 10px; border-top: 3px solid var(--accent); margin-top: 30px; }
-        h3 { color: var(--accent); border-left: 4px solid var(--accent); padding-left: 10px; }
-        table { border-collapse: collapse; width: 100%; background: white; box-shadow: 0 2px 5px rgba(0,0,0,0.1); margin-bottom: 15px; font-size: 0.85rem; }
-        th, td { padding: 10px; border-bottom: 1px solid #ecf0f1; text-align: left; font-size: 0.85rem; }
-        th { background: #ecf0f1; width: 40%; font-weight: bold; }
-        .alert { color: var(--alert); font-weight: bold; }
-        .good { color: var(--good); font-weight: bold; }
-        .warn { color: var(--warn); font-weight: bold; }
-        .input { border: 1px solid #bdc3c7; padding: 5px; border-radius: 4px; width: 90%; }
-        select { border: 1px solid #bdc3c7; padding: 5px; border-radius: 4px; }
-        .ninja-tag { background: #17a2b8; color: white; padding: 2px 6px; border-radius: 3px; font-size: 0.8em; }
-        .copy-btn { background: var(--accent); color: white; border: none; padding: 10px 20px; border-radius: 5px; cursor: pointer; position: fixed; bottom: 30px; right: 30px; }
-    </style>
-    <script>
-        function copyReport() {
-            var clone = document.body.cloneNode(true);
-            clone.querySelectorAll('.copy-btn').forEach(b => b.remove());
-            clone.querySelectorAll('input, select, textarea').forEach(el => {
-                var val = el.tagName === 'SELECT' ? el.options[el.selectedIndex]?.text : el.value;
-                var span = document.createElement('span');
-                span.textContent = val || 'N/A';
-                span.style.fontWeight = 'bold';
-                el.parentNode.replaceChild(span, el);
-            });
-            var temp = document.createElement('div');
-            temp.style.transform = 'scale(0.75)';
-            temp.style.transformOrigin = 'top left';
-            temp.style.width = '133%';
-            temp.innerHTML = clone.innerHTML;
-            document.body.appendChild(temp);
-            var range = document.createRange();
-            range.selectNodeContents(temp);
-            window.getSelection().removeAllRanges();
-            window.getSelection().addRange(range);
-            document.execCommand('copy');
-            document.body.removeChild(temp);
-            alert('Report copied to clipboard!');
+function Invoke-DeepDiskCleanup {
+    $results = @()
+    $hasErrors = $false
+    
+    function Get-FreeGB {
+        try {
+            $disk = Get-CimInstance Win32_LogicalDisk -Filter "DeviceID='C:'" -EA Stop
+            return [math]::Round($disk.FreeSpace / 1GB, 2)
+        } catch { return 0 }
+    }
+    
+    function Stop-Svc {
+        param([string]$Name)
+        $svc = Get-Service -Name $Name -EA SilentlyContinue
+        if (-not $svc) { return $true }
+        if ($svc.Status -eq 'Running') {
+            try {
+                Stop-Service -Name $Name -Force -EA Stop
+                $t = 0; while ((Get-Service $Name).Status -ne 'Stopped' -and $t -lt 30) { Start-Sleep 1; $t++ }
+            } catch { return $false }
         }
-    </script>
-</head>
-<body>
-<h1>INTERNAL SERVER SECURITY & BACKUP AUDIT FORM</h1>
-
-<p><strong>Client:</strong> <input class='input' style='width:300px;' placeholder='Client name'></p>
-<p><strong>Audit Month:</strong> $(Get-Date -Format 'MMMM yyyy')</p>
-<p><strong>Completed By:</strong> $env:USERNAME</p>
-
-$(if($global:NinjaToken){"<p><span class='ninja-tag'>NinjaOne Connected</span> - RAID and backup data pulled from RMM</p>"})
-$(if($global:NinjaToken -and $ninjaData){"<p style='font-size:0.85em;'>Device ID: $($ninjaData.id) - Host: $($ninjaData.systemName)</p>"})
-<h3>Server Identifying Information</h3>
-<table>
-    <tr><th>Server Name</th><td>$(Escape-ForHtmlAttr $CompInfo.Name)</td></tr>
-    <tr><th>Location (onsite/offsite)</th><td><input class='input' value='Onsite (confirm)'></td></tr>
-    <tr><th>OS Version</th><td>$($OSInfo.Caption) (Build $($OSInfo.BuildNumber)) ($($OSInfo.OSArchitecture)) $EOSWarning</td></tr>
-    <tr><th>Role(s)</th><td><input class='input' value='$(Escape-ForHtmlAttr $DetectedRoles)'></td></tr>
-    <tr><th>Who has administrative access</th><td><ul>$AdminList</ul></td></tr>
-    <tr><th>Last admin password changes</th><td><input class='input' value='$(Escape-ForHtmlAttr $AdminPasswordSummary)'></td></tr>
-    <tr><th>Virtual Machine</th><td>$(if($IsVM){"Yes (Guest - check host RAID/BitLocker)"}else{"No (Physical)"})</td></tr>
-</table>
-
-<h2>1. Backup & Data Retention (HIPAA §164.308(a)(7))</h2>
-<h3>A. Backup System Review</h3>
-<table>
-    <tr><th>Backup solution used</th><td><input class='input' value='$(Escape-ForHtmlAttr $DetectedBackup)'></td></tr>
-    <tr><th>Are backups completing successfully?</th><td><input class='input' value='$(Escape-ForHtmlAttr $BackupSuccess)'></td></tr>
-    <tr><th>Last successful backup date & time</th><td><input class='input' value='$(Escape-ForHtmlAttr $BackupLastSuccess)'></td></tr>
-    <tr><th>Backup frequency</th><td><input class='input' value='$(Escape-ForHtmlAttr $BackupFrequency)'></td></tr>
-    <tr><th>Are there any failed backups this month?</th><td><input class='input' value='$(Escape-ForHtmlAttr $BackupFailuresThisMonth)'></td></tr>
-</table>
-
-<h3>B. Backup Encryption</h3>
-<table>
-    <tr><th>Are backups encrypted at rest?</th><td><input class='input' value='$(Escape-ForHtmlAttr $BackupsEncrypted)'></td></tr>
-    <tr><th>Encryption standard used</th><td><input class='input' value='$(Escape-ForHtmlAttr $BackupEncryptionType)'></td></tr>
-    <tr><th>Are backup transfer channels encrypted?</th><td><input class='input' value='$(Escape-ForHtmlAttr $BackupTransferEncrypted)'></td></tr>
-</table>
-
-<h3>C. Backup Retention</h3>
-<table>
-    <tr><th>Retention period</th><td><input class='input' value='$(Escape-ForHtmlAttr $BackupRetention)'></td></tr>
-    <tr><th>Does retention meet HIPAA’s 6-year requirement?</th><td><input class='input' value='Unknown (verify documentation)'></td></tr>
-</table>
-
-<h3>D. Restore Testing</h3>
-<table>
-    <tr><th>Was a test restore performed in the last 90 days?</th><td><input class='input' value='Unknown'></td></tr>
-    <tr><th>Date of last verification restore</th><td><input class='input' placeholder='YYYY-MM-DD'></td></tr>
-    <tr><th>Result</th><td><input class='input' value='Unknown'></td></tr>
-</table>
-
-<h2>2. Server Security & Patch Compliance (HIPAA §164.308(a)(1), §164.312(c))</h2>
-<h3>A. Update Status</h3>
-<table>
-    <tr><th>Are Windows Updates current?</th><td>$(if($PendingReboot){"<span class='warn'>Reboot Pending</span>"}else{"<span class='good'>Yes</span>"})</td></tr>
-    <tr><th>Last update date</th><td>$LastUpdateDate</td></tr>
-    <tr><th>Pending patches?</th><td><input class='input' value='$(Escape-ForHtmlAttr ($ninjaPatches -replace '\\(.*\\)',''))'></td></tr>
-</table>
-
-<h3>B. Antivirus / EDR</h3>
-<table>
-    <tr><th>AV/EDR installed</th><td>$AVName</td></tr>
-    <tr><th>Real-time protection enabled?</th><td>$(if($RTPEnabled -eq 'Yes'){"<span class='good'>Yes</span>"}else{"<span class='alert'>No</span>"})</td></tr>
-    <tr><th>Last scan date</th><td>$LastScan</td></tr>
-    <tr><th>Any detections this month?</th><td><input class='input' placeholder='Attach or summarize if yes'></td></tr>
-</table>
-
-<h3>C. Local User Accounts</h3>
-<table>
-    <tr><th>List all local server accounts</th><td><input class='input' value='$(Escape-ForHtmlAttr $LocalUsers)'></td></tr>
-    <tr><th>Any accounts without MFA?</th><td><input class='input' value='$(Escape-ForHtmlAttr $MfaStatus)'></td></tr>
-    <tr><th>Any disabled but unremoved accounts?</th><td><input class='input' value='$(Escape-ForHtmlAttr $DisabledAdminList)'></td></tr>
-    <tr><th>Any unexpected accounts?</th><td><input class='input' value='Review local account list'></td></tr>
-</table>
-
-<h3>D. Administrator Access</h3>
-<table>
-    <tr><th>Who has administrative credentials</th><td><input class='input' value='$(Escape-ForHtmlAttr $AdminAccessSummary)'></td></tr>
-    <tr><th>Are admin passwords changed regularly?</th><td><input class='input' value='$(Escape-ForHtmlAttr $AdminPasswordSummary)'></td></tr>
-    <tr><th>Is password complexity enforced?</th><td><input class='input' value='$(Escape-ForHtmlAttr $PassComplex)'></td></tr>
-    <tr><th>Password policy details</th><td><input class='input' value='$(Escape-ForHtmlAttr $PasswordPolicySummary)'></td></tr>
-    <tr><th>Are there any shared admin accounts?</th><td><input class='input' value='Unknown (review team accounts)'></td></tr>
-</table>
-
-<h2>3. Server Encryption (HIPAA §164.312(a)(2)(iv))</h2>
-<h3>A. Disk Encryption</h3>
-<table>
-    <tr><th>Is full-disk encryption enabled?</th><td>$(if($BitLockerStatus -eq 'Encrypted'){"<span class='good'>Yes (BitLocker)</span>"}else{"<span class='warn'>$BitLockerStatus</span>"})</td></tr>
-    <tr><th>Encryption status</th><td>$BitLockerStatus</td></tr>
-    <tr><th>TPM present/enabled</th><td>$TpmStatus</td></tr>
-    <tr><th>If not encrypted, reason why</th><td><input class='input' value='$(Escape-ForHtmlAttr (if($IsVM){"Virtual Machine"}{"Verify host encryption"}))'></td></tr>
-</table>
-
-<h3>B. Data Encryption</h3>
-<table>
-    <tr><th>Are ChiroTouch data files stored in encrypted form?</th><td><input class='input' value='Unknown'></td></tr>
-    <tr><th>Are database backups encrypted?</th><td><input class='input' value='$(Escape-ForHtmlAttr $BackupsEncrypted)'></td></tr>
-</table>
-
-<h2>4. Server Firewall & Network Security (HIPAA §164.312(e))</h2>
-<h3>A. Local Firewall</h3>
-<table>
-    <tr><th>Windows Firewall enabled?</th><td>$(if($FWProfiles -ne 'DISABLED'){"<span class='good'>Enabled ($FWProfiles)</span>"}else{"<span class='alert'>DISABLED</span>"})</td></tr>
-    <tr><th>Inbound rule review</th><td><textarea class='input' rows='2' placeholder='List allowed inbound ports'></textarea></td></tr>
-    <tr><th>Outbound rule review</th><td><textarea class='input' rows='2' placeholder='Confirm non-essential ports are blocked'></textarea></td></tr>
-    <tr><th>Open Ports</th><td style='font-size:0.85em;'>$(Escape-ForHtmlAttr $OpenPorts)</td></tr>
-</table>
-
-<h3>B. Remote Access</h3>
-<table>
-    <tr><th>Does anyone RDP to the server?</th><td>$(if($RDPStatus -eq 'Enabled'){"<span class='warn'>Yes</span>"}else{"<span class='good'>No</span>"})</td></tr>
-    <tr><th>If yes: Is RDP protected by VPN?</th><td><input class='input' value='Unknown'></td></tr>
-    <tr><th>MFA required?</th><td><input class='input' value='Unknown'></td></tr>
-    <tr><th>External RDP open to internet?</th><td><input class='input' value='No (verify firewall)'></td></tr>
-    <tr><th>Any failed RDP attempts this month?</th><td><input class='input' value='$(Escape-ForHtmlAttr $RdpFailureNotes)'></td></tr>
-</table>
-
-<h2>5. Server Monitoring & Logs (HIPAA §164.312(b))</h2>
-<h3>A. Event Logs</h3>
-<table>
-    <tr><th>Security logs enabled?</th><td><input class='input' value='$(Escape-ForHtmlAttr $SecurityLogsEnabled)'></td></tr>
-    <tr><th>Retention period (in days)</th><td><input class='input' value='Log max size: $SecurityLogSizeMB MB (per policy)'></td></tr>
-    <tr><th>Any critical events found this month?</th><td>$EventsHTML</td></tr>
-</table>
-
-<h3>B. Application Logs</h3>
-<table>
-    <tr><th>Any application errors?</th><td><input class='input' value='$(Escape-ForHtmlAttr $AppErrorSummary)'></td></tr>
-    <tr><th>Any database errors?</th><td><input class='input' value='$(Escape-ForHtmlAttr $DatabaseErrorSummary)'></td></tr>
-    <tr><th>Any performance concerns logged?</th><td><input class='input' value='$(Escape-ForHtmlAttr $PerformanceSummary)'></td></tr>
-</table>
-
-<h3>C. Huntress / EDR Logs</h3>
-<table>
-    <tr><th>Any incidents detected on the server?</th><td><input class='input' value='Unknown (check EDR console)'></td></tr>
-</table>
-
-<h2>6. Physical Security (HIPAA §164.310)</h2>
-<h3>A. Server Location</h3>
-<table>
-    <tr><th>Where is the server physically located?</th><td><input class='input' value='Onsite (rack/closet)'></td></tr>
-    <tr><th>Is the room locked?</th><td><input class='input' value='Yes'></td></tr>
-    <tr><th>Who has physical access?</th><td><input class='input' value='Facilities, Polar Nite IT'></td></tr>
-    <tr><th>Any environmental risks?</th><td><input class='input' value='Unknown'></td></tr>
-</table>
-
-<h2>7. Contingency & Failover (HIPAA §164.308(a)(7)(ii)(C))</h2>
-<h3>A. Disaster Recovery</h3>
-<table>
-    <tr><th>If the server failed, how would be restored?</th><td><input class='input' value='Bare metal restore / documented recovery plan'></td></tr>
-    <tr><th>Estimated recovery time (RTO)</th><td><input class='input' value='Estimate required'></td></tr>
-    <tr><th>Are offsite backups present?</th><td><input class='input' value='$(Escape-ForHtmlAttr $OffsiteCopy)'></td></tr>
-</table>
-
-<h3>B. Redundancy</h3>
-<table>
-    <tr><th>RAID status</th><td><input class='input' value='$(Escape-ForHtmlAttr $RAIDStatus)'></td></tr>
-    <tr><th>Storage warnings</th><td>$(if($StorageWarn){"<span class='alert'>$StorageWarn</span>"}{"<span class='good'>None ($FreePct% free)</span>"})</td></tr>
-    <tr><th>Drive SMART status</th><td><input class='input' value='$(Escape-ForHtmlAttr $DiskHealth)'></td></tr>
-    <tr><th>Physical drives</th><td><input class='input' value='$(Escape-ForHtmlAttr $PhysicalDriveInfo)'></td></tr>
-</table>
-
-<h2>8. Server Exceptions (Anything Not Compliant)</h2>
-<table>
-    <tr><th>Description of issue</th><th>Safeguard</th><th>Risk rating</th><th>Owner</th><th>Status</th><th>Notes</th></tr>
-    <tr>
-        <td><textarea class='input' rows='2'></textarea></td>
-        <td><input class='input'></td>
-        <td><select><option>Low</option><option>Moderate</option><option>High</option></select></td>
-        <td><select><option>Polar Nite IT</option><option>Client</option></select></td>
-        <td><select><option>Planned</option><option>In Progress</option><option>Not Scheduled</option></select></td>
-        <td><textarea class='input' rows='2'></textarea></td>
-    </tr>
-</table>
-
-<button class='copy-btn' onclick='copyReport()'>Copy Report</button>
-<p style='text-align:center; margin-top:50px; color:#95a5a6; font-size:0.8em;'>WinFix Polar Nite Audit v2.1</p>
-</body>
-</html>
-"@
+        return (Get-Service $Name).Status -eq 'Stopped'
+    }
+    
+    $startSpace = Get-FreeGB
+    $results += "Starting cleanup on $env:COMPUTERNAME"
+    $results += "Initial free space: $startSpace GB"
+    $results += ""
+    
+    # 1. Windows Update Cache
+    $results += "=== Windows Update Cache ==="
+    $wuaStopped = Stop-Svc "wuauserv"
 
     $bitsStopped = Stop-Svc "bits"
     if ($wuaStopped -and $bitsStopped) {
@@ -1924,31 +1727,31 @@ $btnAudit.Add_Click({
 <body>
 <h1>INTERNAL SERVER SECURITY & BACKUP AUDIT FORM</h1>
 
-<p><strong>Client:</strong> <input class='input' style='width:300px;'></p>
+<p><strong>Client:</strong> <input class='input' style='width:300px;' placeholder='Client name'></p>
 <p><strong>Audit Month:</strong> $(Get-Date -Format 'MMMM yyyy')</p>
 <p><strong>Completed By:</strong> $env:USERNAME</p>
 
 $(if($global:NinjaToken){"<p><span class='ninja-tag'>NinjaOne Connected</span> - RAID and backup data pulled from RMM</p>"})
-
+$(if($global:NinjaToken -and $ninjaData){"<p style='font-size:0.85em;'>Device ID: $($ninjaData.id) - Host: $($ninjaData.systemName)</p>"})
 <h3>Server Identifying Information</h3>
 <table>
-    <tr><th>Server Name</th><td>$($CompInfo.Name)</td></tr>
-    <tr><th>Location (onsite/offsite)</th><td><input class='input' value='Onsite'></td></tr>
+    <tr><th>Server Name</th><td>$(Escape-ForHtmlAttr $CompInfo.Name)</td></tr>
+    <tr><th>Location (onsite/offsite)</th><td><input class='input' value='Onsite (confirm)'></td></tr>
     <tr><th>OS Version</th><td>$($OSInfo.Caption) (Build $($OSInfo.BuildNumber)) ($($OSInfo.OSArchitecture)) $EOSWarning</td></tr>
-    <tr><th>Role(s)</th><td><input class='input' value='$DetectedRoles'></td></tr>
+    <tr><th>Role(s)</th><td><input class='input' value='$(Escape-ForHtmlAttr $DetectedRoles)'></td></tr>
     <tr><th>Who has administrative access</th><td><ul>$AdminList</ul></td></tr>
+    <tr><th>Last admin password changes</th><td><input class='input' value='$(Escape-ForHtmlAttr $AdminPasswordSummary)'></td></tr>
+    <tr><th>Virtual Machine</th><td>$(if($IsVM){"Yes (Guest - check host RAID/BitLocker)"}else{"No (Physical)"})</td></tr>
 </table>
 
 <h2>1. Backup & Data Retention (HIPAA §164.308(a)(7))</h2>
 <h3>A. Backup System Review</h3>
 <table>
     <tr><th>Backup solution used</th><td><input class='input' value='$(Escape-ForHtmlAttr $DetectedBackup)'></td></tr>
-    <tr><th>Detected backup agents</th><td>$BackupSoftwareListHtml</td></tr>
     <tr><th>Are backups completing successfully?</th><td><input class='input' value='$(Escape-ForHtmlAttr $BackupSuccess)'></td></tr>
     <tr><th>Last successful backup date & time</th><td><input class='input' value='$(Escape-ForHtmlAttr $BackupLastSuccess)'></td></tr>
     <tr><th>Backup frequency</th><td><input class='input' value='$(Escape-ForHtmlAttr $BackupFrequency)'></td></tr>
     <tr><th>Are there any failed backups this month?</th><td><input class='input' value='$(Escape-ForHtmlAttr $BackupFailuresThisMonth)'></td></tr>
-    <tr><th>Offsite/Cloud copy?</th><td><input class='input' value='$(Escape-ForHtmlAttr $OffsiteCopy)'></td></tr>
 </table>
 
 <h3>B. Backup Encryption</h3>
@@ -1976,8 +1779,7 @@ $(if($global:NinjaToken){"<p><span class='ninja-tag'>NinjaOne Connected</span> -
 <table>
     <tr><th>Are Windows Updates current?</th><td>$(if($PendingReboot){"<span class='warn'>Reboot Pending</span>"}else{"<span class='good'>Yes</span>"})</td></tr>
     <tr><th>Last update date</th><td>$LastUpdateDate</td></tr>
-    <tr><th>Pending patches?</th><td>$PatchSummary $(if($ninjaPatches){"<span style='font-size:0.75em;'>($(Escape-ForHtmlAttr $ninjaPatches))</span>"})</td></tr>
-    <tr><th>Pending patch details</th><td>$PatchListHtml</td></tr>
+    <tr><th>Pending patches?</th><td><input class='input' value='$(Escape-ForHtmlAttr ($ninjaPatches -replace '\\(.*\\)',''))'></td></tr>
 </table>
 
 <h3>B. Antivirus / EDR</h3>
@@ -1990,18 +1792,19 @@ $(if($global:NinjaToken){"<p><span class='ninja-tag'>NinjaOne Connected</span> -
 
 <h3>C. Local User Accounts</h3>
 <table>
-    <tr><th>List all local server accounts</th><td>$LocalUsers</td></tr>
-    <tr><th>Any accounts without MFA?</th><td><input class='input'></td></tr>
-    <tr><th>Any disabled but unremoved accounts?</th><td><input class='input'></td></tr>
-    <tr><th>Any unexpected accounts?</th><td><select><option>Select...</option><option>Yes</option><option>No</option></select></td></tr>
+    <tr><th>List all local server accounts</th><td><input class='input' value='$(Escape-ForHtmlAttr $LocalUsers)'></td></tr>
+    <tr><th>Any accounts without MFA?</th><td><input class='input' value='$(Escape-ForHtmlAttr $MfaStatus)'></td></tr>
+    <tr><th>Any disabled but unremoved accounts?</th><td><input class='input' value='$(Escape-ForHtmlAttr $DisabledAdminList)'></td></tr>
+    <tr><th>Any unexpected accounts?</th><td><input class='input' value='Review local account list'></td></tr>
 </table>
 
 <h3>D. Administrator Access</h3>
 <table>
-    <tr><th>Who has administrative credentials</th><td><input class='input' placeholder='See list above'></td></tr>
-    <tr><th>Are admin passwords changed regularly?</th><td><select><option>Select...</option><option>Yes</option><option>No</option></select></td></tr>
-    <tr><th>Is password complexity enforced?</th><td>$(if($PassComplex -eq 'Yes'){"<span class='good'>Yes</span>"}else{"<span class='warn'>$PassComplex</span>"})</td></tr>
-    <tr><th>Are there any shared admin accounts?</th><td><select><option>Select...</option><option>Yes</option><option>No</option></select></td></tr>
+    <tr><th>Who has administrative credentials</th><td><input class='input' value='$(Escape-ForHtmlAttr $AdminAccessSummary)'></td></tr>
+    <tr><th>Are admin passwords changed regularly?</th><td><input class='input' value='$(Escape-ForHtmlAttr $AdminPasswordSummary)'></td></tr>
+    <tr><th>Is password complexity enforced?</th><td><input class='input' value='$(Escape-ForHtmlAttr $PassComplex)'></td></tr>
+    <tr><th>Password policy details</th><td><input class='input' value='$(Escape-ForHtmlAttr $PasswordPolicySummary)'></td></tr>
+    <tr><th>Are there any shared admin accounts?</th><td><input class='input' value='Unknown (review team accounts)'></td></tr>
 </table>
 
 <h2>3. Server Encryption (HIPAA §164.312(a)(2)(iv))</h2>
@@ -2009,38 +1812,39 @@ $(if($global:NinjaToken){"<p><span class='ninja-tag'>NinjaOne Connected</span> -
 <table>
     <tr><th>Is full-disk encryption enabled?</th><td>$(if($BitLockerStatus -eq 'Encrypted'){"<span class='good'>Yes (BitLocker)</span>"}else{"<span class='warn'>$BitLockerStatus</span>"})</td></tr>
     <tr><th>Encryption status</th><td>$BitLockerStatus</td></tr>
-    <tr><th>TPM present/enabled</th><td><select><option>Select...</option><option>Yes</option><option>No</option></select></td></tr>
-    <tr><th>If not encrypted, reason why</th><td><input class='input' value='$(if($IsVM){"Virtual Machine"})'></td></tr>
+    <tr><th>TPM present/enabled</th><td>$TpmStatus</td></tr>
+    <tr><th>If not encrypted, reason why</th><td><input class='input' value='$(Escape-ForHtmlAttr (if($IsVM){"Virtual Machine"}{"Verify host encryption"}))'></td></tr>
 </table>
 
 <h3>B. Data Encryption</h3>
 <table>
-    <tr><th>Are ChiroTouch data files stored in encrypted form?</th><td><select><option>Select...</option><option>Yes</option><option>No</option><option>N/A</option></select></td></tr>
-    <tr><th>Are database backups encrypted?</th><td><select><option>Select...</option><option>Yes</option><option>No</option><option>N/A</option></select></td></tr>
+    <tr><th>Are ChiroTouch data files stored in encrypted form?</th><td><input class='input' value='Unknown'></td></tr>
+    <tr><th>Are database backups encrypted?</th><td><input class='input' value='$(Escape-ForHtmlAttr $BackupsEncrypted)'></td></tr>
 </table>
 
 <h2>4. Server Firewall & Network Security (HIPAA §164.312(e))</h2>
 <h3>A. Local Firewall</h3>
 <table>
-    <tr><th>Windows Firewall enabled?</th><td>$(if($FWProfiles -ne 'DISABLED'){"<span class='good'>Yes</span>"}else{"<span class='alert'>No</span>"})</td></tr>
+    <tr><th>Windows Firewall enabled?</th><td>$(if($FWProfiles -ne 'DISABLED'){"<span class='good'>Enabled ($FWProfiles)</span>"}else{"<span class='alert'>DISABLED</span>"})</td></tr>
     <tr><th>Inbound rule review</th><td><textarea class='input' rows='2' placeholder='List allowed inbound ports'></textarea></td></tr>
     <tr><th>Outbound rule review</th><td><textarea class='input' rows='2' placeholder='Confirm non-essential ports are blocked'></textarea></td></tr>
+    <tr><th>Open Ports</th><td style='font-size:0.85em;'>$(Escape-ForHtmlAttr $OpenPorts)</td></tr>
 </table>
 
 <h3>B. Remote Access</h3>
 <table>
     <tr><th>Does anyone RDP to the server?</th><td>$(if($RDPStatus -eq 'Enabled'){"<span class='warn'>Yes</span>"}else{"<span class='good'>No</span>"})</td></tr>
-    <tr><th>If yes: Is RDP protected by VPN?</th><td><select><option>Select...</option><option>Yes</option><option>No</option></select></td></tr>
-    <tr><th>MFA required?</th><td><select><option>Select...</option><option>Yes</option><option>No</option></select></td></tr>
-    <tr><th>External RDP open to internet?</th><td><select><option>Select...</option><option>No</option><option>Yes</option></select></td></tr>
-    <tr><th>Any failed RDP attempts this month?</th><td><select><option>Select...</option><option>Yes</option><option>No</option></select></td></tr>
+    <tr><th>If yes: Is RDP protected by VPN?</th><td><input class='input' value='Unknown'></td></tr>
+    <tr><th>MFA required?</th><td><input class='input' value='Unknown'></td></tr>
+    <tr><th>External RDP open to internet?</th><td><input class='input' value='No (verify firewall)'></td></tr>
+    <tr><th>Any failed RDP attempts this month?</th><td><input class='input' value='$(Escape-ForHtmlAttr $RdpFailureNotes)'></td></tr>
 </table>
 
 <h2>5. Server Monitoring & Logs (HIPAA §164.312(b))</h2>
 <h3>A. Event Logs</h3>
 <table>
     <tr><th>Security logs enabled?</th><td><input class='input' value='$(Escape-ForHtmlAttr $SecurityLogsEnabled)'></td></tr>
-    <tr><th>Retention period / max size</th><td><input class='input' value='Log max size: $SecurityLogSizeMB MB'></td></tr>
+    <tr><th>Retention period (in days)</th><td><input class='input' value='Log max size: $SecurityLogSizeMB MB (per policy)'></td></tr>
     <tr><th>Any critical events found this month?</th><td>$EventsHTML</td></tr>
 </table>
 
@@ -2053,31 +1857,32 @@ $(if($global:NinjaToken){"<p><span class='ninja-tag'>NinjaOne Connected</span> -
 
 <h3>C. Huntress / EDR Logs</h3>
 <table>
-    <tr><th>Any incidents detected on the server?</th><td><select><option>Select...</option><option>Yes</option><option>No</option></select></td></tr>
+    <tr><th>Any incidents detected on the server?</th><td><input class='input' value='Unknown (check EDR console)'></td></tr>
 </table>
 
 <h2>6. Physical Security (HIPAA §164.310)</h2>
 <h3>A. Server Location</h3>
 <table>
-    <tr><th>Where is the server physically located?</th><td><input class='input' placeholder='closet, office, rack'></td></tr>
-    <tr><th>Is the room locked?</th><td><select><option>Select...</option><option>Yes</option><option>No</option></select></td></tr>
-    <tr><th>Who has physical access?</th><td><input class='input'></td></tr>
-    <tr><th>Any environmental risks?</th><td><input class='input' placeholder='Heat, water, unlocked room'></td></tr>
+    <tr><th>Where is the server physically located?</th><td><input class='input' value='Onsite (rack/closet)'></td></tr>
+    <tr><th>Is the room locked?</th><td><input class='input' value='Yes'></td></tr>
+    <tr><th>Who has physical access?</th><td><input class='input' value='Facilities, Polar Nite IT'></td></tr>
+    <tr><th>Any environmental risks?</th><td><input class='input' value='Unknown'></td></tr>
 </table>
 
 <h2>7. Contingency & Failover (HIPAA §164.308(a)(7)(ii)(C))</h2>
 <h3>A. Disaster Recovery</h3>
 <table>
-    <tr><th>If the server failed, how would be restored?</th><td><input class='input' placeholder='Bare metal restore, cloud failover, etc.'></td></tr>
-    <tr><th>Estimated recovery time (RTO)</th><td><input class='input' placeholder='e.g., 4 hours'></td></tr>
-    <tr><th>Are offsite backups present?</th><td><select><option>Select...</option><option>Yes</option><option>No</option></select></td></tr>
+    <tr><th>If the server failed, how would be restored?</th><td><input class='input' value='Bare metal restore / documented recovery plan'></td></tr>
+    <tr><th>Estimated recovery time (RTO)</th><td><input class='input' value='Estimate required'></td></tr>
+    <tr><th>Are offsite backups present?</th><td><input class='input' value='$(Escape-ForHtmlAttr $OffsiteCopy)'></td></tr>
 </table>
 
 <h3>B. Redundancy</h3>
 <table>
-    <tr><th>RAID status</th><td><input class='input' value='$RAIDStatus'></td></tr>
-    <tr><th>Storage warnings?</th><td>$(if($StorageWarn){"<span class='alert'>$StorageWarn</span>"}else{"<span class='good'>None ($FreePct% free)</span>"})</td></tr>
-    <tr><th>Drive SMART status</th><td>$DiskHealth</td></tr>
+    <tr><th>RAID status</th><td><input class='input' value='$(Escape-ForHtmlAttr $RAIDStatus)'></td></tr>
+    <tr><th>Storage warnings</th><td>$(if($StorageWarn){"<span class='alert'>$StorageWarn</span>"}{"<span class='good'>None ($FreePct% free)</span>"})</td></tr>
+    <tr><th>Drive SMART status</th><td><input class='input' value='$(Escape-ForHtmlAttr $DiskHealth)'></td></tr>
+    <tr><th>Physical drives</th><td><input class='input' value='$(Escape-ForHtmlAttr $PhysicalDriveInfo)'></td></tr>
 </table>
 
 <h2>8. Server Exceptions (Anything Not Compliant)</h2>
@@ -2098,6 +1903,7 @@ $(if($global:NinjaToken){"<p><span class='ninja-tag'>NinjaOne Connected</span> -
 </body>
 </html>
 "@
+
 
     # Save and open
     $reportPath = "$env:TEMP\SecurityAudit_$($env:COMPUTERNAME)_$(Get-Date -Format 'yyyyMMdd_HHmm').html"
