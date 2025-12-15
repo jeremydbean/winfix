@@ -1071,7 +1071,14 @@ function Invoke-SecurityAudit {
 
     # AV
     $av = Get-CimInstance -Namespace root/SecurityCenter2 -ClassName AntivirusProduct -ErrorAction SilentlyContinue
-    $defender = Get-MpComputerStatus -ErrorAction SilentlyContinue
+    $defender = $null
+    if (Get-Command Get-MpComputerStatus -ErrorAction SilentlyContinue) {
+        try {
+            $defender = Get-MpComputerStatus -ErrorAction Stop
+        } catch {
+            $defender = $null
+        }
+    }
     $rtpEnabled = 'Select...'
     $lastScanDate = ''
     if ($defender) {
