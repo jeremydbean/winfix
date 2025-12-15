@@ -1357,8 +1357,9 @@ function Invoke-SecurityAudit {
 
 function Invoke-NinjaConnectInteractive {
     $saved = Get-NinjaSettings
-    $url = Read-Host "NinjaOne Instance URL (default: $($saved.Url ?? 'app.ninjarmm.com'))"
-    if ([string]::IsNullOrWhiteSpace($url)) { $url = if ($saved -and $saved.Url) { $saved.Url } else { 'app.ninjarmm.com' } }
+    $defaultUrl = if ($saved -and $saved.Url) { $saved.Url } else { 'app.ninjarmm.com' }
+    $url = Read-Host "NinjaOne Instance URL (default: $defaultUrl)"
+    if ([string]::IsNullOrWhiteSpace($url)) { $url = $defaultUrl }
 
     $cid = Read-Host 'Client ID (blank = use embedded)'
     if ([string]::IsNullOrWhiteSpace($cid) -and $saved -and $saved.ClientId) { $cid = $saved.ClientId }
