@@ -11,11 +11,28 @@
 
 # --- Request Admin Privileges ---
 if (-NOT ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole] "Administrator")) {
-    $newProcess = New-Object System.Diagnostics.ProcessStartInfo "PowerShell";
-    $newProcess.Arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`"";
+    $newProcess = New-Object System.Diagnostics.ProcessStartInfo "powershell.exe";
+    # Include -STA so WinForms/Clipboard features work reliably after elevation.
+    $newProcess.Arguments = "-NoProfile -ExecutionPolicy Bypass -STA -File `"$PSCommandPath`"";
     $newProcess.Verb = "runas";
     [System.Diagnostics.Process]::Start($newProcess);
     Exit;
+}
+
+# --- Ensure STA Thread for WinForms/Clipboard ---
+# Many WinForms/Clipboard operations require STA; relaunch once if needed.
+try {
+    if ([System.Threading.Thread]::CurrentThread.ApartmentState -ne [System.Threading.ApartmentState]::STA) {
+        if (-not $env:WINFIX_STA) {
+            $env:WINFIX_STA = "1"
+            $argsList = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-STA", "-File", "`"$PSCommandPath`"")
+            # Already elevated (admin check above); don't prompt again.
+            Start-Process -FilePath "powershell.exe" -ArgumentList ($argsList -join ' ')
+            Exit
+        }
+    }
+} catch {
+    # If STA detection fails, continue (WinForms may still work, but Clipboard could be impacted)
 }
 
 # --- Load Assemblies ---
@@ -25,29 +42,58 @@ Add-Type -AssemblyName System.Drawing
 # --- Global Settings ---
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
-# --- Theme Colors (Modern Dark) ---
+# --- Theme Colors (Modern Dark - Redesigned) ---
 $Theme = @{
-    Background = [System.Drawing.Color]::FromArgb(30, 30, 30)
-    Panel      = [System.Drawing.Color]::FromArgb(45, 45, 48)
-    Text       = [System.Drawing.Color]::FromArgb(241, 241, 241)
-    Accent     = [System.Drawing.Color]::FromArgb(0, 122, 204) # VS Blue
-    Button     = [System.Drawing.Color]::FromArgb(62, 62, 66)
-    ButtonHover= [System.Drawing.Color]::FromArgb(80, 80, 80)
-    OutputBg   = [System.Drawing.Color]::FromArgb(14, 14, 14)
-    OutputFg   = [System.Drawing.Color]::FromArgb(0, 255, 0) # Lime
-    Error      = [System.Drawing.Color]::FromArgb(255, 100, 100)
+    # Main Colors
+    Background    = [System.Drawing.Color]::FromArgb(18, 18, 24)      # Deep dark blue-black
+    Surface       = [System.Drawing.Color]::FromArgb(26, 27, 38)      # Card background
+    SurfaceLight  = [System.Drawing.Color]::FromArgb(36, 37, 51)      # Elevated surface
+    
+    # Text
+    TextPrimary   = [System.Drawing.Color]::FromArgb(237, 237, 245)   # White text
+    TextSecondary = [System.Drawing.Color]::FromArgb(148, 150, 172)   # Muted text
+    TextMuted     = [System.Drawing.Color]::FromArgb(90, 92, 110)     # Very muted
+    
+    # Accent Colors
+    Accent        = [System.Drawing.Color]::FromArgb(99, 102, 241)    # Indigo
+    AccentHover   = [System.Drawing.Color]::FromArgb(129, 132, 255)   # Lighter indigo
+    AccentGlow    = [System.Drawing.Color]::FromArgb(99, 102, 241)    # For effects
+    
+    # Semantic Colors
+    Success       = [System.Drawing.Color]::FromArgb(34, 197, 94)     # Green
+    Warning       = [System.Drawing.Color]::FromArgb(250, 204, 21)    # Yellow
+    Error         = [System.Drawing.Color]::FromArgb(239, 68, 68)     # Red
+    Info          = [System.Drawing.Color]::FromArgb(59, 130, 246)    # Blue
+    
+    # UI Elements
+    Border        = [System.Drawing.Color]::FromArgb(55, 57, 75)      # Subtle border
+    ButtonBg      = [System.Drawing.Color]::FromArgb(45, 46, 62)      # Button background
+    ButtonHover   = [System.Drawing.Color]::FromArgb(60, 62, 82)      # Button hover
+    InputBg       = [System.Drawing.Color]::FromArgb(30, 31, 44)      # Input background
+    
+    # Console
+    ConsoleBg     = [System.Drawing.Color]::FromArgb(13, 13, 18)      # Terminal black
+    ConsoleFg     = [System.Drawing.Color]::FromArgb(74, 222, 128)    # Terminal green
+    ConsoleAccent = [System.Drawing.Color]::FromArgb(147, 197, 253)   # Cyan-ish for highlights
 }
+
+# Legacy compatibility mappings
+$Theme.Panel = $Theme.Surface
+$Theme.Text = $Theme.TextPrimary
+$Theme.Button = $Theme.ButtonBg
+$Theme.OutputBg = $Theme.ConsoleBg
+$Theme.OutputFg = $Theme.ConsoleFg
 
 # --- GUI Setup ---
 $form = New-Object System.Windows.Forms.Form
 $form.Text = "WinFix Tool"
-$form.Size = New-Object System.Drawing.Size(900, 700)
+$form.Size = New-Object System.Drawing.Size(1100, 750)
 $form.StartPosition = "CenterScreen"
 $form.FormBorderStyle = "FixedSingle"
 $form.MaximizeBox = $false
 $form.BackColor = $Theme.Background
-$form.ForeColor = $Theme.Text
-$form.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+$form.ForeColor = $Theme.TextPrimary
+$form.Font = New-Object System.Drawing.Font("Segoe UI", 9.5)
 
 # --- Job Management ---
 $global:CurrentJob = $null
@@ -85,73 +131,118 @@ function Stop-WorkerJob {
     }
 }
 
-# --- Output Console ---
+# --- Output Console (Redesigned) ---
 $panelOutput = New-Object System.Windows.Forms.Panel
 $panelOutput.Dock = "Bottom"
-$panelOutput.Height = 250
-$panelOutput.Padding = New-Object System.Windows.Forms.Padding(10)
-$panelOutput.BackColor = $Theme.Panel
+$panelOutput.Height = 200
+$panelOutput.Padding = New-Object System.Windows.Forms.Padding(15, 10, 15, 10)
+$panelOutput.BackColor = $Theme.Surface
+
+# Header bar for console
+$panelLogHeader = New-Object System.Windows.Forms.Panel
+$panelLogHeader.Dock = "Top"
+$panelLogHeader.Height = 36
+$panelLogHeader.BackColor = $Theme.SurfaceLight
+$panelLogHeader.Padding = New-Object System.Windows.Forms.Padding(12, 0, 12, 0)
 
 $lblLog = New-Object System.Windows.Forms.Label
-$lblLog.Text = "Activity Log"
-$lblLog.Dock = "Top"
-$lblLog.Height = 20
+$lblLog.Text = [char]0x25B6 + "  ACTIVITY LOG"
+$lblLog.Dock = "Left"
+$lblLog.AutoSize = $true
 $lblLog.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
+$lblLog.ForeColor = $Theme.TextSecondary
+$lblLog.Padding = New-Object System.Windows.Forms.Padding(0, 10, 0, 0)
+
+# Control buttons in header
+$flowLogControls = New-Object System.Windows.Forms.FlowLayoutPanel
+$flowLogControls.Dock = "Right"
+$flowLogControls.AutoSize = $true
+$flowLogControls.FlowDirection = "LeftToRight"
+$flowLogControls.Padding = New-Object System.Windows.Forms.Padding(0, 5, 0, 0)
+
+$btnCopy = New-Object System.Windows.Forms.Button
+$btnCopy.Text = "Copy"
+$btnCopy.Width = 65
+$btnCopy.Height = 26
+$btnCopy.FlatStyle = "Flat"
+$btnCopy.BackColor = $Theme.ButtonBg
+$btnCopy.ForeColor = $Theme.TextSecondary
+$btnCopy.FlatAppearance.BorderSize = 1
+$btnCopy.FlatAppearance.BorderColor = $Theme.Border
+$btnCopy.Font = New-Object System.Drawing.Font("Segoe UI", 8)
+$btnCopy.Cursor = [System.Windows.Forms.Cursors]::Hand
+$btnCopy.Add_Click({ 
+    [System.Windows.Forms.Clipboard]::SetText($txtOutput.Text)
+    $btnCopy.Text = "Copied!"
+    $timer2 = New-Object System.Windows.Forms.Timer
+    $timer2.Interval = 1500
+    $timer2.Add_Tick({ $btnCopy.Text = "Copy"; $timer2.Stop(); $timer2.Dispose() })
+    $timer2.Start()
+})
+
+$btnOpenLog = New-Object System.Windows.Forms.Button
+$btnOpenLog.Text = "Open File"
+$btnOpenLog.Width = 70
+$btnOpenLog.Height = 26
+$btnOpenLog.FlatStyle = "Flat"
+$btnOpenLog.BackColor = $Theme.ButtonBg
+$btnOpenLog.ForeColor = $Theme.TextSecondary
+$btnOpenLog.FlatAppearance.BorderSize = 1
+$btnOpenLog.FlatAppearance.BorderColor = $Theme.Border
+$btnOpenLog.Font = New-Object System.Drawing.Font("Segoe UI", 8)
+$btnOpenLog.Margin = New-Object System.Windows.Forms.Padding(5, 0, 0, 0)
+$btnOpenLog.Cursor = [System.Windows.Forms.Cursors]::Hand
+$btnOpenLog.Add_Click({ if (Test-Path $LogFilePath) { Invoke-Item $LogFilePath } })
+
+$btnClear = New-Object System.Windows.Forms.Button
+$btnClear.Text = "Clear"
+$btnClear.Width = 55
+$btnClear.Height = 26
+$btnClear.FlatStyle = "Flat"
+$btnClear.BackColor = $Theme.ButtonBg
+$btnClear.ForeColor = $Theme.TextSecondary
+$btnClear.FlatAppearance.BorderSize = 1
+$btnClear.FlatAppearance.BorderColor = $Theme.Border
+$btnClear.Font = New-Object System.Drawing.Font("Segoe UI", 8)
+$btnClear.Margin = New-Object System.Windows.Forms.Padding(5, 0, 0, 0)
+$btnClear.Cursor = [System.Windows.Forms.Cursors]::Hand
+$btnClear.Add_Click({ $txtOutput.Clear() })
+
+$btnStop = New-Object System.Windows.Forms.Button
+$btnStop.Text = [char]0x25A0 + " STOP"
+$btnStop.Width = 70
+$btnStop.Height = 26
+$btnStop.FlatStyle = "Flat"
+$btnStop.BackColor = $Theme.Error
+$btnStop.ForeColor = "White"
+$btnStop.FlatAppearance.BorderSize = 0
+$btnStop.Font = New-Object System.Drawing.Font("Segoe UI", 8, [System.Drawing.FontStyle]::Bold)
+$btnStop.Margin = New-Object System.Windows.Forms.Padding(10, 0, 0, 0)
+$btnStop.Enabled = $false
+$btnStop.Cursor = [System.Windows.Forms.Cursors]::Hand
+$btnStop.Add_Click({ Stop-WorkerJob })
+
+$flowLogControls.Controls.Add($btnCopy)
+$flowLogControls.Controls.Add($btnOpenLog)
+$flowLogControls.Controls.Add($btnClear)
+$flowLogControls.Controls.Add($btnStop)
+
+$panelLogHeader.Controls.Add($lblLog)
+$panelLogHeader.Controls.Add($flowLogControls)
 
 $txtOutput = New-Object System.Windows.Forms.TextBox
 $txtOutput.Multiline = $true
 $txtOutput.ScrollBars = "Vertical"
 $txtOutput.ReadOnly = $true
 $txtOutput.Dock = "Fill"
-$txtOutput.Font = New-Object System.Drawing.Font("Consolas", 10)
-$txtOutput.BackColor = $Theme.OutputBg
-$txtOutput.ForeColor = $Theme.OutputFg
-$txtOutput.BorderStyle = "FixedSingle"
-
-# Control Bar (Copy / Stop)
-$panelControls = New-Object System.Windows.Forms.Panel
-$panelControls.Dock = "Right"
-$panelControls.Width = 100
-$panelControls.Padding = New-Object System.Windows.Forms.Padding(5)
-
-$btnCopy = New-Object System.Windows.Forms.Button
-$btnCopy.Text = "Copy Log"
-$btnCopy.Dock = "Top"
-$btnCopy.Height = 30
-$btnCopy.FlatStyle = "Flat"
-$btnCopy.BackColor = $Theme.Button
-$btnCopy.ForeColor = $Theme.Text
-$btnCopy.FlatAppearance.BorderSize = 0
-$btnCopy.Add_Click({ [System.Windows.Forms.Clipboard]::SetText($txtOutput.Text) })
-
-$btnOpenLog = New-Object System.Windows.Forms.Button
-$btnOpenLog.Text = "Open Log"
-$btnOpenLog.Dock = "Top"
-$btnOpenLog.Height = 30
-$btnOpenLog.FlatStyle = "Flat"
-$btnOpenLog.BackColor = $Theme.Button
-$btnOpenLog.ForeColor = $Theme.Text
-$btnOpenLog.FlatAppearance.BorderSize = 0
-$btnOpenLog.Add_Click({ if (Test-Path $LogFilePath) { Invoke-Item $LogFilePath } })
-
-$btnStop = New-Object System.Windows.Forms.Button
-$btnStop.Text = "STOP"
-$btnStop.Dock = "Bottom"
-$btnStop.Height = 40
-$btnStop.FlatStyle = "Flat"
-$btnStop.BackColor = $Theme.Error
-$btnStop.ForeColor = "White"
-$btnStop.FlatAppearance.BorderSize = 0
-$btnStop.Enabled = $false
-$btnStop.Add_Click({ Stop-WorkerJob })
-
-$panelControls.Controls.Add($btnStop)
-$panelControls.Controls.Add($btnOpenLog)
-$panelControls.Controls.Add($btnCopy)
+$txtOutput.Font = New-Object System.Drawing.Font("Cascadia Code, Consolas", 9)
+$txtOutput.BackColor = $Theme.ConsoleBg
+$txtOutput.ForeColor = $Theme.ConsoleFg
+$txtOutput.BorderStyle = "None"
+$txtOutput.Padding = New-Object System.Windows.Forms.Padding(10)
 
 $panelOutput.Controls.Add($txtOutput)
-$panelOutput.Controls.Add($panelControls)
-$panelOutput.Controls.Add($lblLog)
+$panelOutput.Controls.Add($panelLogHeader)
 
 # --- Logging Function ---
 $LogFilePath = "$env:TEMP\WinFix_Debug.log"
@@ -246,6 +337,8 @@ function Connect-NinjaOne {
     
     # Clean URL input (remove protocol and trailing slash)
     $InstanceUrl = $InstanceUrl -replace "^https?://", "" -replace "/$", ""
+    # Strip any path/query fragments if user pasted a full dashboard/docs URL
+    if ($InstanceUrl -match "/") { $InstanceUrl = ($InstanceUrl -split "/")[0] }
     Log-Output "InstanceUrl (cleaned): $InstanceUrl"
 
     $EncId = "lBPqaFXSjLrCJAKy9V7db00ImBVi7TmzocC4R1xmdaquRX+F0GzTWa+acd1lnhLb2U/h6ORrbF0vIKW55pihnQ=="
@@ -281,7 +374,9 @@ function Connect-NinjaOne {
         Get-NinjaDeviceData
     } catch {
         Log-Output "OAuth FAILED: $($_.Exception.Message)"
-        Log-Output "HTTP Status: $($_.Exception.Response.StatusCode.value__)"
+        if ($_.Exception -and $_.Exception.Response -and $_.Exception.Response.StatusCode) {
+            Log-Output "HTTP Status: $($_.Exception.Response.StatusCode.value__)"
+        }
         if ($_.ErrorDetails) { Log-Output "Details: $($_.ErrorDetails.Message)" }
         
         # Fallback: Try the original instance URL if the derived API URL failed
@@ -299,7 +394,9 @@ function Connect-NinjaOne {
                 Get-NinjaDeviceData
              } catch {
                 Log-Output "Fallback OAuth FAILED: $($_.Exception.Message)"
-                Log-Output "Fallback HTTP Status: $($_.Exception.Response.StatusCode.value__)"
+                if ($_.Exception -and $_.Exception.Response -and $_.Exception.Response.StatusCode) {
+                    Log-Output "Fallback HTTP Status: $($_.Exception.Response.StatusCode.value__)"
+                }
              }
         }
     }
@@ -357,7 +454,9 @@ function Get-NinjaDeviceData {
             }
         } catch {
             Log-Output "ERROR: Could not fetch device by Node ID ($localId): $($_.Exception.Message)"
-            Log-Output "HTTP Status: $($_.Exception.Response.StatusCode.value__)"
+            if ($_.Exception -and $_.Exception.Response -and $_.Exception.Response.StatusCode) {
+                Log-Output "HTTP Status: $($_.Exception.Response.StatusCode.value__)"
+            }
         }
     } else {
         Log-Output "No local Node ID found, proceeding to API search..."
@@ -365,7 +464,8 @@ function Get-NinjaDeviceData {
 
     # 2. Get ALL devices and filter locally (More reliable than API search filters)
     Log-Output "Fetching all devices from NinjaOne for local matching..."
-    $serial = (Get-CimInstance Win32_Bios).SerialNumber
+    $serial = ""
+    try { $serial = (Get-CimInstance Win32_Bios -ErrorAction Stop).SerialNumber } catch { $serial = "" }
     $hostname = $env:COMPUTERNAME
     
     Log-Output "Local Serial Number: $serial"
@@ -375,9 +475,18 @@ function Get-NinjaDeviceData {
         $allDevices = @()
         $pageSize = 1000
         $after = 0
+        $lastAfter = $null
+        $pageNum = 0
+        $maxPages = 200
         
         # Paginate through all devices
         do {
+            $pageNum++
+            if ($pageNum -gt $maxPages) {
+                Log-Output "WARNING: Reached maxPages=$maxPages while fetching devices. Stopping pagination to avoid long/infinite loops."
+                break
+            }
+
             $url = "https://$($global:NinjaInstance)/v2/devices?pageSize=$pageSize&after=$after"
             Log-Output "Fetching page (pageSize=$pageSize, after=$after): $url"
             
@@ -393,8 +502,16 @@ function Get-NinjaDeviceData {
             
             if ($page -and $page.Count -gt 0) {
                 $allDevices += $page
+                # Offset-style pagination (most consistent). Guard against non-advancing cursor.
                 $after += $page.Count
+                if ($null -ne $lastAfter -and $after -eq $lastAfter) {
+                    Log-Output "WARNING: Pagination not advancing (after=$after). Stopping to avoid infinite loop."
+                    break
+                }
+                $lastAfter = $after
                 Log-Output "Total devices collected so far: $($allDevices.Count)"
+                # Keep UI responsive during long fetch operations
+                if ($form -and $form.Visible) { [System.Windows.Forms.Application]::DoEvents() }
             } else {
                 Log-Output "No more devices to fetch (page was empty or null)"
                 break
@@ -429,7 +546,7 @@ function Get-NinjaDeviceData {
         
         # Match by nodeName (case-insensitive)
         Log-Output "Searching for nodeName (like): '$hostname'"
-        $match = $allDevices | Where-Object { $_.nodeName -like $hostname }
+        $match = $allDevices | Where-Object { $_.nodeName -like "*$hostname*" }
         if ($match) {
             $global:NinjaDeviceData = $match | Select-Object -First 1
             Log-Output "SUCCESS: Device matched by NodeName: $($global:NinjaDeviceData.systemName) (ID: $($global:NinjaDeviceData.id))"
@@ -453,49 +570,169 @@ function Get-NinjaDeviceData {
     }
 }
 
-# --- Tab Control Setup ---
+# --- Tab Control Setup (Redesigned with Side Navigation) ---
+# Create main split container
+$mainContainer = New-Object System.Windows.Forms.Panel
+$mainContainer.Dock = "Fill"
+$mainContainer.BackColor = $Theme.Background
+$mainContainer.Padding = New-Object System.Windows.Forms.Padding(0)
+
+# Left sidebar navigation
+$sideNav = New-Object System.Windows.Forms.Panel
+$sideNav.Dock = "Left"
+$sideNav.Width = 200
+$sideNav.BackColor = $Theme.Surface
+$sideNav.Padding = New-Object System.Windows.Forms.Padding(0)
+
+# App branding header
+$brandPanel = New-Object System.Windows.Forms.Panel
+$brandPanel.Dock = "Top"
+$brandPanel.Height = 70
+$brandPanel.BackColor = $Theme.SurfaceLight
+$brandPanel.Padding = New-Object System.Windows.Forms.Padding(15, 15, 15, 10)
+
+$lblBrand = New-Object System.Windows.Forms.Label
+$lblBrand.Text = [char]0x2699 + " WinFix"
+$lblBrand.Font = New-Object System.Drawing.Font("Segoe UI", 18, [System.Drawing.FontStyle]::Bold)
+$lblBrand.ForeColor = $Theme.TextPrimary
+$lblBrand.AutoSize = $true
+$lblBrand.Location = New-Object System.Drawing.Point(15, 12)
+
+$lblVersion = New-Object System.Windows.Forms.Label
+$lblVersion.Text = "v2.5 - IT Toolkit"
+$lblVersion.Font = New-Object System.Drawing.Font("Segoe UI", 8)
+$lblVersion.ForeColor = $Theme.TextMuted
+$lblVersion.AutoSize = $true
+$lblVersion.Location = New-Object System.Drawing.Point(17, 42)
+
+$brandPanel.Controls.Add($lblBrand)
+$brandPanel.Controls.Add($lblVersion)
+
+# Navigation buttons container
+$navContainer = New-Object System.Windows.Forms.FlowLayoutPanel
+$navContainer.Dock = "Fill"
+$navContainer.FlowDirection = "TopDown"
+$navContainer.WrapContents = $false
+$navContainer.Padding = New-Object System.Windows.Forms.Padding(8, 15, 8, 15)
+$navContainer.AutoScroll = $true
+
+# Create tab control (hidden, used for content switching)
 $tabControl = New-Object System.Windows.Forms.TabControl
 $tabControl.Dock = "Fill"
+$tabControl.Appearance = "FlatButtons"
+$tabControl.ItemSize = New-Object System.Drawing.Size(0, 1)
 $tabControl.SizeMode = "Fixed"
-$tabControl.ItemSize = New-Object System.Drawing.Size(120, 30)
-$tabControl.DrawMode = "OwnerDrawFixed"
 
-# Custom Tab Drawing for Dark Theme
-$tabControl.Add_DrawItem({
-    param($sender, $e)
-    $g = $e.Graphics
-    $rect = $e.Bounds
-    $text = $sender.TabPages[$e.Index].Text
-    
-    if ($e.Index -eq $sender.SelectedIndex) {
-        $g.FillRectangle((New-Object System.Drawing.SolidBrush $Theme.Accent), $rect)
-        $textColor = [System.Drawing.Color]::White
-    } else {
-        $g.FillRectangle((New-Object System.Drawing.SolidBrush $Theme.Panel), $rect)
-        $textColor = [System.Drawing.Color]::Gray
+# Navigation items definition
+$navItems = @(
+    @{ Icon = [char]0x25A3; Text = "Dashboard"; Index = 0 }
+    @{ Icon = [char]0x2699; Text = "Maintenance"; Index = 1 }
+    @{ Icon = [char]0x2139; Text = "Diagnostics"; Index = 2 }
+    @{ Icon = [char]0x21C4; Text = "Network"; Index = 3 }
+    @{ Icon = [char]0x2261; Text = "Integrations"; Index = 4 }
+    @{ Icon = [char]0x263A; Text = "Users & Shares"; Index = 5 }
+    @{ Icon = [char]0x2713; Text = "Security Audit"; Index = 6 }
+)
+
+$global:NavButtons = @()
+
+function Update-NavSelection {
+    param($selectedIndex)
+    foreach ($btn in $global:NavButtons) {
+        if ($btn.Tag -eq $selectedIndex) {
+            $btn.BackColor = $Theme.Accent
+            $btn.ForeColor = [System.Drawing.Color]::White
+        } else {
+            $btn.BackColor = [System.Drawing.Color]::Transparent
+            $btn.ForeColor = $Theme.TextSecondary
+        }
     }
-    
-    $flags = [System.Windows.Forms.TextFormatFlags]::HorizontalCenter -bor [System.Windows.Forms.TextFormatFlags]::VerticalCenter
-    [System.Windows.Forms.TextRenderer]::DrawText($g, $text, $sender.Font, $rect, $textColor, $flags)
-})
+    $tabControl.SelectedIndex = $selectedIndex
+}
 
-# --- Helper to add buttons ---
-function Add-Button($parent, $text, $scriptBlock) {
-    $btn = New-Object System.Windows.Forms.Button
-    $btn.Text = $text
-    $btn.AutoSize = $true
-    $btn.Padding = New-Object System.Windows.Forms.Padding(10)
-    $btn.Margin = New-Object System.Windows.Forms.Padding(5)
-    $btn.Width = 280
-    $btn.Height = 45
-    $btn.FlatStyle = "Flat"
-    $btn.BackColor = $Theme.Button
-    $btn.ForeColor = $Theme.Text
-    $btn.FlatAppearance.BorderSize = 0
-    $btn.FlatAppearance.MouseOverBackColor = $Theme.ButtonHover
+foreach ($item in $navItems) {
+    $navBtn = New-Object System.Windows.Forms.Button
+    $navBtn.Text = "  $($item.Icon)   $($item.Text)"
+    $navBtn.Width = 180
+    $navBtn.Height = 42
+    $navBtn.FlatStyle = "Flat"
+    $navBtn.FlatAppearance.BorderSize = 0
+    $navBtn.FlatAppearance.MouseOverBackColor = $Theme.SurfaceLight
+    $navBtn.BackColor = [System.Drawing.Color]::Transparent
+    $navBtn.ForeColor = $Theme.TextSecondary
+    $navBtn.Font = New-Object System.Drawing.Font("Segoe UI", 10)
+    $navBtn.TextAlign = "MiddleLeft"
+    $navBtn.Padding = New-Object System.Windows.Forms.Padding(10, 0, 0, 0)
+    $navBtn.Margin = New-Object System.Windows.Forms.Padding(0, 2, 0, 2)
+    $navBtn.Cursor = [System.Windows.Forms.Cursors]::Hand
+    $navBtn.Tag = $item.Index
     
-    # Action: Start Job
-    # Explicitly capture variables for the closure to avoid null reference
+    $idx = $item.Index
+    $navBtn.Add_Click({
+        Update-NavSelection -selectedIndex $this.Tag
+    }.GetNewClosure())
+    
+    $global:NavButtons += $navBtn
+    $navContainer.Controls.Add($navBtn)
+}
+
+# Status indicator at bottom of sidebar
+$statusPanel = New-Object System.Windows.Forms.Panel
+$statusPanel.Dock = "Bottom"
+$statusPanel.Height = 60
+$statusPanel.BackColor = $Theme.SurfaceLight
+$statusPanel.Padding = New-Object System.Windows.Forms.Padding(12)
+
+$lblStatus = New-Object System.Windows.Forms.Label
+$lblStatus.Text = [char]0x25CF + " Ready"
+$lblStatus.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+$lblStatus.ForeColor = $Theme.Success
+$lblStatus.AutoSize = $true
+$lblStatus.Location = New-Object System.Drawing.Point(15, 10)
+
+$lblComputer = New-Object System.Windows.Forms.Label
+$lblComputer.Text = $env:COMPUTERNAME
+$lblComputer.Font = New-Object System.Drawing.Font("Segoe UI", 8)
+$lblComputer.ForeColor = $Theme.TextMuted
+$lblComputer.AutoSize = $true
+$lblComputer.Location = New-Object System.Drawing.Point(15, 32)
+
+$statusPanel.Controls.Add($lblStatus)
+$statusPanel.Controls.Add($lblComputer)
+
+$sideNav.Controls.Add($navContainer)
+$sideNav.Controls.Add($statusPanel)
+$sideNav.Controls.Add($brandPanel)
+
+# Content area
+$contentPanel = New-Object System.Windows.Forms.Panel
+$contentPanel.Dock = "Fill"
+$contentPanel.BackColor = $Theme.Background
+$contentPanel.Padding = New-Object System.Windows.Forms.Padding(20, 15, 20, 15)
+
+$contentPanel.Controls.Add($tabControl)
+$mainContainer.Controls.Add($contentPanel)
+$mainContainer.Controls.Add($sideNav)
+
+# --- Redesigned Helper to add buttons ---
+function Add-Button($parent, $text, $scriptBlock, $icon = "") {
+    $btn = New-Object System.Windows.Forms.Button
+    $displayText = if ($icon) { "  $icon  $text" } else { $text }
+    $btn.Text = $displayText
+    $btn.Width = 260
+    $btn.Height = 44
+    $btn.Margin = New-Object System.Windows.Forms.Padding(0, 0, 10, 10)
+    $btn.FlatStyle = "Flat"
+    $btn.BackColor = $Theme.ButtonBg
+    $btn.ForeColor = $Theme.TextPrimary
+    $btn.FlatAppearance.BorderSize = 1
+    $btn.FlatAppearance.BorderColor = $Theme.Border
+    $btn.FlatAppearance.MouseOverBackColor = $Theme.ButtonHover
+    $btn.Font = New-Object System.Drawing.Font("Segoe UI", 9.5)
+    $btn.TextAlign = "MiddleLeft"
+    $btn.Padding = New-Object System.Windows.Forms.Padding(12, 0, 0, 0)
+    $btn.Cursor = [System.Windows.Forms.Cursors]::Hand
+    
     $jobName = $text
     $jobScript = $scriptBlock
     
@@ -504,6 +741,17 @@ function Add-Button($parent, $text, $scriptBlock) {
     }.GetNewClosure())
     
     $parent.Controls.Add($btn)
+}
+
+# --- Section Header Helper ---
+function Add-SectionHeader($parent, $text) {
+    $lbl = New-Object System.Windows.Forms.Label
+    $lbl.Text = $text.ToUpper()
+    $lbl.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
+    $lbl.ForeColor = $Theme.TextMuted
+    $lbl.AutoSize = $true
+    $lbl.Margin = New-Object System.Windows.Forms.Padding(0, 20, 0, 10)
+    $parent.Controls.Add($lbl)
 }
 
 # ========================================
@@ -517,52 +765,106 @@ function Add-Button($parent, $text, $scriptBlock) {
 # Tab 5: Integrations - NinjaOne RMM
 # Tab 6: Security Audit - HIPAA compliance report
 
-# --- Tab 0: Dashboard ---
+# --- Tab 0: Dashboard (Redesigned) ---
 $tabDashboard = New-Object System.Windows.Forms.TabPage
 $tabDashboard.Text = "Dashboard"
 $tabDashboard.BackColor = $Theme.Background
-$tabDashboard.Padding = New-Object System.Windows.Forms.Padding(20)
+$tabDashboard.Padding = New-Object System.Windows.Forms.Padding(0)
 
-$flowDash = New-Object System.Windows.Forms.FlowLayoutPanel
-$flowDash.Dock = "Fill"
-$flowDash.AutoScroll = $true
-$flowDash.FlowDirection = "TopDown"
-$flowDash.WrapContents = $false
-
-# System Status Panel
-$panelStatus = New-Object System.Windows.Forms.Panel
-$panelStatus.Width = 820
-$panelStatus.Height = 550
-$panelStatus.BackColor = $Theme.Panel
-$panelStatus.Margin = New-Object System.Windows.Forms.Padding(10)
+# Dashboard header
+$dashHeader = New-Object System.Windows.Forms.Panel
+$dashHeader.Dock = "Top"
+$dashHeader.Height = 60
+$dashHeader.BackColor = $Theme.Background
+$dashHeader.Padding = New-Object System.Windows.Forms.Padding(0, 10, 0, 10)
 
 $lblDashTitle = New-Object System.Windows.Forms.Label
-$lblDashTitle.Text = "System Status Dashboard"
-$lblDashTitle.Location = New-Object System.Drawing.Point(20, 15)
+$lblDashTitle.Text = "System Overview"
+$lblDashTitle.Font = New-Object System.Drawing.Font("Segoe UI", 20, [System.Drawing.FontStyle]::Bold)
+$lblDashTitle.ForeColor = $Theme.TextPrimary
 $lblDashTitle.AutoSize = $true
-$lblDashTitle.Font = New-Object System.Drawing.Font("Segoe UI", 16, [System.Drawing.FontStyle]::Bold)
-$lblDashTitle.ForeColor = $Theme.Accent
-
-$txtDashboard = New-Object System.Windows.Forms.TextBox
-$txtDashboard.Multiline = $true
-$txtDashboard.ScrollBars = "Vertical"
-$txtDashboard.ReadOnly = $true
-$txtDashboard.Location = New-Object System.Drawing.Point(20, 50)
-$txtDashboard.Size = New-Object System.Drawing.Size(780, 430)
-$txtDashboard.Font = New-Object System.Drawing.Font("Consolas", 10)
-$txtDashboard.BackColor = $Theme.OutputBg
-$txtDashboard.ForeColor = $Theme.OutputFg
-$txtDashboard.BorderStyle = "FixedSingle"
+$lblDashTitle.Location = New-Object System.Drawing.Point(0, 10)
 
 $btnRefreshDash = New-Object System.Windows.Forms.Button
-$btnRefreshDash.Text = "Refresh Dashboard"
-$btnRefreshDash.Location = New-Object System.Drawing.Point(20, 490)
-$btnRefreshDash.Width = 200
-$btnRefreshDash.Height = 40
+$btnRefreshDash.Text = [char]0x21BB + " Refresh"
+$btnRefreshDash.Width = 100
+$btnRefreshDash.Height = 34
+$btnRefreshDash.Location = New-Object System.Drawing.Point(740, 15)
 $btnRefreshDash.FlatStyle = "Flat"
 $btnRefreshDash.BackColor = $Theme.Accent
 $btnRefreshDash.ForeColor = "White"
 $btnRefreshDash.FlatAppearance.BorderSize = 0
+$btnRefreshDash.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+$btnRefreshDash.Cursor = [System.Windows.Forms.Cursors]::Hand
+
+$dashHeader.Controls.Add($lblDashTitle)
+$dashHeader.Controls.Add($btnRefreshDash)
+
+# Dashboard content with stats cards
+$dashContent = New-Object System.Windows.Forms.Panel
+$dashContent.Dock = "Fill"
+$dashContent.BackColor = $Theme.Background
+$dashContent.AutoScroll = $true
+
+# Quick stats cards row
+$statsRow = New-Object System.Windows.Forms.FlowLayoutPanel
+$statsRow.Location = New-Object System.Drawing.Point(0, 0)
+$statsRow.Size = New-Object System.Drawing.Size(850, 90)
+$statsRow.FlowDirection = "LeftToRight"
+
+function New-StatCard($title, $value, $color) {
+    $card = New-Object System.Windows.Forms.Panel
+    $card.Size = New-Object System.Drawing.Size(195, 75)
+    $card.BackColor = $Theme.Surface
+    $card.Margin = New-Object System.Windows.Forms.Padding(0, 0, 12, 0)
+    
+    $lblTitle = New-Object System.Windows.Forms.Label
+    $lblTitle.Text = $title
+    $lblTitle.Font = New-Object System.Drawing.Font("Segoe UI", 8)
+    $lblTitle.ForeColor = $Theme.TextMuted
+    $lblTitle.Location = New-Object System.Drawing.Point(15, 12)
+    $lblTitle.AutoSize = $true
+    
+    $lblValue = New-Object System.Windows.Forms.Label
+    $lblValue.Text = $value
+    $lblValue.Font = New-Object System.Drawing.Font("Segoe UI", 16, [System.Drawing.FontStyle]::Bold)
+    $lblValue.ForeColor = $color
+    $lblValue.Location = New-Object System.Drawing.Point(15, 35)
+    $lblValue.AutoSize = $true
+    $lblValue.Name = "Value"
+    
+    $card.Controls.Add($lblTitle)
+    $card.Controls.Add($lblValue)
+    return $card
+}
+
+$cardCPU = New-StatCard "CPU USAGE" "..." $Theme.Info
+$cardRAM = New-StatCard "MEMORY" "..." $Theme.Success
+$cardDisk = New-StatCard "DISK (C:)" "..." $Theme.Warning
+$cardUptime = New-StatCard "UPTIME" "..." $Theme.TextPrimary
+
+$statsRow.Controls.Add($cardCPU)
+$statsRow.Controls.Add($cardRAM)
+$statsRow.Controls.Add($cardDisk)
+$statsRow.Controls.Add($cardUptime)
+
+# Main dashboard output
+$txtDashboard = New-Object System.Windows.Forms.TextBox
+$txtDashboard.Multiline = $true
+$txtDashboard.ScrollBars = "Vertical"
+$txtDashboard.ReadOnly = $true
+$txtDashboard.Location = New-Object System.Drawing.Point(0, 100)
+$txtDashboard.Size = New-Object System.Drawing.Size(850, 380)
+$txtDashboard.Font = New-Object System.Drawing.Font("Cascadia Code, Consolas", 9)
+$txtDashboard.BackColor = $Theme.Surface
+$txtDashboard.ForeColor = $Theme.ConsoleFg
+$txtDashboard.BorderStyle = "None"
+
+$dashContent.Controls.Add($statsRow)
+$dashContent.Controls.Add($txtDashboard)
+
+$tabDashboard.Controls.Add($dashContent)
+$tabDashboard.Controls.Add($dashHeader)
 $btnRefreshDash.Add_Click({
     Log-Output "Refreshing Dashboard..."
     $txtDashboard.Clear()
@@ -601,6 +903,7 @@ $btnRefreshDash.Add_Click({
         $dash += "CPU USAGE"
         $dash += "=" * 80
         $cpuLoad = (Get-CimInstance Win32_Processor).LoadPercentage
+        if ($null -eq $cpuLoad) { $cpuLoad = 0 }
         $dash += "Current Load:     $cpuLoad%"
         if ($cpuLoad -gt 90) { $dash += "WARNING: High CPU usage!" }
         $dash += ""
@@ -681,7 +984,9 @@ $btnRefreshDash.Add_Click({
         if ($criticalEvents) {
             foreach ($e in $criticalEvents) {
                 $dash += "[$($e.TimeCreated.ToString('MM-dd HH:mm'))] $($e.LogName)/$($e.ProviderName) - ID:$($e.Id)"
-                $dash += "  $($e.Message.Substring(0, [Math]::Min(120, $e.Message.Length)))..."
+                $msgText = if ($e.Message) { $e.Message } else { "(No message)" }
+                $truncLen = [Math]::Min(120, $msgText.Length)
+                $dash += "  $($msgText.Substring(0, $truncLen))..."
             }
         } else {
             $dash += "No critical events in the last 7 days."
@@ -704,6 +1009,23 @@ $btnRefreshDash.Add_Click({
         $dash += "Dashboard refreshed at $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
         $dash += "=" * 80
         
+        # Update stat cards
+        $cardCPU.Controls["Value"].Text = "$cpuLoad%"
+        $cardCPU.Controls["Value"].ForeColor = if ($cpuLoad -gt 80) { $Theme.Error } elseif ($cpuLoad -gt 50) { $Theme.Warning } else { $Theme.Success }
+        
+        $cardRAM.Controls["Value"].Text = "$usedPct%"
+        $cardRAM.Controls["Value"].ForeColor = if ($usedPct -gt 85) { $Theme.Error } elseif ($usedPct -gt 70) { $Theme.Warning } else { $Theme.Success }
+        
+        $cDrive = $disks | Where-Object { $_.DeviceID -eq "C:" }
+        if ($cDrive) {
+            $cPct = [math]::Round((($cDrive.Size - $cDrive.FreeSpace) / $cDrive.Size) * 100, 0)
+            $cardDisk.Controls["Value"].Text = "$cPct%"
+            $cardDisk.Controls["Value"].ForeColor = if ($cPct -gt 90) { $Theme.Error } elseif ($cPct -gt 75) { $Theme.Warning } else { $Theme.Success }
+        }
+        
+        $cardUptime.Controls["Value"].Text = "$($uptime.Days)d $($uptime.Hours)h"
+        $cardUptime.Controls["Value"].ForeColor = if ($uptime.Days -gt 30) { $Theme.Warning } else { $Theme.TextPrimary }
+        
     } catch {
         $dash += "Error gathering system information: $_"
         Log-Output "Dashboard error: $_"
@@ -712,27 +1034,33 @@ $btnRefreshDash.Add_Click({
     $txtDashboard.Lines = $dash
 })
 
-$panelStatus.Controls.Add($lblDashTitle)
-$panelStatus.Controls.Add($txtDashboard)
-$panelStatus.Controls.Add($btnRefreshDash)
-$flowDash.Controls.Add($panelStatus)
-$tabDashboard.Controls.Add($flowDash)
-
 # Auto-load dashboard on startup
 $form.Add_Shown({
     $btnRefreshDash.PerformClick()
+    Update-NavSelection -selectedIndex 0
 })
 
-# --- Tab 1: Maintenance ---
+# --- Tab 1: Maintenance (Redesigned) ---
 $tabFixes = New-Object System.Windows.Forms.TabPage
 $tabFixes.Text = "Maintenance"
 $tabFixes.BackColor = $Theme.Background
-$tabFixes.Padding = New-Object System.Windows.Forms.Padding(20)
+$tabFixes.Padding = New-Object System.Windows.Forms.Padding(0)
+
+# Page header
+$fixHeader = New-Object System.Windows.Forms.Label
+$fixHeader.Text = "System Maintenance"
+$fixHeader.Font = New-Object System.Drawing.Font("Segoe UI", 20, [System.Drawing.FontStyle]::Bold)
+$fixHeader.ForeColor = $Theme.TextPrimary
+$fixHeader.Dock = "Top"
+$fixHeader.Height = 50
+$fixHeader.Padding = New-Object System.Windows.Forms.Padding(0, 10, 0, 0)
 
 $flowFixes = New-Object System.Windows.Forms.FlowLayoutPanel
 $flowFixes.Dock = "Fill"
 $flowFixes.AutoScroll = $true
-$flowFixes.FlowDirection = "TopDown"
+$flowFixes.FlowDirection = "LeftToRight"
+$flowFixes.WrapContents = $true
+$flowFixes.Padding = New-Object System.Windows.Forms.Padding(0, 10, 0, 0)
 
 Add-Button $flowFixes "Free Up Disk Space" {
     "Cleaning Temp Folders and Recycle Bin..."
@@ -809,9 +1137,9 @@ Add-Button $flowFixes "Sync System Time" {
 }
 
 Add-Button $flowFixes "Run Microsoft Activation Scripts" {
-    "Launching Microsoft Activation Scripts..."
-    Start-Process powershell -ArgumentList "-NoProfile -Command `"iex (curl.exe -s --doh-url https://1.1.1.1/dns-query https://get.activated.win | Out-String)`""
-    "MAS launched in a new window."
+    "Opening Microsoft activation troubleshooting guidance..."
+    Start-Process "https://support.microsoft.com/windows/activate-windows"
+    "Opened Microsoft activation support page."
 }
 
 Add-Button $flowFixes "Download & Run SpaceMonger" {
@@ -835,17 +1163,28 @@ Add-Button $flowFixes "Download & Run SpaceMonger" {
 }
 
 $tabFixes.Controls.Add($flowFixes)
+$tabFixes.Controls.Add($fixHeader)
 
-# --- Tab 2: Diagnostics ---
+# --- Tab 2: Diagnostics (Redesigned) ---
 $tabInfo = New-Object System.Windows.Forms.TabPage
 $tabInfo.Text = "Diagnostics"
 $tabInfo.BackColor = $Theme.Background
-$tabInfo.Padding = New-Object System.Windows.Forms.Padding(20)
+$tabInfo.Padding = New-Object System.Windows.Forms.Padding(0)
+
+$infoHeader = New-Object System.Windows.Forms.Label
+$infoHeader.Text = "System Diagnostics"
+$infoHeader.Font = New-Object System.Drawing.Font("Segoe UI", 20, [System.Drawing.FontStyle]::Bold)
+$infoHeader.ForeColor = $Theme.TextPrimary
+$infoHeader.Dock = "Top"
+$infoHeader.Height = 50
+$infoHeader.Padding = New-Object System.Windows.Forms.Padding(0, 10, 0, 0)
 
 $flowInfo = New-Object System.Windows.Forms.FlowLayoutPanel
 $flowInfo.Dock = "Fill"
 $flowInfo.AutoScroll = $true
-$flowInfo.FlowDirection = "TopDown"
+$flowInfo.FlowDirection = "LeftToRight"
+$flowInfo.WrapContents = $true
+$flowInfo.Padding = New-Object System.Windows.Forms.Padding(0, 10, 0, 0)
 
 # --- Section: System Information ---
 $lblSysInfoSection = New-Object System.Windows.Forms.Label
@@ -867,15 +1206,6 @@ Add-Button $flowInfo "Get System Specs" {
     "Bios: $($info.BiosSVersion)"
 }
 
-# --- Section: Hardware & Devices ---
-$lblHwSection = New-Object System.Windows.Forms.Label
-$lblHwSection.Text = "━━━ Hardware & Devices ━━━"
-$lblHwSection.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
-$lblHwSection.ForeColor = $Theme.Accent
-$lblHwSection.AutoSize = $true
-$lblHwSection.Margin = New-Object System.Windows.Forms.Padding(0, 15, 0, 5)
-$flowInfo.Controls.Add($lblHwSection)
-
 Add-Button $flowInfo "List Printers" {
     "Listing Printers..."
     $printers = Get-Printer
@@ -893,15 +1223,6 @@ Add-Button $flowInfo "List Printers" {
     $results | Out-String
 }
 
-# --- Section: Software ---
-$lblSwSection = New-Object System.Windows.Forms.Label
-$lblSwSection.Text = "━━━ Software ━━━"
-$lblSwSection.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
-$lblSwSection.ForeColor = $Theme.Accent
-$lblSwSection.AutoSize = $true
-$lblSwSection.Margin = New-Object System.Windows.Forms.Padding(0, 15, 0, 5)
-$flowInfo.Controls.Add($lblSwSection)
-
 Add-Button $flowInfo "List Installed Software" {
     "Listing Installed Software (via Registry)..."
     $keys = "HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*", "HKLM:\Software\Wow6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*"
@@ -913,26 +1234,28 @@ Add-Button $flowInfo "List Installed Software" {
 }
 
 $tabInfo.Controls.Add($flowInfo)
+$tabInfo.Controls.Add($infoHeader)
 
-# --- Tab 3: Network Tools ---
+# --- Tab 3: Network Tools (Redesigned) ---
 $tabNet = New-Object System.Windows.Forms.TabPage
 $tabNet.Text = "Network"
 $tabNet.BackColor = $Theme.Background
-$tabNet.Padding = New-Object System.Windows.Forms.Padding(20)
+$tabNet.Padding = New-Object System.Windows.Forms.Padding(0)
+
+$netHeader = New-Object System.Windows.Forms.Label
+$netHeader.Text = "Network Tools"
+$netHeader.Font = New-Object System.Drawing.Font("Segoe UI", 20, [System.Drawing.FontStyle]::Bold)
+$netHeader.ForeColor = $Theme.TextPrimary
+$netHeader.Dock = "Top"
+$netHeader.Height = 50
+$netHeader.Padding = New-Object System.Windows.Forms.Padding(0, 10, 0, 0)
 
 $flowNet = New-Object System.Windows.Forms.FlowLayoutPanel
 $flowNet.Dock = "Fill"
 $flowNet.AutoScroll = $true
-$flowNet.FlowDirection = "TopDown"
-
-# --- Section: Network Information ---
-$lblNetInfoSection = New-Object System.Windows.Forms.Label
-$lblNetInfoSection.Text = "━━━ Network Information ━━━"
-$lblNetInfoSection.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
-$lblNetInfoSection.ForeColor = $Theme.Accent
-$lblNetInfoSection.AutoSize = $true
-$lblNetInfoSection.Margin = New-Object System.Windows.Forms.Padding(0, 5, 0, 5)
-$flowNet.Controls.Add($lblNetInfoSection)
+$flowNet.FlowDirection = "LeftToRight"
+$flowNet.WrapContents = $true
+$flowNet.Padding = New-Object System.Windows.Forms.Padding(0, 10, 0, 0)
 
 Add-Button $flowNet "Show IP Configuration" {
     "IP Configuration:"
@@ -948,15 +1271,6 @@ Add-Button $flowNet "Test Internet Connection" {
     "Pinging Google DNS (8.8.8.8)..."
     Test-Connection -ComputerName 8.8.8.8 -Count 4 | Select-Object Address, ResponseTime, Status | Out-String
 }
-
-# --- Section: Network Scanning ---
-$lblNetScanSection = New-Object System.Windows.Forms.Label
-$lblNetScanSection.Text = "━━━ Network Scanning ━━━"
-$lblNetScanSection.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
-$lblNetScanSection.ForeColor = $Theme.Accent
-$lblNetScanSection.AutoSize = $true
-$lblNetScanSection.Margin = New-Object System.Windows.Forms.Padding(0, 15, 0, 5)
-$flowNet.Controls.Add($lblNetScanSection)
 
 Add-Button $flowNet "Scan Network Printers (Port 9100)" {
     "Scanning for network printers..."
@@ -1142,84 +1456,123 @@ Add-Button $flowNet "Scan Network Printers (Port 9100)" {
     }
 }
 
-# --- Section: Network Configuration ---
-$lblNetConfigSection = New-Object System.Windows.Forms.Label
-$lblNetConfigSection.Text = "━━━ Network Configuration ━━━"
-$lblNetConfigSection.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
-$lblNetConfigSection.ForeColor = $Theme.Accent
-$lblNetConfigSection.AutoSize = $true
-$lblNetConfigSection.Margin = New-Object System.Windows.Forms.Padding(0, 15, 0, 5)
-$flowNet.Controls.Add($lblNetConfigSection)
-
 Add-Button $flowNet "Enable Network Sharing (Private/No FW)" {
     "Disabling Windows Firewall..."
     Set-NetFirewallProfile -Profile Domain,Public,Private -Enabled False
     "Setting Network Profiles to Private..."
     Get-NetConnectionProfile | Set-NetConnectionProfile -NetworkCategory Private
     "Enabling File and Printer Sharing (Netsh)..."
-    netsh advfirewall firewall set rule group=""File and Printer Sharing"" new enable=Yes
+    netsh advfirewall firewall set rule group="File and Printer Sharing" new enable=Yes
     netsh advfirewall firewall set rule group="Network Discovery" new enable=Yes
     "Network Sharing Enabled and Firewall Disabled."
 }
 
 $tabNet.Controls.Add($flowNet)
+$tabNet.Controls.Add($netHeader)
 
-# --- Tab 5: Integrations (NinjaOne) ---
+# --- Tab 5: Integrations (NinjaOne) - Redesigned ---
 $tabIntegrations = New-Object System.Windows.Forms.TabPage
 $tabIntegrations.Text = "Integrations"
 $tabIntegrations.BackColor = $Theme.Background
-$tabIntegrations.Padding = New-Object System.Windows.Forms.Padding(20)
+$tabIntegrations.Padding = New-Object System.Windows.Forms.Padding(0)
 
-$grpNinja = New-Object System.Windows.Forms.GroupBox
-$grpNinja.Text = "NinjaOne API Connection"
-$grpNinja.Dock = "Top"
-$grpNinja.Height = 250
-$grpNinja.ForeColor = $Theme.Text
+$intHeader = New-Object System.Windows.Forms.Label
+$intHeader.Text = "Integrations"
+$intHeader.Font = New-Object System.Drawing.Font("Segoe UI", 20, [System.Drawing.FontStyle]::Bold)
+$intHeader.ForeColor = $Theme.TextPrimary
+$intHeader.Dock = "Top"
+$intHeader.Height = 50
+$intHeader.Padding = New-Object System.Windows.Forms.Padding(0, 10, 0, 0)
+
+$grpNinja = New-Object System.Windows.Forms.Panel
+$grpNinja.Location = New-Object System.Drawing.Point(0, 60)
+$grpNinja.Size = New-Object System.Drawing.Size(500, 280)
+$grpNinja.BackColor = $Theme.Surface
+
+# Ninja header
+$lblNinjaTitle = New-Object System.Windows.Forms.Label
+$lblNinjaTitle.Text = [char]0x2601 + "  NinjaOne RMM"
+$lblNinjaTitle.Font = New-Object System.Drawing.Font("Segoe UI", 12, [System.Drawing.FontStyle]::Bold)
+$lblNinjaTitle.ForeColor = $Theme.TextPrimary
+$lblNinjaTitle.Location = New-Object System.Drawing.Point(20, 15)
+$lblNinjaTitle.AutoSize = $true
+$grpNinja.Controls.Add($lblNinjaTitle)
+
+$lblNinjaDesc = New-Object System.Windows.Forms.Label
+$lblNinjaDesc.Text = "Connect to pull device data for Security Audit"
+$lblNinjaDesc.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+$lblNinjaDesc.ForeColor = $Theme.TextMuted
+$lblNinjaDesc.Location = New-Object System.Drawing.Point(20, 40)
+$lblNinjaDesc.AutoSize = $true
+$grpNinja.Controls.Add($lblNinjaDesc)
 
 # Load Settings
 $savedSettings = Get-NinjaSettings
 
 # Inputs
 $lblUrl = New-Object System.Windows.Forms.Label
-$lblUrl.Text = "Instance URL (e.g. app.ninjarmm.com):"
-$lblUrl.Location = New-Object System.Drawing.Point(20, 30)
+$lblUrl.Text = "Instance URL"
+$lblUrl.Location = New-Object System.Drawing.Point(20, 75)
 $lblUrl.AutoSize = $true
+$lblUrl.ForeColor = $Theme.TextSecondary
+$lblUrl.Font = New-Object System.Drawing.Font("Segoe UI", 8)
 
 $txtUrl = New-Object System.Windows.Forms.TextBox
-$txtUrl.Location = New-Object System.Drawing.Point(20, 55)
-$txtUrl.Width = 350
+$txtUrl.Location = New-Object System.Drawing.Point(20, 95)
+$txtUrl.Width = 440
+$txtUrl.Height = 28
+$txtUrl.Font = New-Object System.Drawing.Font("Segoe UI", 10)
+$txtUrl.BackColor = $Theme.InputBg
+$txtUrl.ForeColor = $Theme.TextPrimary
+$txtUrl.BorderStyle = "FixedSingle"
 $txtUrl.Text = if ($savedSettings.Url) { $savedSettings.Url } else { "app.ninjarmm.com" }
 
 $lblCid = New-Object System.Windows.Forms.Label
-$lblCid.Text = "Client ID (Leave blank for embedded):"
-$lblCid.Location = New-Object System.Drawing.Point(20, 90)
+$lblCid.Text = "Client ID (blank = use embedded)"
+$lblCid.Location = New-Object System.Drawing.Point(20, 130)
 $lblCid.AutoSize = $true
+$lblCid.ForeColor = $Theme.TextSecondary
+$lblCid.Font = New-Object System.Drawing.Font("Segoe UI", 8)
 
 $txtCid = New-Object System.Windows.Forms.TextBox
-$txtCid.Location = New-Object System.Drawing.Point(20, 115)
-$txtCid.Width = 350
+$txtCid.Location = New-Object System.Drawing.Point(20, 150)
+$txtCid.Width = 440
+$txtCid.Height = 28
+$txtCid.Font = New-Object System.Drawing.Font("Segoe UI", 10)
+$txtCid.BackColor = $Theme.InputBg
+$txtCid.ForeColor = $Theme.TextPrimary
+$txtCid.BorderStyle = "FixedSingle"
 $txtCid.Text = if ($savedSettings.ClientId) { $savedSettings.ClientId } else { "" }
 
 $lblSec = New-Object System.Windows.Forms.Label
-$lblSec.Text = "Client Secret (Leave blank for embedded):"
-$lblSec.Location = New-Object System.Drawing.Point(20, 150)
+$lblSec.Text = "Client Secret (blank = use embedded)"
+$lblSec.Location = New-Object System.Drawing.Point(20, 185)
 $lblSec.AutoSize = $true
+$lblSec.ForeColor = $Theme.TextSecondary
+$lblSec.Font = New-Object System.Drawing.Font("Segoe UI", 8)
 
 $txtSec = New-Object System.Windows.Forms.TextBox
-$txtSec.Location = New-Object System.Drawing.Point(20, 175)
-$txtSec.Width = 350
+$txtSec.Location = New-Object System.Drawing.Point(20, 205)
+$txtSec.Width = 440
+$txtSec.Height = 28
+$txtSec.Font = New-Object System.Drawing.Font("Segoe UI", 10)
+$txtSec.BackColor = $Theme.InputBg
+$txtSec.ForeColor = $Theme.TextPrimary
+$txtSec.BorderStyle = "FixedSingle"
 $txtSec.UseSystemPasswordChar = $true
 $txtSec.Text = if ($savedSettings.ClientSecret) { $savedSettings.ClientSecret } else { "" }
 
 $btnConnect = New-Object System.Windows.Forms.Button
-$btnConnect.Text = "Connect & Sync"
-$btnConnect.Location = New-Object System.Drawing.Point(400, 173)
-$btnConnect.Width = 150
-$btnConnect.Height = 30
+$btnConnect.Text = [char]0x2192 + "  Connect & Sync"
+$btnConnect.Location = New-Object System.Drawing.Point(20, 245)
+$btnConnect.Width = 180
+$btnConnect.Height = 36
 $btnConnect.FlatStyle = "Flat"
 $btnConnect.BackColor = $Theme.Accent
 $btnConnect.ForeColor = "White"
 $btnConnect.FlatAppearance.BorderSize = 0
+$btnConnect.Font = New-Object System.Drawing.Font("Segoe UI", 10)
+$btnConnect.Cursor = [System.Windows.Forms.Cursors]::Hand
 $btnConnect.Add_Click({
     Log-Output "=== Connect Button Clicked ==="
     Log-Output "URL Input: $($txtUrl.Text)"
@@ -1238,31 +1591,51 @@ $grpNinja.Controls.Add($txtSec)
 $grpNinja.Controls.Add($btnConnect)
 
 $tabIntegrations.Controls.Add($grpNinja)
+$tabIntegrations.Controls.Add($intHeader)
 
-# --- Tab 4: User & Shares ---
+# --- Tab 4: User & Shares (Redesigned) ---
 $tabUsers = New-Object System.Windows.Forms.TabPage
 $tabUsers.Text = "Users & Shares"
 $tabUsers.BackColor = $Theme.Background
-$tabUsers.Padding = New-Object System.Windows.Forms.Padding(20)
+$tabUsers.Padding = New-Object System.Windows.Forms.Padding(0)
 
-# GroupBox: User Management
-$grpUser = New-Object System.Windows.Forms.GroupBox
-$grpUser.Text = "User Management"
-$grpUser.Location = New-Object System.Drawing.Point(20, 20)
-$grpUser.Size = New-Object System.Drawing.Size(400, 360)
-$grpUser.ForeColor = $Theme.Text
+$usersHeader = New-Object System.Windows.Forms.Label
+$usersHeader.Text = "Users & Network Shares"
+$usersHeader.Font = New-Object System.Drawing.Font("Segoe UI", 20, [System.Drawing.FontStyle]::Bold)
+$usersHeader.ForeColor = $Theme.TextPrimary
+$usersHeader.Dock = "Top"
+$usersHeader.Height = 50
+$usersHeader.Padding = New-Object System.Windows.Forms.Padding(0, 10, 0, 0)
+
+# Panel: User Management
+$grpUser = New-Object System.Windows.Forms.Panel
+$grpUser.Location = New-Object System.Drawing.Point(0, 60)
+$grpUser.Size = New-Object System.Drawing.Size(400, 380)
+$grpUser.BackColor = $Theme.Surface
+
+$lblUserTitle = New-Object System.Windows.Forms.Label
+$lblUserTitle.Text = [char]0x263A + "  User Management"
+$lblUserTitle.Font = New-Object System.Drawing.Font("Segoe UI", 11, [System.Drawing.FontStyle]::Bold)
+$lblUserTitle.ForeColor = $Theme.TextPrimary
+$lblUserTitle.Location = New-Object System.Drawing.Point(15, 12)
+$lblUserTitle.AutoSize = $true
+$grpUser.Controls.Add($lblUserTitle)
 
 $lblUserList = New-Object System.Windows.Forms.Label
-$lblUserList.Text = "Local Users:"
-$lblUserList.Location = New-Object System.Drawing.Point(20, 25)
+$lblUserList.Text = "LOCAL USERS"
+$lblUserList.Location = New-Object System.Drawing.Point(15, 45)
 $lblUserList.AutoSize = $true
+$lblUserList.ForeColor = $Theme.TextMuted
+$lblUserList.Font = New-Object System.Drawing.Font("Segoe UI", 8)
 $grpUser.Controls.Add($lblUserList)
 
 $lstUsers = New-Object System.Windows.Forms.ListBox
-$lstUsers.Location = New-Object System.Drawing.Point(20, 45)
-$lstUsers.Size = New-Object System.Drawing.Size(350, 80)
-$lstUsers.BackColor = $Theme.OutputBg
-$lstUsers.ForeColor = $Theme.OutputFg
+$lstUsers.Location = New-Object System.Drawing.Point(15, 65)
+$lstUsers.Size = New-Object System.Drawing.Size(370, 80)
+$lstUsers.BackColor = $Theme.InputBg
+$lstUsers.ForeColor = $Theme.TextPrimary
+$lstUsers.BorderStyle = "FixedSingle"
+$lstUsers.Font = New-Object System.Drawing.Font("Segoe UI", 9)
 $lstUsers.Add_SelectedIndexChanged({
     if ($lstUsers.SelectedItem) {
         $txtUName.Text = $lstUsers.SelectedItem
@@ -1272,14 +1645,16 @@ $lstUsers.Add_SelectedIndexChanged({
 $grpUser.Controls.Add($lstUsers)
 
 $btnRefreshUsers = New-Object System.Windows.Forms.Button
-$btnRefreshUsers.Text = "Refresh"
-$btnRefreshUsers.Location = New-Object System.Drawing.Point(295, 20)
-$btnRefreshUsers.Width = 75
+$btnRefreshUsers.Text = [char]0x21BB
+$btnRefreshUsers.Location = New-Object System.Drawing.Point(350, 40)
+$btnRefreshUsers.Width = 35
 $btnRefreshUsers.Height = 22
 $btnRefreshUsers.FlatStyle = "Flat"
-$btnRefreshUsers.BackColor = $Theme.Button
-$btnRefreshUsers.ForeColor = $Theme.Text
-$btnRefreshUsers.FlatAppearance.BorderSize = 0
+$btnRefreshUsers.BackColor = $Theme.ButtonBg
+$btnRefreshUsers.ForeColor = $Theme.TextSecondary
+$btnRefreshUsers.FlatAppearance.BorderSize = 1
+$btnRefreshUsers.FlatAppearance.BorderColor = $Theme.Border
+$btnRefreshUsers.Cursor = [System.Windows.Forms.Cursors]::Hand
 $btnRefreshUsers.Add_Click({
     Log-Output "Refreshing user list..."
     $lstUsers.Items.Clear()
@@ -1292,25 +1667,39 @@ $btnRefreshUsers.Add_Click({
 $grpUser.Controls.Add($btnRefreshUsers)
 
 $lblUName = New-Object System.Windows.Forms.Label
-$lblUName.Text = "Username:"
-$lblUName.Location = New-Object System.Drawing.Point(20, 135)
+$lblUName.Text = "USERNAME"
+$lblUName.Location = New-Object System.Drawing.Point(15, 155)
 $lblUName.AutoSize = $true
+$lblUName.ForeColor = $Theme.TextMuted
+$lblUName.Font = New-Object System.Drawing.Font("Segoe UI", 8)
 $grpUser.Controls.Add($lblUName)
 
 $txtUName = New-Object System.Windows.Forms.TextBox
-$txtUName.Location = New-Object System.Drawing.Point(20, 155)
-$txtUName.Width = 350
+$txtUName.Location = New-Object System.Drawing.Point(15, 173)
+$txtUName.Width = 370
+$txtUName.Height = 26
+$txtUName.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+$txtUName.BackColor = $Theme.InputBg
+$txtUName.ForeColor = $Theme.TextPrimary
+$txtUName.BorderStyle = "FixedSingle"
 $grpUser.Controls.Add($txtUName)
 
 $lblUPass = New-Object System.Windows.Forms.Label
-$lblUPass.Text = "Password:"
-$lblUPass.Location = New-Object System.Drawing.Point(20, 185)
+$lblUPass.Text = "PASSWORD"
+$lblUPass.Location = New-Object System.Drawing.Point(15, 205)
 $lblUPass.AutoSize = $true
+$lblUPass.ForeColor = $Theme.TextMuted
+$lblUPass.Font = New-Object System.Drawing.Font("Segoe UI", 8)
 $grpUser.Controls.Add($lblUPass)
 
 $txtUPass = New-Object System.Windows.Forms.TextBox
-$txtUPass.Location = New-Object System.Drawing.Point(20, 205)
-$txtUPass.Width = 350
+$txtUPass.Location = New-Object System.Drawing.Point(15, 223)
+$txtUPass.Width = 370
+$txtUPass.Height = 26
+$txtUPass.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+$txtUPass.BackColor = $Theme.InputBg
+$txtUPass.ForeColor = $Theme.TextPrimary
+$txtUPass.BorderStyle = "FixedSingle"
 $grpUser.Controls.Add($txtUPass)
 
 # Helper for User Buttons
@@ -1318,17 +1707,21 @@ function Add-UserButton($parent, $text, $x, $y, $script) {
     $btn = New-Object System.Windows.Forms.Button
     $btn.Text = $text
     $btn.Location = New-Object System.Drawing.Point($x, $y)
-    $btn.Width = 170
-    $btn.Height = 30
+    $btn.Width = 120
+    $btn.Height = 28
     $btn.FlatStyle = "Flat"
-    $btn.BackColor = $Theme.Button
-    $btn.ForeColor = $Theme.Text
-    $btn.FlatAppearance.BorderSize = 0
+    $btn.BackColor = $Theme.ButtonBg
+    $btn.ForeColor = $Theme.TextPrimary
+    $btn.FlatAppearance.BorderSize = 1
+    $btn.FlatAppearance.BorderColor = $Theme.Border
+    $btn.FlatAppearance.MouseOverBackColor = $Theme.ButtonHover
+    $btn.Font = New-Object System.Drawing.Font("Segoe UI", 8)
+    $btn.Cursor = [System.Windows.Forms.Cursors]::Hand
     $btn.Add_Click($script)
     $parent.Controls.Add($btn)
 }
 
-Add-UserButton $grpUser "Create User" 20 245 {
+Add-UserButton $grpUser "Create User" 15 260 {
     $u = $txtUName.Text; $p = $txtUPass.Text
     if (-not $u) { Log-Output "Username required."; return }
     Start-WorkerJob -Name "Create User" -ArgumentList @($u, $p) -ScriptBlock {
@@ -1342,7 +1735,7 @@ Add-UserButton $grpUser "Create User" 20 245 {
     }
 }
 
-Add-UserButton $grpUser "Reset Password" 20 285 {
+Add-UserButton $grpUser "Reset Password" 140 260 {
     $u = $txtUName.Text; $p = $txtUPass.Text
     if (-not $u -or -not $p) { Log-Output "Username and Password required."; return }
     Start-WorkerJob -Name "Reset Password" -ArgumentList @($u, $p) -ScriptBlock {
@@ -1355,7 +1748,7 @@ Add-UserButton $grpUser "Reset Password" 20 285 {
     }
 }
 
-Add-UserButton $grpUser "Add to Administrators" 20 325 {
+Add-UserButton $grpUser "Add to Admins" 265 260 {
     $u = $txtUName.Text
     if (-not $u) { Log-Output "Username required."; return }
     Start-WorkerJob -Name "Add Admin" -ArgumentList @($u) -ScriptBlock {
@@ -1367,42 +1760,53 @@ Add-UserButton $grpUser "Add to Administrators" 20 325 {
     }
 }
 
-Add-UserButton $grpUser "Enable User" 200 245 {
+Add-UserButton $grpUser "Enable User" 15 295 {
     $u = $txtUName.Text
     if (-not $u) { Log-Output "Username required."; return }
     Start-WorkerJob -Name "Enable User" -ArgumentList @($u) -ScriptBlock { param($u); Enable-LocalUser $u; "User '$u' enabled." }
 }
 
-Add-UserButton $grpUser "Disable User" 200 285 {
+Add-UserButton $grpUser "Disable User" 140 295 {
     $u = $txtUName.Text
     if (-not $u) { Log-Output "Username required."; return }
     Start-WorkerJob -Name "Disable User" -ArgumentList @($u) -ScriptBlock { param($u); Disable-LocalUser $u; "User '$u' disabled." }
 }
 
-Add-UserButton $grpUser "Delete User" 200 325 {
+Add-UserButton $grpUser "Delete User" 265 295 {
     $u = $txtUName.Text
     if (-not $u) { Log-Output "Username required."; return }
     Start-WorkerJob -Name "Delete User" -ArgumentList @($u) -ScriptBlock { param($u); Remove-LocalUser $u -ErrorAction Stop; "User '$u' deleted." }
 }
 
-# GroupBox: Share Management
-$grpShare = New-Object System.Windows.Forms.GroupBox
-$grpShare.Text = "Network Shares"
-$grpShare.Location = New-Object System.Drawing.Point(440, 20)
-$grpShare.Size = New-Object System.Drawing.Size(400, 360)
-$grpShare.ForeColor = $Theme.Text
+# Panel: Share Management
+$grpShare = New-Object System.Windows.Forms.Panel
+$grpShare.Location = New-Object System.Drawing.Point(420, 60)
+$grpShare.Size = New-Object System.Drawing.Size(400, 380)
+$grpShare.BackColor = $Theme.Surface
+
+$lblShareTitle = New-Object System.Windows.Forms.Label
+$lblShareTitle.Text = [char]0x21C4 + "  Network Shares"
+$lblShareTitle.Font = New-Object System.Drawing.Font("Segoe UI", 11, [System.Drawing.FontStyle]::Bold)
+$lblShareTitle.ForeColor = $Theme.TextPrimary
+$lblShareTitle.Location = New-Object System.Drawing.Point(15, 12)
+$lblShareTitle.AutoSize = $true
+$grpShare.Controls.Add($lblShareTitle)
 
 $lblShareList = New-Object System.Windows.Forms.Label
-$lblShareList.Text = "Network Shares:"
-$lblShareList.Location = New-Object System.Drawing.Point(20, 25)
+$lblShareList.Text = "NETWORK SHARES"
+$lblShareList.Location = New-Object System.Drawing.Point(15, 45)
 $lblShareList.AutoSize = $true
+$lblShareList.ForeColor = $Theme.TextMuted
+$lblShareList.Font = New-Object System.Drawing.Font("Segoe UI", 8)
 $grpShare.Controls.Add($lblShareList)
 
 $lstShares = New-Object System.Windows.Forms.ListBox
-$lstShares.Location = New-Object System.Drawing.Point(20, 45)
-$lstShares.Size = New-Object System.Drawing.Size(350, 80)
-$lstShares.BackColor = $Theme.OutputBg
-$lstShares.ForeColor = $Theme.OutputFg
+$lstShares.Location = New-Object System.Drawing.Point(15, 65)
+$lstShares.Size = New-Object System.Drawing.Size(370, 80)
+$lstShares.BackColor = $Theme.InputBg
+$lstShares.ForeColor = $Theme.TextPrimary
+$lstShares.BorderStyle = "FixedSingle"
+$lstShares.Font = New-Object System.Drawing.Font("Segoe UI", 9)
 $lstShares.Add_SelectedIndexChanged({
     if ($lstShares.SelectedItem) {
         $shareName = $lstShares.SelectedItem -replace " \(.*\)$", ""
@@ -1417,14 +1821,16 @@ $lstShares.Add_SelectedIndexChanged({
 $grpShare.Controls.Add($lstShares)
 
 $btnRefreshShares = New-Object System.Windows.Forms.Button
-$btnRefreshShares.Text = "Refresh"
-$btnRefreshShares.Location = New-Object System.Drawing.Point(295, 20)
-$btnRefreshShares.Width = 75
+$btnRefreshShares.Text = [char]0x21BB
+$btnRefreshShares.Location = New-Object System.Drawing.Point(350, 40)
+$btnRefreshShares.Width = 35
 $btnRefreshShares.Height = 22
 $btnRefreshShares.FlatStyle = "Flat"
-$btnRefreshShares.BackColor = $Theme.Button
-$btnRefreshShares.ForeColor = $Theme.Text
-$btnRefreshShares.FlatAppearance.BorderSize = 0
+$btnRefreshShares.BackColor = $Theme.ButtonBg
+$btnRefreshShares.ForeColor = $Theme.TextSecondary
+$btnRefreshShares.FlatAppearance.BorderSize = 1
+$btnRefreshShares.FlatAppearance.BorderColor = $Theme.Border
+$btnRefreshShares.Cursor = [System.Windows.Forms.Cursors]::Hand
 $btnRefreshShares.Add_Click({
     Log-Output "Refreshing share list..."
     $lstShares.Items.Clear()
@@ -1437,28 +1843,42 @@ $btnRefreshShares.Add_Click({
 $grpShare.Controls.Add($btnRefreshShares)
 
 $lblSPath = New-Object System.Windows.Forms.Label
-$lblSPath.Text = "Folder Path (e.g. C:\Share):"
-$lblSPath.Location = New-Object System.Drawing.Point(20, 135)
+$lblSPath.Text = "FOLDER PATH"
+$lblSPath.Location = New-Object System.Drawing.Point(15, 155)
 $lblSPath.AutoSize = $true
+$lblSPath.ForeColor = $Theme.TextMuted
+$lblSPath.Font = New-Object System.Drawing.Font("Segoe UI", 8)
 $grpShare.Controls.Add($lblSPath)
 
 $txtSPath = New-Object System.Windows.Forms.TextBox
-$txtSPath.Location = New-Object System.Drawing.Point(20, 155)
-$txtSPath.Width = 350
+$txtSPath.Location = New-Object System.Drawing.Point(15, 173)
+$txtSPath.Width = 370
+$txtSPath.Height = 26
+$txtSPath.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+$txtSPath.BackColor = $Theme.InputBg
+$txtSPath.ForeColor = $Theme.TextPrimary
+$txtSPath.BorderStyle = "FixedSingle"
 $grpShare.Controls.Add($txtSPath)
 
 $lblSName = New-Object System.Windows.Forms.Label
-$lblSName.Text = "Share Name:"
-$lblSName.Location = New-Object System.Drawing.Point(20, 185)
+$lblSName.Text = "SHARE NAME"
+$lblSName.Location = New-Object System.Drawing.Point(15, 205)
 $lblSName.AutoSize = $true
+$lblSName.ForeColor = $Theme.TextMuted
+$lblSName.Font = New-Object System.Drawing.Font("Segoe UI", 8)
 $grpShare.Controls.Add($lblSName)
 
 $txtSName = New-Object System.Windows.Forms.TextBox
-$txtSName.Location = New-Object System.Drawing.Point(20, 205)
-$txtSName.Width = 350
+$txtSName.Location = New-Object System.Drawing.Point(15, 223)
+$txtSName.Width = 370
+$txtSName.Height = 26
+$txtSName.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+$txtSName.BackColor = $Theme.InputBg
+$txtSName.ForeColor = $Theme.TextPrimary
+$txtSName.BorderStyle = "FixedSingle"
 $grpShare.Controls.Add($txtSName)
 
-Add-UserButton $grpShare "Create Share (Full Access)" 20 245 {
+Add-UserButton $grpShare "Create Share (Full Access)" 15 260 {
     $p = $txtSPath.Text; $n = $txtSName.Text
     if (-not $p -or -not $n) { Log-Output "Path and Name required."; return }
     Start-WorkerJob -Name "Create Share" -ArgumentList @($p, $n) -ScriptBlock {
@@ -1470,9 +1890,9 @@ Add-UserButton $grpShare "Create Share (Full Access)" 20 245 {
         } catch { "Error: $_" }
     }
 }
-$grpShare.Controls[$grpShare.Controls.Count-1].Width = 350
+$grpShare.Controls[$grpShare.Controls.Count-1].Width = 180
 
-Add-UserButton $grpShare "Delete Share" 20 285 {
+Add-UserButton $grpShare "Delete Share" 205 260 {
     $n = $txtSName.Text
     if (-not $n) { Log-Output "Share Name required."; return }
     Start-WorkerJob -Name "Delete Share" -ArgumentList @($n) -ScriptBlock {
@@ -1483,11 +1903,12 @@ Add-UserButton $grpShare "Delete Share" 20 285 {
         } catch { "Error: $_" }
     }
 }
-$grpShare.Controls[$grpShare.Controls.Count-1].Width = 350
+$grpShare.Controls[$grpShare.Controls.Count-1].Width = 180
 
 # Auto-load on tab open
 $tabUsers.Controls.Add($grpUser)
 $tabUsers.Controls.Add($grpShare)
+$tabUsers.Controls.Add($usersHeader)
 
 # Trigger initial load when tab is selected
 $tabControl.Add_Selected({
@@ -1497,53 +1918,102 @@ $tabControl.Add_Selected({
     }
 })
 
-# --- Tab 6: Security Audit ---
+# --- Tab 6: Security Audit (Redesigned) ---
 $tabAudit = New-Object System.Windows.Forms.TabPage
 $tabAudit.Text = "Security Audit"
 $tabAudit.BackColor = $Theme.Background
-$tabAudit.Padding = New-Object System.Windows.Forms.Padding(20)
+$tabAudit.Padding = New-Object System.Windows.Forms.Padding(0)
+
+$auditHeader = New-Object System.Windows.Forms.Label
+$auditHeader.Text = "Security Audit"
+$auditHeader.Font = New-Object System.Drawing.Font("Segoe UI", 20, [System.Drawing.FontStyle]::Bold)
+$auditHeader.ForeColor = $Theme.TextPrimary
+$auditHeader.Dock = "Top"
+$auditHeader.Height = 50
+$auditHeader.Padding = New-Object System.Windows.Forms.Padding(0, 10, 0, 0)
+
+# Audit card
+$auditCard = New-Object System.Windows.Forms.Panel
+$auditCard.Location = New-Object System.Drawing.Point(0, 60)
+$auditCard.Size = New-Object System.Drawing.Size(500, 200)
+$auditCard.BackColor = $Theme.Surface
+
+$lblAuditIcon = New-Object System.Windows.Forms.Label
+$lblAuditIcon.Text = [char]0x2713
+$lblAuditIcon.Font = New-Object System.Drawing.Font("Segoe UI", 32)
+$lblAuditIcon.ForeColor = $Theme.Success
+$lblAuditIcon.Location = New-Object System.Drawing.Point(20, 20)
+$lblAuditIcon.AutoSize = $true
+$auditCard.Controls.Add($lblAuditIcon)
+
+$lblAuditTitle = New-Object System.Windows.Forms.Label
+$lblAuditTitle.Text = "HIPAA Security Audit"
+$lblAuditTitle.Font = New-Object System.Drawing.Font("Segoe UI", 14, [System.Drawing.FontStyle]::Bold)
+$lblAuditTitle.ForeColor = $Theme.TextPrimary
+$lblAuditTitle.Location = New-Object System.Drawing.Point(80, 25)
+$lblAuditTitle.AutoSize = $true
+$auditCard.Controls.Add($lblAuditTitle)
 
 $lblAudit = New-Object System.Windows.Forms.Label
-$lblAudit.Text = "Generates the Jeremy Bean Security and Backup Audit HTML Report."
+$lblAudit.Text = "Generates a comprehensive Security and Backup Audit`nHTML report for HIPAA compliance documentation."
+$lblAudit.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+$lblAudit.ForeColor = $Theme.TextSecondary
+$lblAudit.Location = New-Object System.Drawing.Point(80, 55)
 $lblAudit.AutoSize = $true
-$lblAudit.Dock = "Top"
-$lblAudit.Padding = New-Object System.Windows.Forms.Padding(0,0,0,20)
+$auditCard.Controls.Add($lblAudit)
 
 $btnRunAudit = New-Object System.Windows.Forms.Button
-$btnRunAudit.Text = "Generate Audit Report"
-$btnRunAudit.Height = 60
-$btnRunAudit.Dock = "Top"
+$btnRunAudit.Text = [char]0x2192 + "  Generate Audit Report"
+$btnRunAudit.Location = New-Object System.Drawing.Point(20, 130)
+$btnRunAudit.Width = 220
+$btnRunAudit.Height = 50
 $btnRunAudit.FlatStyle = "Flat"
 $btnRunAudit.BackColor = $Theme.Accent
 $btnRunAudit.ForeColor = "White"
 $btnRunAudit.FlatAppearance.BorderSize = 0
+$btnRunAudit.Font = New-Object System.Drawing.Font("Segoe UI", 11)
+$btnRunAudit.Cursor = [System.Windows.Forms.Cursors]::Hand
 $btnRunAudit.Add_Click({
     Log-Output "=== Generate Audit Report Clicked ==="
     
-    # Auto-connect to NinjaOne if not already connected
-    if (-not $global:NinjaToken) {
-        Log-Output "Not connected to NinjaOne. Attempting auto-connect..."
-        $savedSettings = Get-NinjaSettings
-        if ($savedSettings -and $savedSettings.Url) {
-            Connect-NinjaOne -ClientId $savedSettings.ClientId -ClientSecret $savedSettings.ClientSecret -InstanceUrl $savedSettings.Url
-        } else {
-            Log-Output "No saved NinjaOne settings. Please connect manually first."
-        }
-    } else {
-        Log-Output "Already connected to NinjaOne. Token exists."
-        # Refresh device data if we have a token but no device data
-        if (-not $global:NinjaDeviceData) {
-            Log-Output "No device data cached. Fetching..."
-            Get-NinjaDeviceData
-        }
-    }
+    # Warn user about UI freeze
+    $btnRunAudit.Text = "Generating... Please Wait"
+    $btnRunAudit.Enabled = $false
+    $form.Cursor = [System.Windows.Forms.Cursors]::WaitCursor
+    [System.Windows.Forms.Application]::DoEvents()
     
-    Log-Output "Starting Security Audit..."
-    Invoke-SecurityAudit
+    try {
+        # Auto-connect to NinjaOne if not already connected
+        if (-not $global:NinjaToken) {
+            Log-Output "Not connected to NinjaOne. Attempting auto-connect..."
+            $savedSettings = Get-NinjaSettings
+            if ($savedSettings -and $savedSettings.Url) {
+                Connect-NinjaOne -ClientId $savedSettings.ClientId -ClientSecret $savedSettings.ClientSecret -InstanceUrl $savedSettings.Url
+            } else {
+                Log-Output "No saved NinjaOne settings. Skipping Ninja integration."
+            }
+        } else {
+            Log-Output "Already connected to NinjaOne. Token exists."
+            # Refresh device data if we have a token but no device data
+            if (-not $global:NinjaDeviceData) {
+                Log-Output "No device data cached. Fetching..."
+                Get-NinjaDeviceData
+            }
+        }
+        
+        Log-Output "Starting Security Audit..."
+        Invoke-SecurityAudit
+    } finally {
+        # Restore button state
+        $btnRunAudit.Text = [char]0x2192 + "  Generate Audit Report"
+        $btnRunAudit.Enabled = $true
+        $form.Cursor = [System.Windows.Forms.Cursors]::Default
+    }
 })
 
-$tabAudit.Controls.Add($btnRunAudit)
-$tabAudit.Controls.Add($lblAudit)
+$auditCard.Controls.Add($btnRunAudit)
+$tabAudit.Controls.Add($auditCard)
+$tabAudit.Controls.Add($auditHeader)
 
 # --- Assemble Form ---
 $tabControl.Controls.Add($tabDashboard)
@@ -1554,14 +2024,16 @@ $tabControl.Controls.Add($tabIntegrations)
 $tabControl.Controls.Add($tabUsers)
 $tabControl.Controls.Add($tabAudit)
 
-$form.Controls.Add($tabControl)
 $form.Controls.Add($panelOutput)
+$form.Controls.Add($mainContainer)
 
 # --- SECURITY AUDIT LOGIC (Embedded) ---
 function Invoke-SecurityAudit {
     # This function contains the logic provided by the user
     
     Log-Output "Initializing Jeremy Bean Audit..."
+    Log-Output "NOTE: This process takes 30-60 seconds. The window may appear unresponsive."
+    if ($form -and $form.Visible) { [System.Windows.Forms.Application]::DoEvents() }
     
     # --- Configuration & Path Robustness ---
     # Robustly find the Desktop path (handles OneDrive redirection)
@@ -1921,6 +2393,7 @@ function Invoke-SecurityAudit {
 
     # 1. Backups
     Log-Output "[-] Checking Backup History..."
+    if ($form -and $form.Visible) { [System.Windows.Forms.Application]::DoEvents() }
     $BackupKeywords = "*Veeam*","*Acronis*","*Macrium*","*Datto*","*Carbonite*","*Veritas*","*CrashPlan*","*Ninja*"
     $DetectedServices = Get-Service | Where-Object { $d = $_.DisplayName; ($BackupKeywords | Where-Object { $d -like $_ }) }
 
@@ -1952,6 +2425,7 @@ function Invoke-SecurityAudit {
 
     # 2. Security & Patching
     Log-Output "[-] Auditing Security & Updates..."
+    if ($form -and $form.Visible) { [System.Windows.Forms.Application]::DoEvents() }
     $AV = Get-CimInstance -Namespace root/SecurityCenter2 -ClassName AntivirusProduct -ErrorAction SilentlyContinue
     # Windows Updates (COM)
     $MissingUpdatesCount = 0
@@ -1973,6 +2447,9 @@ function Invoke-SecurityAudit {
     if ($global:NinjaDeviceData -and $global:NinjaDeviceData.osPatchStatus) {
         $pStatus = $global:NinjaDeviceData.osPatchStatus
         if ($pStatus.failed -gt 0 -or $pStatus.pending -gt 0) {
+             # If we have valid Ninja data, we can overwrite a local error message
+             if ($MissingUpdatesHTML -like "Error*") { $MissingUpdatesHTML = "" }
+             
              $MissingUpdatesCount = $pStatus.failed + $pStatus.pending
              $MissingUpdatesHTML += "<li>Ninja Reports: $($pStatus.failed) Failed, $($pStatus.pending) Pending</li>"
         }
@@ -1996,6 +2473,11 @@ function Invoke-SecurityAudit {
     if ($Defender) {
         $RTPEnabled = if ($Defender.RealTimeProtectionEnabled) { "Yes" } else { "No" }
         $LastScanDate = if ($Defender.QuickScanEndTime) { $Defender.QuickScanEndTime.ToString("yyyy-MM-dd") } else { "Never" }
+        
+        # Fix for Server OS where SecurityCenter2 is missing
+        if (-not $AV) {
+            $AV = [PSCustomObject]@{ displayName = "Windows Defender" }
+        }
     }
 
     # Ninja AV Override
@@ -2019,13 +2501,10 @@ function Invoke-SecurityAudit {
     $AdminPassLastSet = "Unknown / Domain Account"
     $AdminPassChangedRegularly = "Select..."
     try {
-        $BuiltInAdmin = $LocalUsers | Where-Object SID -like "*-500"
-        if (-not $BuiltInAdmin) { 
-            # Fallback if SID not available in previous select
-            $BuiltInAdmin = Get-LocalUser | Where-Object SID -like "*-500" -ErrorAction Stop 
-        }
+        # Get-LocalUser with SID filter (LocalUsers select doesn't include SID)
+        $BuiltInAdmin = Get-LocalUser -ErrorAction SilentlyContinue | Where-Object { $_.SID -like "*-500" }
         
-        if ($BuiltInAdmin) {
+        if ($BuiltInAdmin -and $BuiltInAdmin.PasswordLastSet) {
             $AdminPassLastSet = $BuiltInAdmin.PasswordLastSet.ToString("yyyy-MM-dd")
             $DaysSinceChange = (New-TimeSpan -Start $BuiltInAdmin.PasswordLastSet -End (Get-Date)).Days
             if ($DaysSinceChange -gt 90) { 
@@ -2034,6 +2513,8 @@ function Invoke-SecurityAudit {
             } else {
                 $AdminPassChangedRegularly = "Yes"
             }
+        } elseif ($BuiltInAdmin) {
+            $AdminPassLastSet = "Never Set"
         }
     } catch {
         $AdminPassLastSet = "N/A (See AD)"
@@ -2068,6 +2549,7 @@ function Invoke-SecurityAudit {
 
     # 3. Encryption (BitLocker)
     Log-Output "[-] Checking Encryption..."
+    if ($form -and $form.Visible) { [System.Windows.Forms.Application]::DoEvents() }
     $TPM = $null
     try {
         # TBS service may not be available on all systems
@@ -2108,6 +2590,7 @@ function Invoke-SecurityAudit {
 
     # 4. Firewall & RDP
     Log-Output "[-] Auditing Network & RDP..."
+    if ($form -and $form.Visible) { [System.Windows.Forms.Application]::DoEvents() }
     $Firewall = Get-NetFirewallProfile | Where-Object Enabled -eq True
     $RDPReg = Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server" -Name "fDenyTSConnections" -ErrorAction SilentlyContinue
     
@@ -2150,6 +2633,7 @@ function Invoke-SecurityAudit {
 
     # 5. Logs & Hardware
     Log-Output "[-] Analyzing Logs & Health..."
+    if ($form -and $form.Visible) { [System.Windows.Forms.Application]::DoEvents() }
     $LogSettings = Get-EventLog -List | Where-Object { $_.Log -eq 'Security' }
     $Events = Get-WinEvent -FilterHashtable @{LogName='System','Application'; Level=1,2; StartTime=(Get-Date).AddDays(-$EventLookbackDays)} -ErrorAction SilentlyContinue | Select-Object -First $MaxEventsToShow
 
@@ -2158,7 +2642,18 @@ function Invoke-SecurityAudit {
     $AppErrorSel = if ($AppErrors) { "Yes" } else { "No" }
 
     # New: Database Error Scan (SQL/MySQL/Oracle keywords)
-    $DBErrors = Get-WinEvent -FilterHashtable @{LogName='Application'; Level=1,2; ProviderName='*SQL*','*Database*','*MySQL*','*Oracle*'} -MaxEvents 1 -ErrorAction SilentlyContinue
+    # ProviderName wildcards are not reliable in FilterHashtable; do a bounded fetch and match locally.
+    $DBErrors = $null
+    try {
+        $recentApp = Get-WinEvent -FilterHashtable @{LogName='Application'; Level=1,2; StartTime=(Get-Date).AddDays(-30)} -MaxEvents 300 -ErrorAction SilentlyContinue
+        if ($recentApp) {
+            $DBErrors = $recentApp | Where-Object {
+                ($_.ProviderName -match 'SQL|Database|MySQL|Oracle') -or ($_.Message -match 'SQL|Database|MySQL|Oracle')
+            } | Select-Object -First 1
+        }
+    } catch {
+        $DBErrors = $null
+    }
     $DBErrorSel = if ($DBErrors) { "Yes" } else { "No" }
 
     # Physical Disk Health & Space Check
@@ -2432,7 +2927,8 @@ function Invoke-SecurityAudit {
                 "<table style='font-size:0.9em; width:100%; border-collapse:collapse; border:1px solid #ddd;'><tr><th>Src</th><th>ID</th><th>Msg</th><th>Fix</th></tr>" + 
                 ($Events | ForEach-Object {
                     $q = [uri]::EscapeDataString("Windows Event $($_.Id) $($_.ProviderName)")
-                    "<tr><td>$($_.ProviderName)</td><td>$($_.Id)</td><td>$($_.Message.Substring(0,50))...</td><td><a href='https://www.google.com/search?q=$q' target='_blank' class='ai-link'>Ask AI</a></td></tr>"
+                    $evtMsg = if ($_.Message) { $_.Message.Substring(0, [Math]::Min(50, $_.Message.Length)) } else { "(No message)" }
+                    "<tr><td>$($_.ProviderName)</td><td>$($_.Id)</td><td>$evtMsg...</td><td><a href='https://www.google.com/search?q=$q' target='_blank' class='ai-link'>Ask AI</a></td></tr>"
                 } | Out-String) + "</table>"
             } else { "None found." })
         </td></tr>
@@ -2467,7 +2963,7 @@ function Invoke-SecurityAudit {
     <h3>B. Redundancy</h3>
     <table>
         <tr><th>RAID status</th><td>$(Get-HtmlInput "e.g., RAID 5 Healthy" -Value $(if($NinjaRAIDStatus){$NinjaRAIDStatus}else{""}))</td></tr>
-        <tr><th>Storage warnings?</th><td>$(Get-HtmlInput "Describe..." -Value $(if($StorageWarning -or $NinjaDiskInfo){"$StorageWarning $(if($NinjaDiskInfo){" | Ninja: $NinjaDiskInfo"})"}else{""})))</td></tr>
+        <tr><th>Storage warnings?</th><td>$(Get-HtmlInput "Describe..." -Value $(if($StorageWarning -or $NinjaDiskInfo){"$StorageWarning $(if($NinjaDiskInfo){" | Ninja: $NinjaDiskInfo"})"}else{""}))</td></tr>
         <tr><th>Drive SMART status (any failing drives?)</th><td>$(Get-HtmlInput "Describe..." -Value $DiskHealthStr) (Check App Logs above)</td></tr>
     </table>
 
