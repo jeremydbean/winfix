@@ -67,8 +67,11 @@ function Start-TaskWindow {
     )
 
     if ($NoNewWindow) {
-        Invoke-Task -Name $Name -Args $Args
-        Pause-Window
+        try {
+            Invoke-Task -Name $Name -Args $Args
+        } finally {
+            Pause-Window
+        }
         return
     }
 
@@ -80,8 +83,8 @@ function Start-TaskWindow {
         "-TaskArgs @()"
     }
 
-    $cmd = "& `"$PSCommandPath`" -TaskName `"$Name`" $argLiteral; exit"
-    $full = "-NoProfile -ExecutionPolicy Bypass -NoExit -Command `"$cmd; Read-Host 'Press Enter to close' | Out-Null`""
+    $cmd = "& `"$PSCommandPath`" -TaskName `"$Name`" $argLiteral"
+    $full = "-NoProfile -ExecutionPolicy Bypass -NoExit -Command `"$cmd`""
 
     Write-Log "Launching task in new window: $Name"
     Start-Process -FilePath 'powershell.exe' -ArgumentList $full | Out-Null
@@ -1651,9 +1654,16 @@ Write-Log "Computer: $env:COMPUTERNAME"
 Write-Log "User: $env:USERNAME"
 
 if ($TaskName) {
-    Invoke-Task -Name $TaskName -Args $TaskArgs
-    Pause-Window
-    exit
+    $exitCode = 0
+    try {
+        Invoke-Task -Name $TaskName -Args $TaskArgs
+    } catch {
+        Write-Log "UNHANDLED TASK ERROR ($TaskName): $_"
+        $exitCode = 1
+    } finally {
+        Pause-Window
+    }
+    exit $exitCode
 }
 
 while ($true) {

@@ -2,6 +2,7 @@
 
 ## 2025-12-15
 - Added WinFixConsole (menu-driven, no WinForms/EXE) with task window launching and unified logging.
+- Fixed task windows closing immediately on errors; tasks now pause reliably even when exceptions occur.
 - Added Diagnostics/Triage utilities: quick triage export, pending reboot check, recent System events, BitLocker status, firewall profile status.
 - Added Network printer scan for TCP port 9100.
 - Added log tail (live) and export bundle ZIP (log + latest audit).
