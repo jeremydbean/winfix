@@ -24,6 +24,9 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+# Resolve script path reliably (works when dot-sourced, iex'd, or run via -File)
+$script:ScriptPath = if ($PSCommandPath) { $PSCommandPath } elseif ($MyInvocation.MyCommand.Path) { $MyInvocation.MyCommand.Path } else { $null }
+
 # --- Elevate if needed ---
 try {
     $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
@@ -34,9 +37,14 @@ try {
 }
 
 if (-not $isAdmin) {
+    if (-not $script:ScriptPath) {
+        Write-Host 'ERROR: Cannot elevate - script path unknown. Save the script to a file and run it directly.' -ForegroundColor Red
+        Read-Host 'Press Enter to exit'
+        exit 1
+    }
     $psi = New-Object System.Diagnostics.ProcessStartInfo
     $psi.FileName = 'powershell.exe'
-    $psi.Arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`"" + $(if ($TaskName) { " -TaskName `"$TaskName`"" } else { '' })
+    $psi.Arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$($script:ScriptPath)`"" + $(if ($TaskName) { " -TaskName `"$TaskName`"" } else { '' })
     $psi.Verb = 'runas'
     try { [System.Diagnostics.Process]::Start($psi) | Out-Null } catch { }
     exit
@@ -75,6 +83,12 @@ function Start-TaskWindow {
         return
     }
 
+    if (-not $script:ScriptPath) {
+        Write-Log 'ERROR: Cannot launch task window - script path unknown.'
+        Pause-Window 'Press Enter...'
+        return
+    }
+
     $argLiteral = if ($Args -and $Args.Count -gt 0) {
         # Quote each arg for PowerShell -Command
         $quoted = $Args | ForEach-Object { '"' + ($_ -replace '"', '\\"') + '"' }
@@ -83,7 +97,7 @@ function Start-TaskWindow {
         "-TaskArgs @()"
     }
 
-    $cmd = "& `"$PSCommandPath`" -TaskName `"$Name`" $argLiteral"
+    $cmd = "& '$($script:ScriptPath -replace "'", "''")' -TaskName '$Name' $argLiteral"
     $full = "-NoProfile -ExecutionPolicy Bypass -NoExit -Command `"$cmd`""
 
     Write-Log "Launching task in new window: $Name"
