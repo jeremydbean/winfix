@@ -4,6 +4,7 @@
 - Added WinFixConsole (menu-driven, no WinForms/EXE) with task window launching and unified logging.
 - Fixed task windows closing immediately on errors; tasks now pause reliably even when exceptions occur.
 - Fixed Security Audit on Windows Server where `Get-MpComputerStatus` is unavailable.
+- Forced TLS 1.2 for web requests to avoid "Could not create SSL/TLS secure channel" (NinjaOne/GitHub) on older PowerShell.
 - Added Diagnostics/Triage utilities: quick triage export, pending reboot check, recent System events, BitLocker status, firewall profile status.
 - Added Network printer scan for TCP port 9100.
 - Added log tail (live) and export bundle ZIP (log + latest audit).

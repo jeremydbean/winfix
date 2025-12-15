@@ -24,6 +24,19 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+function Enable-Tls12 {
+    try {
+        $current = [Net.ServicePointManager]::SecurityProtocol
+        if (($current -band [Net.SecurityProtocolType]::Tls12) -eq 0) {
+            [Net.ServicePointManager]::SecurityProtocol = $current -bor [Net.SecurityProtocolType]::Tls12
+        }
+    } catch {
+        # Best-effort; some hardened environments may block changes.
+    }
+}
+
+Enable-Tls12
+
 # Resolve script path reliably (works when dot-sourced, iex'd, or run via -File)
 $script:ScriptPath = if ($PSCommandPath) { $PSCommandPath } elseif ($MyInvocation.MyCommand.Path) { $MyInvocation.MyCommand.Path } else { $null }
 
@@ -178,6 +191,8 @@ function Connect-NinjaOne {
     )
 
     Write-Log '=== Connect-NinjaOne ==='
+
+    Enable-Tls12
 
     $InstanceUrl = $InstanceUrl -replace '^https?://', '' -replace '/$', ''
     if ($InstanceUrl -match '/') { $InstanceUrl = ($InstanceUrl -split '/')[0] }
@@ -392,6 +407,7 @@ function Invoke-DownloadSpaceMonger {
     $smPath = Join-Path $env:TEMP 'SpaceMonger.exe'
     $url = 'https://github.com/jeremydbean/winfix/raw/main/SpaceMonger.exe'
     if (-not (Test-Path $smPath)) {
+        Enable-Tls12
         Write-Log 'Downloading SpaceMonger...'
         Invoke-WebRequest -Uri $url -OutFile $smPath -ErrorAction Stop
         Write-Log 'Download complete.'
