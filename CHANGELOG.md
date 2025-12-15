@@ -8,6 +8,7 @@
 - NinjaOne auth now retries the token endpoint with both derived API host and the original instance host, and probes which host supports `/v2`.
 - Fixed NinjaOne connect crash caused by using `$host` (conflicts with PowerShell read-only `$Host`).
 - Fixed port-scan helper crash caused by using `$Host` as a function parameter (also conflicts with `$Host`).
+- NinjaOne OAuth now uses `monitoring management` scope and emits a clearer error when the Client ID isn't recognized ("Client app not exist").
 - Menu now accepts `QUIT`/`EXIT` (in addition to `Q`).
 - Added Diagnostics/Triage utilities: quick triage export, pending reboot check, recent System events, BitLocker status, firewall profile status.
 - Added Network printer scan for TCP port 9100.

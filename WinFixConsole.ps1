@@ -212,7 +212,7 @@ function Connect-NinjaOne {
     elseif ($apiHost -match '^oc\.') { $apiHost = $apiHost -replace '^oc\.', 'oc-api.' }
     elseif ($apiHost -match '^ca\.') { $apiHost = $apiHost -replace '^ca\.', 'ca-api.' }
 
-    $body = @{ grant_type = 'client_credentials'; client_id = $ClientId; client_secret = $ClientSecret; scope = 'monitoring' }
+    $body = @{ grant_type = 'client_credentials'; client_id = $ClientId; client_secret = $ClientSecret; scope = 'monitoring management' }
     $hostsToTry = @($apiHost)
     if ($authHost -and $authHost -ne $apiHost) { $hostsToTry += $authHost }
 
@@ -240,6 +240,29 @@ function Connect-NinjaOne {
     }
 
     if (-not $resp -or -not $resp.access_token) {
+        $detailsText = $null
+        if ($lastErr -and $lastErr.ErrorDetails -and $lastErr.ErrorDetails.Message) {
+            $detailsText = [string]$lastErr.ErrorDetails.Message
+        }
+
+        if ($detailsText -and ($detailsText -match 'Client app not exist')) {
+            $incidentId = $null
+            try {
+                $obj = $detailsText | ConvertFrom-Json -ErrorAction Stop
+                if ($obj -and $obj.incidentId) { $incidentId = [string]$obj.incidentId }
+            } catch { }
+
+            $hint = if ($usedEmbeddedCreds) {
+                'Embedded NinjaOne credentials are not valid for this tenant. Provide a tenant-issued Client ID/Secret.'
+            } else {
+                'Verify the Client ID/Secret are correct for this tenant.'
+            }
+
+            $regionHint = "Verify the instance URL is correct (app/eu/oc/ca) and create an API Client in NinjaOne if needed."
+            $idHint = if ($incidentId) { " IncidentId: $incidentId" } else { '' }
+            throw "NinjaOne OAuth failed: Client app not exist. $hint $regionHint$idHint"
+        }
+
         if ($lastErr) { throw $lastErr }
         throw 'OAuth failed (no response token).'
     }
