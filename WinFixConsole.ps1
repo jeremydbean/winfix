@@ -602,7 +602,7 @@ function Invoke-DeleteShare {
 
 function Test-TcpPort {
     param(
-        [Parameter(Mandatory)] [string]$Host,
+        [Parameter(Mandatory)] [string]$TargetHost,
         [Parameter(Mandatory)] [int]$Port,
         [int]$TimeoutMs = 250
     )
@@ -610,7 +610,7 @@ function Test-TcpPort {
     $client = $null
     try {
         $client = New-Object System.Net.Sockets.TcpClient
-        $iar = $client.BeginConnect($Host, $Port, $null, $null)
+        $iar = $client.BeginConnect($TargetHost, $Port, $null, $null)
         $ok = $iar.AsyncWaitHandle.WaitOne($TimeoutMs, $false)
         if (-not $ok) { return $false }
         $client.EndConnect($iar)
@@ -665,7 +665,7 @@ function Invoke-ScanPrintersPort9100 {
         $addr = "$prefix.$h"
         Write-Progress -Activity 'Scanning Port 9100' -Status $addr -PercentComplete ([int](($i / $total) * 100))
 
-        if (Test-TcpPort -Host $addr -Port 9100 -TimeoutMs 250) {
+        if (Test-TcpPort -TargetHost $addr -Port 9100 -TimeoutMs 250) {
             $found.Add($addr) | Out-Null
             Write-Log "OPEN: $addr:9100 (JetDirect/RAW printing)"
         }
