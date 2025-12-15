@@ -5,6 +5,7 @@
 - Fixed task windows closing immediately on errors; tasks now pause reliably even when exceptions occur.
 - Fixed Security Audit on Windows Server where `Get-MpComputerStatus` is unavailable.
 - Forced TLS 1.2 for web requests to avoid "Could not create SSL/TLS secure channel" (NinjaOne/GitHub) on older PowerShell.
+- NinjaOne auth now retries the token endpoint with both derived API host and the original instance host, and probes which host supports `/v2`.
 - Menu now accepts `QUIT`/`EXIT` (in addition to `Q`).
 - Added Diagnostics/Triage utilities: quick triage export, pending reboot check, recent System events, BitLocker status, firewall profile status.
 - Added Network printer scan for TCP port 9100.

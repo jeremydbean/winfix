@@ -201,31 +201,71 @@ function Connect-NinjaOne {
     $EncSec = "EiRj/vGljBBXUDGrBkAEoXYldnzwzmYL40JvGK8ahShnk8nzBKtbuRujuandJ41QEgPc04ttpCLkGfAsW6vTrkd85nfgGG3g0/gRrNsLoH8="
     $Pass = 'smoke007'
 
-    if ([string]::IsNullOrWhiteSpace($ClientId)) { Write-Log 'Using embedded Client ID...'; $ClientId = Decrypt-String -EncryptedString $EncId -Password $Pass }
-    if ([string]::IsNullOrWhiteSpace($ClientSecret)) { Write-Log 'Using embedded Client Secret...'; $ClientSecret = Decrypt-String -EncryptedString $EncSec -Password $Pass }
+    $usedEmbeddedCreds = $false
+    if ([string]::IsNullOrWhiteSpace($ClientId)) { $usedEmbeddedCreds = $true; Write-Log 'Using embedded Client ID...'; $ClientId = Decrypt-String -EncryptedString $EncId -Password $Pass }
+    if ([string]::IsNullOrWhiteSpace($ClientSecret)) { $usedEmbeddedCreds = $true; Write-Log 'Using embedded Client Secret...'; $ClientSecret = Decrypt-String -EncryptedString $EncSec -Password $Pass }
 
+    $authHost = $InstanceUrl
     $apiHost = $InstanceUrl
     if ($apiHost -match '^app\.') { $apiHost = $apiHost -replace '^app\.', 'api.' }
     elseif ($apiHost -match '^eu\.') { $apiHost = $apiHost -replace '^eu\.', 'eu-api.' }
     elseif ($apiHost -match '^oc\.') { $apiHost = $apiHost -replace '^oc\.', 'oc-api.' }
     elseif ($apiHost -match '^ca\.') { $apiHost = $apiHost -replace '^ca\.', 'ca-api.' }
 
-    $tokenUrl = "https://$apiHost/ws/oauth/token"
     $body = @{ grant_type = 'client_credentials'; client_id = $ClientId; client_secret = $ClientSecret; scope = 'monitoring' }
+    $hostsToTry = @($apiHost)
+    if ($authHost -and $authHost -ne $apiHost) { $hostsToTry += $authHost }
 
-    try {
-        $resp = Invoke-RestMethod -Uri $tokenUrl -Method Post -Body $body -ErrorAction Stop
-        $global:NinjaToken = $resp.access_token
-        $global:NinjaInstance = $apiHost
-        Write-Log "Connected to NinjaOne. Token length: $($global:NinjaToken.Length)"
-        Get-NinjaDeviceData
-    } catch {
-        Write-Log "OAuth FAILED: $($_.Exception.Message)"
-        if ($_.Exception -and $_.Exception.Response -and $_.Exception.Response.StatusCode) {
-            Write-Log "HTTP Status: $($_.Exception.Response.StatusCode.value__)"
+    $resp = $null
+    $tokenHost = $null
+    $lastErr = $null
+
+    foreach ($host in $hostsToTry) {
+        $tokenUrl = "https://$host/ws/oauth/token"
+        Write-Log "OAuth Token URL: $tokenUrl"
+        try {
+            $resp = Invoke-RestMethod -Uri $tokenUrl -Method Post -Body $body -ErrorAction Stop
+            $tokenHost = $host
+            break
+        } catch {
+            $lastErr = $_
+            Write-Log "OAuth FAILED for host '$host': $($_.Exception.Message)"
+            if ($_.Exception -and $_.Exception.Response -and $_.Exception.Response.StatusCode) {
+                Write-Log "HTTP Status: $($_.Exception.Response.StatusCode.value__)"
+            }
+            if ($_.ErrorDetails -and $_.ErrorDetails.Message) {
+                Write-Log "Details: $($_.ErrorDetails.Message)"
+            }
         }
-        throw
     }
+
+    if (-not $resp -or -not $resp.access_token) {
+        if ($lastErr) { throw $lastErr }
+        throw 'OAuth failed (no response token).'
+    }
+
+    $global:NinjaToken = $resp.access_token
+
+    # Prefer the derived API host for /v2 calls when available; otherwise fall back to the host that issued the token.
+    $bestApiHost = $tokenHost
+    if ($apiHost -and $apiHost -ne $tokenHost) {
+        try {
+            $headers = @{ Authorization = "Bearer $($global:NinjaToken)" }
+            $probeUrl = "https://$apiHost/v2/devices?pageSize=1&after=0"
+            $null = Invoke-RestMethod -Uri $probeUrl -Headers $headers -ErrorAction Stop
+            $bestApiHost = $apiHost
+            Write-Log "API host probe succeeded; using '$apiHost' for /v2."
+        } catch {
+            Write-Log "API host probe failed for '$apiHost'; using '$tokenHost' for /v2."
+        }
+    }
+
+    $global:NinjaInstance = $bestApiHost
+    Write-Log "Connected to NinjaOne. Host: $bestApiHost Token length: $($global:NinjaToken.Length)"
+    if ($usedEmbeddedCreds) {
+        Write-Log 'Note: If OAuth fails with "Client app not exist", provide your tenant-issued Client ID/Secret and correct instance URL (app/eu/oc/ca).'
+    }
+    Get-NinjaDeviceData
 }
 
 function Get-NinjaDeviceData {
