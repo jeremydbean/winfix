@@ -220,16 +220,16 @@ function Connect-NinjaOne {
     $tokenHost = $null
     $lastErr = $null
 
-    foreach ($host in $hostsToTry) {
-        $tokenUrl = "https://$host/ws/oauth/token"
+    foreach ($tokenHostCandidate in $hostsToTry) {
+        $tokenUrl = "https://$tokenHostCandidate/ws/oauth/token"
         Write-Log "OAuth Token URL: $tokenUrl"
         try {
             $resp = Invoke-RestMethod -Uri $tokenUrl -Method Post -Body $body -ErrorAction Stop
-            $tokenHost = $host
+            $tokenHost = $tokenHostCandidate
             break
         } catch {
             $lastErr = $_
-            Write-Log "OAuth FAILED for host '$host': $($_.Exception.Message)"
+            Write-Log "OAuth FAILED for host '$tokenHostCandidate': $($_.Exception.Message)"
             if ($_.Exception -and $_.Exception.Response -and $_.Exception.Response.StatusCode) {
                 Write-Log "HTTP Status: $($_.Exception.Response.StatusCode.value__)"
             }
