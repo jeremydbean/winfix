@@ -1720,6 +1720,8 @@ while ($true) {
         'T' { Start-TaskWindow -Name 'TailLog' }
         'E' { Start-TaskWindow -Name 'ExportBundle' }
         'Q' { break }
+        'QUIT' { break }
+        'EXIT' { break }
         default { }
     }
 }
