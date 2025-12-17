@@ -6,6 +6,44 @@
 .NOTES
 #>
 
+$ErrorActionPreference = 'Stop'
+
+# Ensure WinForms types are available and the UI thread runs STA.
+try {
+    if ([System.Threading.Thread]::CurrentThread.ApartmentState -ne 'STA') {
+        $self = $PSCommandPath
+        if ($self -and (Test-Path $self)) {
+            Start-Process powershell.exe -ArgumentList "-NoProfile -ExecutionPolicy Bypass -STA -File `"$self`"" -WindowStyle Normal
+            exit
+        }
+    }
+} catch { }
+
+try {
+    Add-Type -AssemblyName System.Windows.Forms
+    Add-Type -AssemblyName System.Drawing
+    [System.Windows.Forms.Application]::EnableVisualStyles()
+    [System.Windows.Forms.Application]::SetCompatibleTextRenderingDefault($false)
+} catch {
+    try {
+        $logPath = Join-Path $env:TEMP 'WinFix_Debug.log'
+        "[$(Get-Date -Format s)] WinFixTool_v2 startup failed (WinForms load): $($_.Exception.Message)" | Out-File -FilePath $logPath -Append -Encoding UTF8
+    } catch { }
+    Write-Error "Failed to load WinForms assemblies. This tool must run on Windows PowerShell with .NET Framework WinForms available. Error: $($_.Exception.Message)"
+    exit 1
+}
+
+trap {
+    try {
+        $logPath = Join-Path $env:TEMP 'WinFix_Debug.log'
+        "[$(Get-Date -Format s)] Unhandled error: $($_ | Out-String)" | Out-File -FilePath $logPath -Append -Encoding UTF8
+    } catch { }
+    try {
+        [System.Windows.Forms.MessageBox]::Show("WinFixTool_v2 crashed. Details were written to %TEMP%\WinFix_Debug.log`r`n`r`n$($_.Exception.Message)", "WinFixTool_v2 Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error) | Out-Null
+    } catch { }
+    break
+}
+
 function Invoke-DeepDiskCleanup {
     $results = @()
     $hasErrors = $false

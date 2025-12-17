@@ -42,12 +42,16 @@ try {
 
 # Launch the tool
 Write-Host ""
-Write-Host "[*] Launching WinFixTool v2.0..." -ForegroundColor Cyan
+Write-Host "[*] Launching WinFixTool v2..." -ForegroundColor Cyan
 Write-Host "===========================================================" -ForegroundColor Cyan
 Write-Host ""
 
-Set-Location $tempDir
-& $scriptPath
+Start-Process powershell.exe -WorkingDirectory $tempDir -Wait -ArgumentList @(
+    '-NoProfile',
+    '-ExecutionPolicy', 'Bypass',
+    '-STA',
+    '-File', $scriptPath
+)
 
 # Cleanup on exit
 Write-Host ""
