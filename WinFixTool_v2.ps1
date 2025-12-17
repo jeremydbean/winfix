@@ -188,7 +188,7 @@ $panelNav.Dock = "Left"
 $panelNav.Width = 100
 $panelNav.BackColor = $script:Theme.Surface
 
-$navItems = @("Dashboard", "Quick Fix", "Diagnostics", "Network", "NinjaOne", "Audit")
+$navItems = @("Dashboard", "Quick Fix", "Diagnostics", "Network", "Audit")
 $navButtons = @()
 $navY = 5
 
@@ -290,12 +290,6 @@ $script:lblServices.Text = "$($script:StatusPending) Services: --"
 $script:lblServices.Location = New-Object System.Drawing.Point(10, 132)
 $script:lblServices.Size = New-Object System.Drawing.Size(250, 18)
 $script:lblServices.Font = New-Object System.Drawing.Font("Consolas", 9)
-
-$script:lblNinjaStatus = New-Object System.Windows.Forms.Label
-$script:lblNinjaStatus.Text = "$($script:StatusPending) NinjaOne: --"
-$script:lblNinjaStatus.Location = New-Object System.Drawing.Point(10, 152)
-$script:lblNinjaStatus.Size = New-Object System.Drawing.Size(250, 18)
-$script:lblNinjaStatus.Font = New-Object System.Drawing.Font("Consolas", 9)
 
 # Right side - System Info
 $lblInfoTitle = New-Object System.Windows.Forms.Label
@@ -433,15 +427,6 @@ $btnRefresh.Add_Click({
     } catch { $script:lblServices.Text = "$($script:StatusBad) Services: Error"; $script:lblServices.ForeColor = $script:Theme.Red }
     [System.Windows.Forms.Application]::DoEvents()
     
-    # NinjaOne
-    if ($global:NinjaToken) {
-        $script:lblNinjaStatus.Text = "$($script:StatusOK) NinjaOne: Connected"
-        $script:lblNinjaStatus.ForeColor = $script:Theme.Green
-    } else {
-        $script:lblNinjaStatus.Text = "$($script:StatusPending) NinjaOne: Not connected"
-        $script:lblNinjaStatus.ForeColor = $script:Theme.Dim
-    }
-    
     # System Info
     try {
         $cs = Get-CimInstance Win32_ComputerSystem
@@ -466,7 +451,7 @@ Cores: $($cpu.NumberOfCores) / Threads: $($cpu.NumberOfLogicalProcessors)
     Log "Status refresh complete"
 })
 
-$pageDash.Controls.AddRange(@($lblStatus, $script:lblCPU, $script:lblRAM, $script:lblDisk, $script:lblUptime, $script:lblUpdates, $script:lblServices, $script:lblNinjaStatus, $lblInfoTitle, $script:lblSysInfo, $btnRefresh))
+$pageDash.Controls.AddRange(@($lblStatus, $script:lblCPU, $script:lblRAM, $script:lblDisk, $script:lblUptime, $script:lblUpdates, $script:lblServices, $lblInfoTitle, $script:lblSysInfo, $btnRefresh))
 $pages["Dashboard"] = $pageDash
 
 # === QUICK FIX PAGE ===
@@ -641,9 +626,9 @@ $netBtns = @(
             ($_ -split ":")[-1].Trim()
         }
         if ($profiles) {
-            foreach ($profile in $profiles) {
-                $output += "Network: $profile`r`n"
-                $details = netsh wlan show profile name="$profile" key=clear 2>$null
+            foreach ($wifiProfileName in $profiles) {
+                $output += "Network: $wifiProfileName`r`n"
+                $details = netsh wlan show profile name="$wifiProfileName" key=clear 2>$null
                 $keyContent = $details | Select-String "Key Content"
                 if ($keyContent) {
                     $password = ($keyContent -split ":")[-1].Trim()
@@ -685,572 +670,6 @@ foreach ($net in $netBtns) {
 $pageNet.Controls.AddRange(@($lblNetTitle, $txtNet))
 $pages["Network"] = $pageNet
 
-# === NINJAONE PAGE ===
-$pageNinja = New-Object System.Windows.Forms.Panel
-$pageNinja.Dock = "Fill"
-$pageNinja.BackColor = $script:Theme.Bg
-$pageNinja.AutoScroll = $true
-
-$lblNinjaTitle = New-Object System.Windows.Forms.Label
-$lblNinjaTitle.Text = "NINJAONE RMM"
-$lblNinjaTitle.Location = New-Object System.Drawing.Point(10, 8)
-$lblNinjaTitle.AutoSize = $true
-$lblNinjaTitle.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
-$lblNinjaTitle.ForeColor = $script:Theme.Dim
-
-$savedSettings = Get-NinjaSettings
-
-# Connection Panel
-$panelConn = New-Object System.Windows.Forms.Panel
-$panelConn.Location = New-Object System.Drawing.Point(10, 30)
-$panelConn.Size = New-Object System.Drawing.Size(250, 150)
-$panelConn.BackColor = $script:Theme.Card
-
-$lblUrl = New-Object System.Windows.Forms.Label
-$lblUrl.Text = "URL:"
-$lblUrl.Location = New-Object System.Drawing.Point(5, 5)
-$lblUrl.AutoSize = $true
-$lblUrl.Font = New-Object System.Drawing.Font("Segoe UI", 8)
-
-$txtUrl = New-Object System.Windows.Forms.TextBox
-$txtUrl.Location = New-Object System.Drawing.Point(5, 20)
-$txtUrl.Size = New-Object System.Drawing.Size(240, 22)
-$txtUrl.Text = if ($savedSettings.Url) { $savedSettings.Url } else { "app.ninjarmm.com" }
-
-$lblCid = New-Object System.Windows.Forms.Label
-$lblCid.Text = "Client ID:"
-$lblCid.Location = New-Object System.Drawing.Point(5, 44)
-$lblCid.AutoSize = $true
-$lblCid.Font = New-Object System.Drawing.Font("Segoe UI", 8)
-
-$txtCid = New-Object System.Windows.Forms.TextBox
-$txtCid.Location = New-Object System.Drawing.Point(5, 59)
-$txtCid.Size = New-Object System.Drawing.Size(240, 22)
-$txtCid.Text = $savedSettings.ClientId
-
-$lblSec = New-Object System.Windows.Forms.Label
-$lblSec.Text = "Secret:"
-$lblSec.Location = New-Object System.Drawing.Point(5, 83)
-$lblSec.AutoSize = $true
-$lblSec.Font = New-Object System.Drawing.Font("Segoe UI", 8)
-
-$txtSec = New-Object System.Windows.Forms.TextBox
-$txtSec.Location = New-Object System.Drawing.Point(5, 98)
-$txtSec.Size = New-Object System.Drawing.Size(240, 22)
-$txtSec.UseSystemPasswordChar = $true
-$txtSec.Text = $savedSettings.ClientSecret
-
-$lblNinjaConn = New-Object System.Windows.Forms.Label
-$lblNinjaConn.Text = "$($script:StatusPending) Not connected"
-$lblNinjaConn.Location = New-Object System.Drawing.Point(90, 125)
-$lblNinjaConn.AutoSize = $true
-$lblNinjaConn.Font = New-Object System.Drawing.Font("Consolas", 8)
-$lblNinjaConn.ForeColor = $script:Theme.Dim
-
-$btnConnect = New-Object System.Windows.Forms.Button
-$btnConnect.Text = "Connect"
-$btnConnect.Location = New-Object System.Drawing.Point(5, 122)
-$btnConnect.Size = New-Object System.Drawing.Size(80, 24)
-$btnConnect.FlatStyle = "Flat"
-$btnConnect.BackColor = $script:Theme.Accent
-$btnConnect.ForeColor = "White"
-$btnConnect.FlatAppearance.BorderSize = 0
-
-$panelConn.Controls.AddRange(@($lblUrl, $txtUrl, $lblCid, $txtCid, $lblSec, $txtSec, $btnConnect, $lblNinjaConn))
-
-# Device Data Output
-$txtNinjaData = New-Object System.Windows.Forms.TextBox
-$txtNinjaData.Multiline = $true
-$txtNinjaData.ScrollBars = "Both"
-$txtNinjaData.ReadOnly = $true
-$txtNinjaData.Location = New-Object System.Drawing.Point(270, 30)
-$txtNinjaData.Size = New-Object System.Drawing.Size(290, 340)
-$txtNinjaData.BackColor = $script:Theme.Surface
-$txtNinjaData.ForeColor = $script:Theme.Text
-$txtNinjaData.Font = New-Object System.Drawing.Font("Consolas", 7.5)
-$txtNinjaData.Anchor = "Top, Left, Right, Bottom"
-$txtNinjaData.Text = "Connect to NinjaOne and click 'Fetch Device' to load data."
-
-# API Functions
-function Invoke-NinjaAPI {
-    param([string]$Endpoint)
-    if (-not $global:NinjaToken) { return $null }
-    try {
-        $headers = @{ Authorization = "Bearer $($global:NinjaToken)" }
-        $url = "https://$($global:NinjaInstance)/v2$Endpoint"
-        return Invoke-RestMethod -Uri $url -Headers $headers -Method Get
-    } catch {
-        $response = $_.Exception.Response
-        if ($response -and $response.StatusCode -eq "NotFound") {
-             Log "API Info: Endpoint not found or no data: $Endpoint"
-             return $null
-        }
-        Log "API Error ($Endpoint): $_"
-        return $null
-    }
-}
-
-function Get-NinjaDeviceId {
-    # Try registry first (most accurate)
-    $regPaths = @(
-        "HKLM:\SOFTWARE\NinjaRMM LLC\NinjaRMM Agent",
-        "HKLM:\SOFTWARE\NinjaRMM\Agent",
-        "HKLM:\SOFTWARE\WOW6432Node\NinjaRMM LLC\NinjaRMM Agent"
-    )
-    foreach ($path in $regPaths) {
-        try {
-            if (Test-Path $path) {
-                $nodeId = (Get-ItemProperty -Path $path -ErrorAction SilentlyContinue).NodeID
-                if ($nodeId) { return $nodeId }
-                $deviceId = (Get-ItemProperty -Path $path -ErrorAction SilentlyContinue).DeviceID
-                if ($deviceId) { return $deviceId }
-            }
-        } catch { }
-    }
-    
-    # Fallback: search by serial/hostname
-    $serial = (Get-CimInstance Win32_Bios).SerialNumber
-    $hostname = $env:COMPUTERNAME
-    
-    $devices = Invoke-NinjaAPI "/devices"
-    if ($devices) {
-        foreach ($d in $devices) {
-            if ($d.systemName -eq $hostname) { return $d.id }
-        }
-    }
-    return $null
-}
-
-# Fetch All Data Button
-$btnFetchData = New-Object System.Windows.Forms.Button
-$btnFetchData.Text = "Fetch Device"
-$btnFetchData.Location = New-Object System.Drawing.Point(10, 185)
-$btnFetchData.Size = New-Object System.Drawing.Size(90, 26)
-$btnFetchData.FlatStyle = "Flat"
-$btnFetchData.BackColor = $script:Theme.Card
-$btnFetchData.ForeColor = $script:Theme.Text
-$btnFetchData.FlatAppearance.BorderSize = 0
-$btnFetchData.Font = New-Object System.Drawing.Font("Segoe UI", 8)
-$btnFetchData.Add_Click({
-    if (-not $global:NinjaToken) {
-        [System.Windows.Forms.MessageBox]::Show("Please connect to NinjaOne first.", "Not Connected", "OK", "Warning")
-        return
-    }
-    
-    $this.Enabled = $false
-    $this.Text = "Loading..."
-    $txtNinjaData.Text = "Fetching device data from NinjaOne API...`r`n"
-    [System.Windows.Forms.Application]::DoEvents()
-    
-    $deviceId = Get-NinjaDeviceId
-    if (-not $deviceId) {
-        $txtNinjaData.Text = "ERROR: Could not find this device in NinjaOne.`r`n`r`nMake sure the Ninja agent is installed on this machine."
-        $this.Text = "Fetch Device"
-        $this.Enabled = $true
-        return
-    }
-    
-    $output = "========================================`r`n"
-    $output += "NINJAONE DEVICE DATA`r`n"
-    $output += "Device ID: $deviceId`r`n"
-    $output += "========================================`r`n`r`n"
-    
-    # Base Device Info
-    $txtNinjaData.Text = $output + "Fetching device info..."
-    [System.Windows.Forms.Application]::DoEvents()
-    $device = Invoke-NinjaAPI "/device/$deviceId"
-    if ($device) {
-        $output += "=== DEVICE INFO ===`r`n"
-        $output += "System Name: $($device.systemName)`r`n"
-        $output += "DNS Name: $($device.dnsName)`r`n"
-        $output += "Node Class: $($device.nodeClass)`r`n"
-        $output += "Node Role: $($device.nodeRole)`r`n"
-        $output += "Organization ID: $($device.organizationId)`r`n"
-        $output += "Location ID: $($device.locationId)`r`n"
-        $output += "Policy ID: $($device.policyId)`r`n"
-        $output += "Approval Status: $($device.approvalStatus)`r`n"
-        $output += "Offline: $($device.offline)`r`n"
-        $output += "Last Contact: $($device.lastContact)`r`n"
-        $output += "Last Update: $($device.lastUpdate)`r`n"
-        $output += "Created: $($device.created)`r`n"
-        $output += "Public IP: $($device.publicIP)`r`n"
-        $output += "Notes: $($device.notes)`r`n"
-        $output += "Maintenance Mode: $($device.maintenance)`r`n"
-        $output += "Tags: $($device.tags -join ', ')`r`n`r`n"
-    }
-    
-    # System Info
-    $txtNinjaData.Text = $output + "Fetching system info..."
-    [System.Windows.Forms.Application]::DoEvents()
-    $system = Invoke-NinjaAPI "/device/$deviceId/system"
-    if ($system) {
-        $output += "=== SYSTEM INFO ===`r`n"
-        $output += "Name: $($system.name)`r`n"
-        $output += "Manufacturer: $($system.manufacturer)`r`n"
-        $output += "Model: $($system.model)`r`n"
-        $output += "Serial Number: $($system.serialNumber)`r`n"
-        $output += "BIOS Serial: $($system.biosSerialNumber)`r`n"
-        $output += "Chassis Type: $($system.chassisType)`r`n"
-        $output += "Domain: $($system.domain)`r`n"
-        $output += "Domain Role: $($system.domainRole)`r`n`r`n"
-    }
-    
-    # OS Info
-    $txtNinjaData.Text = $output + "Fetching OS info..."
-    [System.Windows.Forms.Application]::DoEvents()
-    $osInfo = Invoke-NinjaAPI "/device/$deviceId/os"
-    if ($osInfo) {
-        $output += "=== OPERATING SYSTEM ===`r`n"
-        $output += "Name: $($osInfo.name)`r`n"
-        $output += "Architecture: $($osInfo.architecture)`r`n"
-        $output += "Version: $($osInfo.version)`r`n"
-        $output += "Build Number: $($osInfo.buildNumber)`r`n"
-        $output += "Service Pack: $($osInfo.servicePack)`r`n"
-        $output += "Install Date: $($osInfo.installDate)`r`n"
-        $output += "Last Boot: $($osInfo.lastBoot)`r`n"
-        $output += "Language: $($osInfo.language)`r`n"
-        $output += "Locale: $($osInfo.locale)`r`n"
-        $output += "Registered User: $($osInfo.registeredUser)`r`n"
-        $output += "Registered Org: $($osInfo.registeredOrganization)`r`n`r`n"
-    }
-    
-    # Processors
-    $txtNinjaData.Text = $output + "Fetching processor info..."
-    [System.Windows.Forms.Application]::DoEvents()
-    $processors = Invoke-NinjaAPI "/device/$deviceId/processors"
-    if ($processors) {
-        $output += "=== PROCESSORS ===`r`n"
-        foreach ($cpu in $processors) {
-            $output += "Name: $($cpu.name)`r`n"
-            $output += "  Cores: $($cpu.cores)`r`n"
-            $output += "  Logical Processors: $($cpu.logicalProcessors)`r`n"
-            $output += "  Max Speed: $($cpu.maxClockSpeed) MHz`r`n"
-            $output += "  Architecture: $($cpu.architecture)`r`n"
-        }
-        $output += "`r`n"
-    }
-    
-    # Memory
-    $txtNinjaData.Text = $output + "Fetching memory info..."
-    [System.Windows.Forms.Application]::DoEvents()
-    $memory = Invoke-NinjaAPI "/device/$deviceId/memory"
-    if ($memory) {
-        $output += "=== MEMORY ===`r`n"
-        $output += "Total Physical: $([math]::Round($memory.totalPhysical / 1GB, 2)) GB`r`n"
-        $output += "Available: $([math]::Round($memory.available / 1GB, 2)) GB`r`n"
-        if ($memory.slots) {
-            $output += "Memory Slots:`r`n"
-            foreach ($slot in $memory.slots) {
-                $output += "  $($slot.deviceLocator): $([math]::Round($slot.capacity / 1GB, 1))GB $($slot.memoryType) @ $($slot.speed)MHz`r`n"
-            }
-        }
-        $output += "`r`n"
-    }
-    
-    # Disks/Volumes
-    $txtNinjaData.Text = $output + "Fetching disk info..."
-    [System.Windows.Forms.Application]::DoEvents()
-    $disks = Invoke-NinjaAPI "/device/$deviceId/disks"
-    if ($disks) {
-        $output += "=== DISKS ===`r`n"
-        foreach ($disk in $disks) {
-            $output += "Drive: $($disk.name)`r`n"
-            $output += "  Model: $($disk.model)`r`n"
-            $output += "  Serial: $($disk.serialNumber)`r`n"
-            $output += "  Size: $([math]::Round($disk.size / 1GB, 1)) GB`r`n"
-            $output += "  Free: $([math]::Round($disk.freeSpace / 1GB, 1)) GB`r`n"
-            $output += "  File System: $($disk.fileSystem)`r`n"
-            $output += "  Health: $($disk.smartStatus)`r`n"
-        }
-        $output += "`r`n"
-    }
-    
-    $volumes = Invoke-NinjaAPI "/device/$deviceId/volumes"
-    if ($volumes) {
-        $output += "=== VOLUMES ===`r`n"
-        foreach ($vol in $volumes) {
-            $output += "$($vol.name): $([math]::Round($vol.capacity / 1GB, 1))GB (Free: $([math]::Round($vol.freeSpace / 1GB, 1))GB)`r`n"
-        }
-        $output += "`r`n"
-    }
-    
-    # Network Interfaces
-    $txtNinjaData.Text = $output + "Fetching network info..."
-    [System.Windows.Forms.Application]::DoEvents()
-    $network = Invoke-NinjaAPI "/device/$deviceId/network-interfaces"
-    if ($network) {
-        $output += "=== NETWORK INTERFACES ===`r`n"
-        foreach ($nic in $network) {
-            $output += "Name: $($nic.name)`r`n"
-            $output += "  MAC: $($nic.macAddress)`r`n"
-            $output += "  IP: $($nic.ipAddress -join ', ')`r`n"
-            $output += "  Gateway: $($nic.defaultGateway)`r`n"
-            $output += "  DNS: $($nic.dnsServers -join ', ')`r`n"
-            $output += "  DHCP: $($nic.dhcpEnabled)`r`n"
-            $output += "  Speed: $($nic.speed)`r`n"
-        }
-        $output += "`r`n"
-    }
-    
-    # Software
-    $txtNinjaData.Text = $output + "Fetching software list..."
-    [System.Windows.Forms.Application]::DoEvents()
-    $software = Invoke-NinjaAPI "/device/$deviceId/software"
-    if ($software) {
-        $output += "=== INSTALLED SOFTWARE (" + $software.Count + " apps) ===`r`n"
-        foreach ($app in ($software | Sort-Object name | Select-Object -First 50)) {
-            $output += "$($app.name) - $($app.version)`r`n"
-        }
-        if ($software.Count -gt 50) { $output += "... and $($software.Count - 50) more`r`n" }
-        $output += "`r`n"
-    }
-    
-    # OS Patches
-    $txtNinjaData.Text = $output + "Fetching patch status..."
-    [System.Windows.Forms.Application]::DoEvents()
-    $patches = Invoke-NinjaAPI "/device/$deviceId/os-patches"
-    if ($patches) {
-        $pending = $patches | Where-Object { $_.status -ne "INSTALLED" }
-        $output += "=== OS PATCHES ===`r`n"
-        $output += "Total: $($patches.Count)`r`n"
-        $output += "Pending: $($pending.Count)`r`n"
-        if ($pending.Count -gt 0) {
-            $output += "Pending Updates:`r`n"
-            foreach ($p in ($pending | Select-Object -First 20)) {
-                $output += "  - $($p.name) [$($p.severity)]`r`n"
-            }
-        }
-        $output += "`r`n"
-    }
-    
-    # Antivirus
-    $txtNinjaData.Text = $output + "Fetching antivirus status..."
-    [System.Windows.Forms.Application]::DoEvents()
-    $av = Invoke-NinjaAPI "/device/$deviceId/antivirus-status"
-    if ($av) {
-        $output += "=== ANTIVIRUS ===`r`n"
-        $output += "Product: $($av.productName)`r`n"
-        $output += "State: $($av.productState)`r`n"
-        $output += "Real-Time: $($av.realTimeProtection)`r`n"
-        $output += "Definitions: $($av.definitionStatus)`r`n"
-        $output += "Last Scan: $($av.lastScan)`r`n"
-        $output += "Last Update: $($av.lastUpdate)`r`n`r`n"
-    }
-    
-    # Windows Services
-    $txtNinjaData.Text = $output + "Fetching Windows services..."
-    [System.Windows.Forms.Application]::DoEvents()
-    $services = Invoke-NinjaAPI "/device/$deviceId/windows-services"
-    if ($services) {
-        $running = $services | Where-Object { $_.state -eq "Running" }
-        $output += "=== WINDOWS SERVICES ===`r`n"
-        $output += "Total: $($services.Count), Running: $($running.Count)`r`n"
-        $output += "(First 30 running):`r`n"
-        foreach ($svc in ($running | Select-Object -First 30)) {
-            $output += "  $($svc.displayName) [$($svc.startType)]`r`n"
-        }
-        $output += "`r`n"
-    }
-    
-    # Active Directory
-    $txtNinjaData.Text = $output + "Fetching AD info..."
-    [System.Windows.Forms.Application]::DoEvents()
-    $ad = Invoke-NinjaAPI "/device/$deviceId/active-directory"
-    if ($ad) {
-        $output += "=== ACTIVE DIRECTORY ===`r`n"
-        $output += "Domain: $($ad.domain)`r`n"
-        $output += "OU: $($ad.organizationalUnit)`r`n"
-        $output += "Last Logon: $($ad.lastLogon)`r`n"
-        $output += "Created: $($ad.created)`r`n`r`n"
-    }
-    
-    # Alerts
-    $txtNinjaData.Text = $output + "Fetching alerts..."
-    [System.Windows.Forms.Application]::DoEvents()
-    $alerts = Invoke-NinjaAPI "/device/$deviceId/alerts"
-    if ($alerts -and $alerts.Count -gt 0) {
-        $output += "=== ACTIVE ALERTS ($($alerts.Count)) ===`r`n"
-        foreach ($alert in $alerts) {
-            $output += "[$($alert.severity)] $($alert.message)`r`n"
-            $output += "  Created: $($alert.createTime)`r`n"
-        }
-        $output += "`r`n"
-    } else {
-        $output += "=== ALERTS ===`r`nNo active alerts`r`n`r`n"
-    }
-    
-    # Activities
-    $txtNinjaData.Text = $output + "Fetching recent activities..."
-    [System.Windows.Forms.Application]::DoEvents()
-    $activities = Invoke-NinjaAPI "/device/$deviceId/activities?pageSize=20"
-    if ($activities -and $activities.activities) {
-        $output += "=== RECENT ACTIVITIES (Last 20) ===`r`n"
-        foreach ($act in $activities.activities) {
-            $output += "[$($act.activityTime)] $($act.activityType): $($act.statusCode)`r`n"
-        }
-        $output += "`r`n"
-    }
-    
-    # Jobs
-    $txtNinjaData.Text = $output + "Fetching scheduled jobs..."
-    [System.Windows.Forms.Application]::DoEvents()
-    $jobs = Invoke-NinjaAPI "/device/$deviceId/jobs"
-    if ($jobs -and $jobs.Count -gt 0) {
-        $output += "=== SCHEDULED JOBS ===`r`n"
-        foreach ($job in $jobs) {
-            $output += "$($job.name): $($job.status) (Next: $($job.nextRun))`r`n"
-        }
-        $output += "`r`n"
-    }
-    
-    # Backup Status
-    $txtNinjaData.Text = $output + "Fetching backup status..."
-    [System.Windows.Forms.Application]::DoEvents()
-    $backup = Invoke-NinjaAPI "/device/$deviceId/backup"
-    if ($backup) {
-        $output += "=== BACKUP STATUS ===`r`n"
-        $output += "Product: $($backup.productName)`r`n"
-        $output += "Last Backup: $($backup.lastBackupTime)`r`n"
-        $output += "Last Status: $($backup.lastBackupStatus)`r`n"
-        $output += "Next Backup: $($backup.nextBackupTime)`r`n`r`n"
-    }
-    
-    # Custom Fields
-    $txtNinjaData.Text = $output + "Fetching custom fields..."
-    [System.Windows.Forms.Application]::DoEvents()
-    $custom = Invoke-NinjaAPI "/device/$deviceId/custom-fields"
-    if ($custom) {
-        $output += "=== CUSTOM FIELDS ===`r`n"
-        $custom.PSObject.Properties | ForEach-Object {
-            if ($_.Value) { $output += "$($_.Name): $($_.Value)`r`n" }
-        }
-        $output += "`r`n"
-    }
-    
-    # Last User
-    $txtNinjaData.Text = $output + "Fetching last user..."
-    [System.Windows.Forms.Application]::DoEvents()
-    $lastUser = Invoke-NinjaAPI "/device/$deviceId/last-logged-on-user"
-    if ($lastUser) {
-        $output += "=== LAST LOGGED ON USER ===`r`n"
-        $output += "User: $($lastUser.userName)`r`n"
-        $output += "Domain: $($lastUser.domain)`r`n"
-        $output += "Logon Time: $($lastUser.logonTime)`r`n`r`n"
-    }
-    
-    # Organization Info
-    $orgId = $device.organizationId
-    if ($orgId) {
-        $txtNinjaData.Text = $output + "Fetching organization info..."
-        [System.Windows.Forms.Application]::DoEvents()
-        $org = Invoke-NinjaAPI "/organization/$orgId"
-        if ($org) {
-            $output += "=== ORGANIZATION ===`r`n"
-            $output += "Name: $($org.name)`r`n"
-            $output += "Description: $($org.description)`r`n"
-            $output += "Node Approval: $($org.nodeApprovalMode)`r`n`r`n"
-        }
-    }
-    
-    $output += "========================================`r`n"
-    $output += "Data fetch complete at $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')`r`n"
-    $output += "========================================"
-    
-    $txtNinjaData.Text = $output
-    $this.Text = "Fetch Device"
-    $this.Enabled = $true
-    Log "NinjaOne data fetch complete"
-})
-
-# Export Button
-$btnExport = New-Object System.Windows.Forms.Button
-$btnExport.Text = "Export"
-$btnExport.Location = New-Object System.Drawing.Point(105, 185)
-$btnExport.Size = New-Object System.Drawing.Size(70, 26)
-$btnExport.FlatStyle = "Flat"
-$btnExport.BackColor = $script:Theme.Card
-$btnExport.ForeColor = $script:Theme.Text
-$btnExport.FlatAppearance.BorderSize = 0
-$btnExport.Font = New-Object System.Drawing.Font("Segoe UI", 8)
-$btnExport.Add_Click({
-    if ($txtNinjaData.Text.Length -lt 100) {
-        [System.Windows.Forms.MessageBox]::Show("No data to export. Fetch device data first.", "No Data", "OK", "Warning")
-        return
-    }
-    $saveDialog = New-Object System.Windows.Forms.SaveFileDialog
-    $saveDialog.Filter = "Text Files (*.txt)|*.txt|All Files (*.*)|*.*"
-    $saveDialog.FileName = "$env:COMPUTERNAME`_NinjaData_$(Get-Date -Format 'yyyyMMdd').txt"
-    if ($saveDialog.ShowDialog() -eq "OK") {
-        $txtNinjaData.Text | Out-File -FilePath $saveDialog.FileName -Encoding UTF8
-        [System.Windows.Forms.MessageBox]::Show("Data exported to:`n$($saveDialog.FileName)", "Export Complete", "OK", "Information")
-    }
-})
-
-# Quick API endpoints
-$lblQuickAPI = New-Object System.Windows.Forms.Label
-$lblQuickAPI.Text = "Quick API:"
-$lblQuickAPI.Location = New-Object System.Drawing.Point(10, 215)
-$lblQuickAPI.AutoSize = $true
-$lblQuickAPI.ForeColor = $script:Theme.Dim
-$lblQuickAPI.Font = New-Object System.Drawing.Font("Segoe UI", 8)
-
-$quickAPIs = @(
-    @{Name = "Organizations"; Endpoint = "/organizations"}
-    @{Name = "All Devices"; Endpoint = "/devices"}
-    @{Name = "Groups"; Endpoint = "/groups"}
-    @{Name = "Policies"; Endpoint = "/policies"}
-    @{Name = "Users"; Endpoint = "/users"}
-)
-
-$apiY = 232
-foreach ($api in $quickAPIs) {
-    $btn = New-Object System.Windows.Forms.Button
-    $btn.Text = $api.Name
-    $btn.Location = New-Object System.Drawing.Point(10, $apiY)
-    $btn.Size = New-Object System.Drawing.Size(100, 22)
-    $btn.FlatStyle = "Flat"
-    $btn.BackColor = $script:Theme.Surface
-    $btn.ForeColor = $script:Theme.Text
-    $btn.FlatAppearance.BorderSize = 0
-    $btn.Font = New-Object System.Drawing.Font("Segoe UI", 7.5)
-    $btn.Tag = $api.Endpoint
-    $btn.Add_Click({
-        if (-not $global:NinjaToken) {
-            [System.Windows.Forms.MessageBox]::Show("Connect to NinjaOne first.", "Not Connected", "OK", "Warning")
-            return
-        }
-        Log "Fetching $($this.Text)..."
-        $result = Invoke-NinjaAPI $this.Tag
-        if ($result) {
-            $txtNinjaData.Text = "=== $($this.Text.ToUpper()) ===`r`n`r`n"
-            $txtNinjaData.Text += ($result | ConvertTo-Json -Depth 5)
-        } else {
-            $txtNinjaData.Text = "No data returned or error occurred."
-        }
-    })
-    $pageNinja.Controls.Add($btn)
-    $apiY += 24
-}
-
-# Connect button handler
-$btnConnect.Add_Click({
-    Save-NinjaSettings -Url $txtUrl.Text -Id $txtCid.Text -Secret $txtSec.Text
-    $lblNinjaConn.Text = "$($script:StatusPending) Connecting..."
-    $lblNinjaConn.ForeColor = $script:Theme.Dim
-    [System.Windows.Forms.Application]::DoEvents()
-    
-    if (Connect-NinjaOne -ClientId $txtCid.Text -ClientSecret $txtSec.Text -InstanceUrl $txtUrl.Text) {
-        $lblNinjaConn.Text = "$($script:StatusOK) Connected!"
-        $lblNinjaConn.ForeColor = $script:Theme.Green
-    } else {
-        $lblNinjaConn.Text = "$($script:StatusBad) Failed"
-        $lblNinjaConn.ForeColor = $script:Theme.Red
-    }
-})
-
-$pageNinja.Controls.AddRange(@($lblNinjaTitle, $panelConn, $txtNinjaData, $btnFetchData, $btnExport, $lblQuickAPI))
-$pages["NinjaOne"] = $pageNinja
-
 # === AUDIT PAGE ===
 $pageAudit = New-Object System.Windows.Forms.Panel
 $pageAudit.Dock = "Fill"
@@ -1265,7 +684,7 @@ $lblAuditTitle.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Draw
 $lblAuditTitle.ForeColor = $script:Theme.Dim
 
 $lblAuditDesc = New-Object System.Windows.Forms.Label
-$lblAuditDesc.Text = "Generate Polar Nite Security & Backup Audit (HTML). NinjaOne data will be included if connected."
+$lblAuditDesc.Text = "Generate Polar Nite Security & Backup Audit (HTML)."
 $lblAuditDesc.Location = New-Object System.Drawing.Point(10, 32)
 $lblAuditDesc.Size = New-Object System.Drawing.Size(600, 20)
 $lblAuditDesc.Font = New-Object System.Drawing.Font("Segoe UI", 8)
@@ -1284,56 +703,16 @@ $btnAudit.Add_Click({
     $this.Text = "Scanning..."
     [System.Windows.Forms.Application]::DoEvents()
     
-    # --- Get NinjaOne Data if connected ---
-    $ninjaData = $null
-    $ninjaRAID = "Check manually or connect NinjaOne"
-    $ninjaBackupStatus = ""
-    $ninjaBackupTime = ""
-    $ninjaAV = ""
-    $ninjaPatches = ""
-    
-    if ($global:NinjaToken) {
-        try {
-            $deviceId = Get-NinjaDeviceId
-            if ($deviceId) {
-                $ninjaData = Invoke-NinjaAPI "/device/$deviceId"
-                $ninjaDisks = Invoke-NinjaAPI "/device/$deviceId/disks"
-                $ninjaBackup = Invoke-NinjaAPI "/device/$deviceId/backup"
-                $ninjaAVData = Invoke-NinjaAPI "/device/$deviceId/antivirus-status"
-                $ninjaPatchData = Invoke-NinjaAPI "/device/$deviceId/os-patches"
-                
-                # RAID from Ninja
-                if ($ninjaDisks) {
-                    $raidInfo = $ninjaDisks | ForEach-Object { "$($_.name): $($_.smartStatus)" }
-                    $ninjaRAID = $raidInfo -join "; "
-                }
-                
-                # Backup from Ninja
-                if ($ninjaBackup) {
-                    $ninjaBackupStatus = $ninjaBackup.lastBackupStatus
-                    $ninjaBackupTime = $ninjaBackup.lastBackupTime
-                }
-                
-                # AV from Ninja
-                if ($ninjaAVData) {
-                    $ninjaAV = "$($ninjaAVData.productName) - RTP: $($ninjaAVData.realTimeProtection)"
-                }
-                
-                # Patches from Ninja
-                if ($ninjaPatchData) {
-                    $pending = ($ninjaPatchData | Where-Object { $_.status -ne "INSTALLED" }).Count
-                    $ninjaPatches = "Pending: $pending"
-                }
-            }
-        } catch { Log "NinjaOne data fetch error: $_" }
-    }
-    
     # --- Gather Local Data ---
     $CompInfo = Get-CimInstance Win32_ComputerSystem -EA SilentlyContinue
     $OSInfo = Get-CimInstance Win32_OperatingSystem -EA SilentlyContinue
     $AdminGroup = Get-LocalGroupMember -Group "Administrators" -EA SilentlyContinue
     
-    $Uptime = if ($OSInfo) { (Get-Date) - $OSInfo.LastBootUpTime; "{0}D {1}H" -f $_.Days, $_.Hours } else { "Unknown" }
+    $Uptime = "Unknown"
+    if ($OSInfo -and $OSInfo.LastBootUpTime) {
+        $upt = (Get-Date) - $OSInfo.LastBootUpTime
+        $Uptime = "{0}D {1}H" -f $upt.Days, $upt.Hours
+    }
     $IsVM = $CompInfo.Model -match "Virtual|VMware|Hyper-V|KVM|Xen"
     
     # EOS Check
@@ -1349,16 +728,16 @@ $btnAudit.Add_Click({
     }
     
     # Backup Detection
-    $BackupKeywords = @("Veeam","Acronis","Datto","Ninja","Carbonite","Cyber Protect","Backup Exec","Backblaze","Ahsay","CrashPlan","ShadowProtect")
+    $BackupKeywords = @("Veeam","Acronis","Datto","Carbonite","Cyber Protect","Backup Exec","Backblaze","Ahsay","CrashPlan","ShadowProtect")
     $BackupServices = @()
     try {
         $BackupServices = Get-Service -EA SilentlyContinue | Where-Object {
             $name = $_.DisplayName
-            $matches = $false
+            $isMatch = $false
             foreach ($keyword in $BackupKeywords) {
-                if ($name -and $name -like "*$keyword*") { $matches = $true; break }
+                if ($name -and $name -like "*$keyword*") { $isMatch = $true; break }
             }
-            $matches
+            $isMatch
         }
     } catch {}
     $BackupServiceNames = $BackupServices | Select-Object -ExpandProperty DisplayName -Unique
@@ -1373,11 +752,11 @@ $btnAudit.Add_Click({
             foreach ($pkg in $packages) {
                 $display = $pkg.DisplayName
                 if (-not $display) { continue }
-                $matches = $false
+                $isMatch = $false
                 foreach ($keyword in $BackupKeywords) {
-                    if ($display -like "*$keyword*") { $matches = $true; break }
+                    if ($display -like "*$keyword*") { $isMatch = $true; break }
                 }
-                if ($matches) { $BackupProgramNames += $display }
+                if ($isMatch) { $BackupProgramNames += $display }
             }
         } catch {}
     }
@@ -1397,8 +776,13 @@ $btnAudit.Add_Click({
     $AV = Get-CimInstance -Namespace root/SecurityCenter2 -ClassName AntivirusProduct -EA SilentlyContinue
     $AVName = if ($AV) { $AV.displayName } else { "None Detected" }
     $Defender = Get-MpComputerStatus -EA SilentlyContinue
-    $RTPEnabled = if ($Defender.RealTimeProtectionEnabled) { "Yes" } else { "No" }
-    $LastScan = if ($Defender.QuickScanEndTime) { $Defender.QuickScanEndTime.ToString("yyyy-MM-dd") } else { "Unknown" }
+    if ($Defender) {
+        $RTPEnabled = if ($Defender.RealTimeProtectionEnabled) { "Yes" } else { "No" }
+        $LastScan = if ($Defender.QuickScanEndTime) { $Defender.QuickScanEndTime.ToString("yyyy-MM-dd") } else { "Unknown" }
+    } else {
+        $RTPEnabled = "Unknown"
+        $LastScan = "Unknown"
+    }
     
     # BitLocker
     $BitLockerStatus = "Unknown"
@@ -1439,8 +823,6 @@ $btnAudit.Add_Click({
     $RAIDStatus = "Unknown"
     if ($IsVM) {
         $RAIDStatus = "Virtual Machine - Check Host RAID"
-    } elseif ($ninjaRAID -and $ninjaRAID -ne "Check manually or connect NinjaOne") {
-        $RAIDStatus = $ninjaRAID
     } else {
         # Try local
         $pDisks = Get-PhysicalDisk -ErrorAction SilentlyContinue
@@ -1534,31 +916,42 @@ $btnAudit.Add_Click({
     $PasswordHistory = Get-SecPolValue -Lines $secPol -Key "PasswordHistorySize"
     $PasswordPolicySummary = "MinLen: $($PasswordMinLength -or 'Unknown'); MaxAge: $($PasswordMaxAge -or 'Unknown'); History: $($PasswordHistory -or 'Unknown'); Complexity: $PassComplex"
 
-    # Patch summary and AI lookup links
     $PatchEntries = @()
-    if ($ninjaPatchData) {
-        foreach ($patch in $ninjaPatchData) {
-            $titleParts = @()
-            if ($patch.name) { $titleParts += $patch.name }
-            if ($patch.title) { $titleParts += $patch.title }
-            if ($patch.knowledgeBaseArticleId) { $titleParts += "KB$($patch.knowledgeBaseArticleId)" }
-            if (-not $titleParts) { $titleParts += "Patch ID $($patch.id)" }
-            $patchLabel = ($titleParts -join ' ') -replace '\s{2,}', ' '
-            if ($patch.description) { $patchLabel = "$patchLabel - $($patch.description)" }
-            $searchTerm = [uri]::EscapeDataString(($patchLabel -replace '"', ''))
-            $aiLink = "https://www.bing.com/search?q=$searchTerm+patch"
-            $safeLabel = Escape-ForHtmlAttr $patchLabel
-            $PatchEntries += "<li><a href='$aiLink' target='_blank' rel='noreferrer'>AI lookup</a> $safeLabel</li>"
+    $PatchListHtml = 'Unknown'
+    $PatchSummary = 'Unknown'
+    try {
+        $wuSession = New-Object -ComObject 'Microsoft.Update.Session'
+        $wuSearcher = $wuSession.CreateUpdateSearcher()
+        $wuResult = $wuSearcher.Search("IsInstalled=0 and Type='Software' and IsHidden=0")
+        $pendingCount = 0
+        if ($wuResult -and $wuResult.Updates) {
+            $pendingCount = $wuResult.Updates.Count
         }
+        if ($pendingCount -le 0) {
+            $PatchSummary = 'None detected'
+            $PatchListHtml = 'No pending patches detected.'
+        } else {
+            $PatchSummary = "$pendingCount pending"
+            $maxToShow = 10
+            for ($i = 0; $i -lt $pendingCount -and $i -lt $maxToShow; $i++) {
+                $u = $wuResult.Updates.Item($i)
+                if ($u -and $u.Title) {
+                    $PatchEntries += "<li>$(Escape-ForHtmlAttr $u.Title)</li>"
+                }
+            }
+            $PatchListHtml = if ($PatchEntries) {
+                '<ul style="margin:0; padding-left:16px;">' + ($PatchEntries -join '') + '</ul>'
+            } else { 'Pending updates detected (details unavailable).' }
+        }
+    } catch {
+        $PatchSummary = 'Unknown (WU API unavailable)'
+        $PatchListHtml = 'Unknown'
     }
-    $PatchListHtml = if ($PatchEntries) { "<ul style='margin:0; padding-left:16px;'>$($PatchEntries -join '')</ul>" } else { 'No pending patches detected.' }
-    $PatchSummary = if ($PatchEntries) { "$($PatchEntries.Count) pending patch(es)" } else { 'Up to date' }
 
     $BackupEncryptionMap = @{
         'Veeam' = 'AES-256 (Veeam default)'
         'Acronis' = 'AES-256 (Acronis encrypted vault)'
         'Datto' = 'AES-256 (Datto cloud)'
-        'Ninja' = 'AES-256 (Ninja Secure Storage)'
         'Carbonite' = 'AES-128 (Carbonite standard)'
         'ShadowProtect' = 'AES-256 (StorageCraft default)'
         'CrashPlan' = 'AES-256 (CrashPlan vault)'
@@ -1569,63 +962,26 @@ $btnAudit.Add_Click({
     foreach ($pattern in $BackupEncryptionMap.Keys) {
         if ($lookupString -match $pattern) { $EncryptionDetails += $BackupEncryptionMap[$pattern] }
     }
-    $BackupEncryptionType = if ($ninjaBackup -and $ninjaBackup.encryptionMethod) { $ninjaBackup.encryptionMethod } elseif ($EncryptionDetails) { $EncryptionDetails -join '; ' } else { 'Unknown (verify backup vendor settings)' }
+    $BackupEncryptionType = if ($EncryptionDetails) { $EncryptionDetails -join '; ' } else { 'Unknown (verify backup vendor settings)' }
 
     $BackupsEncrypted = 'Unknown'
-    if ($ninjaBackup -and $ninjaBackup.encryptionStatus) {
-        $status = $ninjaBackup.encryptionStatus
-        if ($status -match 'ENCRYPTED|TRUE|ON') { $BackupsEncrypted = "Yes ($status)" }
-        elseif ($status -match 'FALSE|OFF|NOT') { $BackupsEncrypted = "No ($status)" }
-        else { $BackupsEncrypted = "Unknown ($status)" }
-    } elseif ($EncryptionDetails) {
+    if ($EncryptionDetails) {
         $BackupsEncrypted = 'Yes (per vendor defaults)'
     }
 
     $BackupTransferEncrypted = 'Assumed TLS/SSL (vendor default)'
-    if ($ninjaBackup) {
-        $transferProps = $ninjaBackup.psobject.Properties | Where-Object { $_.Name -match 'tls|secure|transfer' }
-        foreach ($prop in $transferProps) {
-            if ($prop.Value -is [bool]) {
-                $BackupTransferEncrypted = if ($prop.Value) { "Yes ($($prop.Name))" } else { "No ($($prop.Name))" }
-                break
-            } elseif ($prop.Value -eq 1 -or $prop.Value -eq '1') {
-                $BackupTransferEncrypted = "Yes ($($prop.Name))"
-                break
-            } elseif ($prop.Value -eq 0 -or $prop.Value -eq '0') {
-                $BackupTransferEncrypted = "No ($($prop.Name))"
-                break
-            }
-        }
-    }
 
     $OffsiteCopy = 'Unknown'
-    if ($ninjaBackup) {
-        if (($ninjaBackup.cloudBackup -eq $true) -or ($ninjaBackup.backupDestination -match 'cloud|offsite')) {
-            $OffsiteCopy = 'Yes (cloud/offsite destination)'
-        }
-    }
-    if ($OffsiteCopy -eq 'Unknown' -and $DetectedBackup -match 'Datto|Ninja|Carbonite|Backblaze') {
+    if ($OffsiteCopy -eq 'Unknown' -and $DetectedBackup -match 'Datto|Carbonite|Backblaze') {
         $OffsiteCopy = 'Yes (cloud-enabled vendor)'
     }
 
     $BackupFrequency = 'Unknown (check backup console)'
     $BackupRetention = 'Unknown'
-    if ($ninjaBackup) {
-        $freqProp = $ninjaBackup.psobject.Properties | Where-Object { $_.Name -match 'Frequency|Schedule|Interval' -and $_.Value } | Select-Object -First 1
-        if ($freqProp) { $BackupFrequency = $freqProp.Value }
-        $retProp = $ninjaBackup.psobject.Properties | Where-Object { $_.Name -match 'Retention' -and $_.Value } | Select-Object -First 1
-        if ($retProp) { $BackupRetention = $retProp.Value }
-    }
 
     $BackupSuccess = "Unknown"
-    if ($ninjaBackupStatus) {
-        $statusToken = $ninjaBackupStatus.ToUpper()
-        if ($statusToken -match 'SUCCESS|COMPLETED|OK') { $BackupSuccess = "Yes ($ninjaBackupStatus)" }
-        elseif ($statusToken -match 'FAIL|ERROR|WARNING') { $BackupSuccess = "No ($ninjaBackupStatus)" }
-        else { $BackupSuccess = "Unknown ($ninjaBackupStatus)" }
-    }
-    $BackupLastSuccess = $ninjaBackupTime -or "Unknown"
-    $BackupFailuresThisMonth = if ($BackupSuccess -match '^No') { "Yes ($ninjaBackupStatus)" } elseif ($BackupSuccess -match '^Yes') { 'No' } else { 'Unknown' }
+    $BackupLastSuccess = "Unknown"
+    $BackupFailuresThisMonth = "Unknown"
 
     # Open Ports
     $OpenPorts = (Get-NetTCPConnection -State Listen -EA SilentlyContinue | Select-Object -ExpandProperty LocalPort -Unique | Sort-Object {[int]$_}) -join ", "
@@ -1670,10 +1026,6 @@ $btnAudit.Add_Click({
         $EventsHTML = "No repeating warnings/errors/critical events detected in the last 30 days"
     }
     
-    # Override with Ninja data if available
-    if ($ninjaAV) { $AVName = $ninjaAV }
-    if ($ninjaPatches) { $LastUpdateDate += " ($ninjaPatches)" }
-
     # --- Generate HTML ---
     $html = @"
 <!DOCTYPE html>
@@ -1694,7 +1046,6 @@ $btnAudit.Add_Click({
         .warn { color: var(--warn); font-weight: bold; }
         .input { border: 1px solid #bdc3c7; padding: 5px; border-radius: 4px; width: 90%; }
         select { border: 1px solid #bdc3c7; padding: 5px; border-radius: 4px; }
-        .ninja-tag { background: #17a2b8; color: white; padding: 2px 6px; border-radius: 3px; font-size: 0.8em; }
         .copy-btn { background: var(--accent); color: white; border: none; padding: 10px 20px; border-radius: 5px; cursor: pointer; position: fixed; bottom: 30px; right: 30px; }
     </style>
     <script>
@@ -1731,8 +1082,6 @@ $btnAudit.Add_Click({
 <p><strong>Audit Month:</strong> $(Get-Date -Format 'MMMM yyyy')</p>
 <p><strong>Completed By:</strong> $env:USERNAME</p>
 
-$(if($global:NinjaToken){"<p><span class='ninja-tag'>NinjaOne Connected</span> - RAID and backup data pulled from RMM</p>"})
-$(if($global:NinjaToken -and $ninjaData){"<p style='font-size:0.85em;'>Device ID: $($ninjaData.id) - Host: $($ninjaData.systemName)</p>"})
 <h3>Server Identifying Information</h3>
 <table>
     <tr><th>Server Name</th><td>$(Escape-ForHtmlAttr $CompInfo.Name)</td></tr>
@@ -1779,7 +1128,7 @@ $(if($global:NinjaToken -and $ninjaData){"<p style='font-size:0.85em;'>Device ID
 <table>
     <tr><th>Are Windows Updates current?</th><td>$(if($PendingReboot){"<span class='warn'>Reboot Pending</span>"}else{"<span class='good'>Yes</span>"})</td></tr>
     <tr><th>Last update date</th><td>$LastUpdateDate</td></tr>
-    <tr><th>Pending patches?</th><td><input class='input' value='$(Escape-ForHtmlAttr ($ninjaPatches -replace '\\(.*\\)',''))'></td></tr>
+    <tr><th>Pending patches?</th><td><input class='input' value='$(Escape-ForHtmlAttr $PatchSummary)'></td></tr>
 </table>
 
 <h3>B. Antivirus / EDR</h3>

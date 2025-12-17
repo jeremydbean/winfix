@@ -288,288 +288,6 @@ $timer.Add_Tick({
     }
 })
 
-# --- NinjaOne Integration Functions ---
-$global:NinjaToken = $null
-$global:NinjaInstance = $null
-$global:NinjaDeviceData = $null
-
-function Get-NinjaSettings {
-    $configDir = "$env:APPDATA\WinFixTool"
-    $configPath = "$configDir\ninja_config.xml"
-    if (Test-Path $configPath) { try { return Import-Clixml $configPath } catch { Log-Output "Could not load saved settings." } }
-    return $null
-}
-
-function Save-NinjaSettings {
-    param($Url, $Id, $Secret)
-    $configDir = "$env:APPDATA\WinFixTool"
-    if (-not (Test-Path $configDir)) { New-Item -ItemType Directory -Path $configDir -Force | Out-Null }
-    $configPath = "$configDir\ninja_config.xml"
-    [PSCustomObject]@{ Url = $Url; ClientId = $Id; ClientSecret = $Secret } | Export-Clixml -Path $configPath
-    Log-Output "Settings saved securely."
-}
-
-function Decrypt-String {
-    param($EncryptedString, $Password)
-    try {
-        $bytes = [Convert]::FromBase64String($EncryptedString)
-        if ($bytes.Length -lt 32) { throw "Invalid data" }
-        $salt = $bytes[0..15]; $iv = $bytes[16..31]; $cipherText = $bytes[32..($bytes.Length - 1)]
-        $derive = New-Object System.Security.Cryptography.Rfc2898DeriveBytes($Password, $salt, 100000, [System.Security.Cryptography.HashAlgorithmName]::SHA256)
-        $key = $derive.GetBytes(32)
-        $aes = [System.Security.Cryptography.Aes]::Create()
-        $aes.Mode = [System.Security.Cryptography.CipherMode]::CBC
-        $aes.Padding = [System.Security.Cryptography.PaddingMode]::PKCS7
-        $aes.Key = $key; $aes.IV = $iv
-        $decryptor = $aes.CreateDecryptor()
-        $ms = New-Object System.IO.MemoryStream(,$cipherText)
-        $cs = New-Object System.Security.Cryptography.CryptoStream($ms, $decryptor, [System.Security.Cryptography.CryptoStreamMode]::Read)
-        $sr = New-Object System.IO.StreamReader($cs)
-        return $sr.ReadToEnd()
-    } catch { Log-Output "Decryption Error: $_"; return $null }
-}
-
-function Connect-NinjaOne {
-    param($ClientId, $ClientSecret, $InstanceUrl)
-    
-    Log-Output "=== Connect-NinjaOne Called ==="
-    Log-Output "InstanceUrl (raw): $InstanceUrl"
-    
-    # Clean URL input (remove protocol and trailing slash)
-    $InstanceUrl = $InstanceUrl -replace "^https?://", "" -replace "/$", ""
-    # Strip any path/query fragments if user pasted a full dashboard/docs URL
-    if ($InstanceUrl -match "/") { $InstanceUrl = ($InstanceUrl -split "/")[0] }
-    Log-Output "InstanceUrl (cleaned): $InstanceUrl"
-
-    $EncId = "lBPqaFXSjLrCJAKy9V7db00ImBVi7TmzocC4R1xmdaquRX+F0GzTWa+acd1lnhLb2U/h6ORrbF0vIKW55pihnQ=="
-    $EncSec = "EiRj/vGljBBXUDGrBkAEoXYldnzwzmYL40JvGK8ahShnk8nzBKtbuRujuandJ41QEgPc04ttpCLkGfAsW6vTrkd85nfgGG3g0/gRrNsLoH8="
-    $Pass = "smoke007"
-
-    if ([string]::IsNullOrWhiteSpace($ClientId)) { Log-Output "Using embedded Client ID..."; $ClientId = Decrypt-String -EncryptedString $EncId -Password $Pass }
-    if ([string]::IsNullOrWhiteSpace($ClientSecret)) { Log-Output "Using embedded Client Secret..."; $ClientSecret = Decrypt-String -EncryptedString $EncSec -Password $Pass }
-
-    # Fix API URL if user enters dashboard URL
-    $ApiUrl = $InstanceUrl
-    if ($ApiUrl -match "^app\.") { $ApiUrl = $ApiUrl -replace "^app\.", "api." }
-    elseif ($ApiUrl -match "^eu\.") { $ApiUrl = $ApiUrl -replace "^eu\.", "eu-api." }
-    elseif ($ApiUrl -match "^oc\.") { $ApiUrl = $ApiUrl -replace "^oc\.", "oc-api." }
-    elseif ($ApiUrl -match "^ca\.") { $ApiUrl = $ApiUrl -replace "^ca\.", "ca-api." }
-
-    Log-Output "ApiUrl (derived): $ApiUrl"
-    Log-Output "Connecting to NinjaOne ($ApiUrl)..."
-    $tokenUrl = "https://$ApiUrl/ws/oauth/token"
-    Log-Output "Token URL: $tokenUrl"
-    
-    # Scope: monitoring only (Read Only)
-    $body = @{ grant_type = "client_credentials"; client_id = $ClientId; client_secret = $ClientSecret; scope = "monitoring" }
-    Log-Output "OAuth Body: grant_type=client_credentials, scope=monitoring, client_id length=$($ClientId.Length)"
-    
-    try {
-        Log-Output "Sending OAuth request..."
-        $response = Invoke-RestMethod -Uri $tokenUrl -Method Post -Body $body -ErrorAction Stop
-        $global:NinjaToken = $response.access_token
-        $global:NinjaInstance = $ApiUrl
-        Log-Output "OAuth Success! Token length: $($global:NinjaToken.Length)"
-        Log-Output "Successfully connected to NinjaOne!"
-        Get-NinjaDeviceData
-    } catch {
-        Log-Output "OAuth FAILED: $($_.Exception.Message)"
-        if ($_.Exception -and $_.Exception.Response -and $_.Exception.Response.StatusCode) {
-            Log-Output "HTTP Status: $($_.Exception.Response.StatusCode.value__)"
-        }
-        if ($_.ErrorDetails) { Log-Output "Details: $($_.ErrorDetails.Message)" }
-        
-        # Fallback: Try the original instance URL if the derived API URL failed
-        if ($ApiUrl -ne $InstanceUrl) {
-             Log-Output "Retrying with original URL '$InstanceUrl'..."
-             $tokenUrl = "https://$InstanceUrl/ws/oauth/token"
-             Log-Output "Fallback Token URL: $tokenUrl"
-             try {
-                Log-Output "Sending fallback OAuth request..."
-                $response = Invoke-RestMethod -Uri $tokenUrl -Method Post -Body $body -ErrorAction Stop
-                $global:NinjaToken = $response.access_token
-                $global:NinjaInstance = $InstanceUrl
-                Log-Output "Fallback OAuth Success! Token length: $($global:NinjaToken.Length)"
-                Log-Output "Successfully connected to NinjaOne (Fallback)!"
-                Get-NinjaDeviceData
-             } catch {
-                Log-Output "Fallback OAuth FAILED: $($_.Exception.Message)"
-                if ($_.Exception -and $_.Exception.Response -and $_.Exception.Response.StatusCode) {
-                    Log-Output "Fallback HTTP Status: $($_.Exception.Response.StatusCode.value__)"
-                }
-             }
-        }
-    }
-}
-
-function Get-LocalNinjaNodeId {
-    Log-Output "=== Get-LocalNinjaNodeId Called ==="
-    $paths = @(
-        "HKLM:\SOFTWARE\NinjaRMM\Agent",
-        "HKLM:\SOFTWARE\WOW6432Node\NinjaRMM\Agent",
-        "HKLM:\SOFTWARE\NinjaMSP\Agent",
-        "HKLM:\SOFTWARE\WOW6432Node\NinjaMSP\Agent"
-    )
-    
-    foreach ($path in $paths) {
-        Log-Output "Checking registry path: $path"
-        if (Test-Path $path) {
-            Log-Output "Path exists: $path"
-            $props = Get-ItemProperty -Path $path -ErrorAction SilentlyContinue
-            Log-Output "Properties found: $($props.PSObject.Properties.Name -join ', ')"
-            # Check common property names for the Device ID
-            if ($props.NodeID) { Log-Output "Found NodeID: $($props.NodeID)"; return $props.NodeID }
-            if ($props.DeviceID) { Log-Output "Found DeviceID: $($props.DeviceID)"; return $props.DeviceID }
-            if ($props.id) { Log-Output "Found id: $($props.id)"; return $props.id }
-            if ($props.agent_id) { Log-Output "Found agent_id: $($props.agent_id)"; return $props.agent_id }
-        } else {
-            Log-Output "Path does not exist: $path"
-        }
-    }
-    Log-Output "No local Ninja Node ID found in registry"
-    return $null
-}
-
-function Get-NinjaDeviceData {
-    Log-Output "=== Get-NinjaDeviceData Called ==="
-    if (-not $global:NinjaToken) { Log-Output "ERROR: Not connected to NinjaOne (no token)."; return }
-    
-    Log-Output "Token exists, length: $($global:NinjaToken.Length)"
-    Log-Output "Instance: $($global:NinjaInstance)"
-    
-    $headers = @{ Authorization = "Bearer $global:NinjaToken" }
-    
-    # 1. Try Local Registry ID First (Most Accurate)
-    $localId = Get-LocalNinjaNodeId
-    if ($localId) {
-        Log-Output "Found Local Ninja Node ID: $localId"
-        try {
-            $url = "https://$($global:NinjaInstance)/v2/devices/$localId"
-            Log-Output "Fetching device by ID: $url"
-            $device = Invoke-RestMethod -Uri $url -Headers $headers -ErrorAction Stop
-            if ($device) {
-                $global:NinjaDeviceData = $device
-                Log-Output "SUCCESS: Device found via Node ID: $($device.systemName)"
-                return
-            }
-        } catch {
-            Log-Output "ERROR: Could not fetch device by Node ID ($localId): $($_.Exception.Message)"
-            if ($_.Exception -and $_.Exception.Response -and $_.Exception.Response.StatusCode) {
-                Log-Output "HTTP Status: $($_.Exception.Response.StatusCode.value__)"
-            }
-        }
-    } else {
-        Log-Output "No local Node ID found, proceeding to API search..."
-    }
-
-    # 2. Get ALL devices and filter locally (More reliable than API search filters)
-    Log-Output "Fetching all devices from NinjaOne for local matching..."
-    $serial = ""
-    try { $serial = (Get-CimInstance Win32_Bios -ErrorAction Stop).SerialNumber } catch { $serial = "" }
-    $hostname = $env:COMPUTERNAME
-    
-    Log-Output "Local Serial Number: $serial"
-    Log-Output "Local Hostname: $hostname"
-    
-    try {
-        $allDevices = @()
-        $pageSize = 1000
-        $after = 0
-        $lastAfter = $null
-        $pageNum = 0
-        $maxPages = 200
-        
-        # Paginate through all devices
-        do {
-            $pageNum++
-            if ($pageNum -gt $maxPages) {
-                Log-Output "WARNING: Reached maxPages=$maxPages while fetching devices. Stopping pagination to avoid long/infinite loops."
-                break
-            }
-
-            $url = "https://$($global:NinjaInstance)/v2/devices?pageSize=$pageSize&after=$after"
-            Log-Output "Fetching page (pageSize=$pageSize, after=$after): $url"
-            
-            try {
-                $page = Invoke-RestMethod -Uri $url -Headers $headers -ErrorAction Stop
-                Log-Output "Page returned $($page.Count) devices"
-            } catch {
-                Log-Output "ERROR: Page fetch failed: $($_.Exception.Message)"
-                Log-Output "HTTP Status: $($_.Exception.Response.StatusCode.value__)"
-                if ($_.ErrorDetails) { Log-Output "Error Details: $($_.ErrorDetails.Message)" }
-                break
-            }
-            
-            if ($page -and $page.Count -gt 0) {
-                $allDevices += $page
-                # Offset-style pagination (most consistent). Guard against non-advancing cursor.
-                $after += $page.Count
-                if ($null -ne $lastAfter -and $after -eq $lastAfter) {
-                    Log-Output "WARNING: Pagination not advancing (after=$after). Stopping to avoid infinite loop."
-                    break
-                }
-                $lastAfter = $after
-                Log-Output "Total devices collected so far: $($allDevices.Count)"
-                # Keep UI responsive during long fetch operations
-                if ($form -and $form.Visible) { [System.Windows.Forms.Application]::DoEvents() }
-            } else {
-                Log-Output "No more devices to fetch (page was empty or null)"
-                break
-            }
-        } while ($page.Count -eq $pageSize)
-        
-        Log-Output "Fetched $($allDevices.Count) total devices. Searching locally..."
-        
-        # Match by Serial Number
-        if (-not [string]::IsNullOrWhiteSpace($serial)) {
-            Log-Output "Searching for serial: '$serial'"
-            $match = $allDevices | Where-Object { $_.serialNumber -eq $serial }
-            if ($match) {
-                $global:NinjaDeviceData = $match | Select-Object -First 1
-                Log-Output "SUCCESS: Device matched by Serial: $($global:NinjaDeviceData.systemName) (ID: $($global:NinjaDeviceData.id))"
-                return
-            } else {
-                Log-Output "No match found for serial"
-            }
-        }
-        
-        # Match by Hostname (systemName)
-        Log-Output "Searching for systemName: '$hostname'"
-        $match = $allDevices | Where-Object { $_.systemName -eq $hostname }
-        if ($match) {
-            $global:NinjaDeviceData = $match | Select-Object -First 1
-            Log-Output "SUCCESS: Device matched by Hostname: $($global:NinjaDeviceData.systemName) (ID: $($global:NinjaDeviceData.id))"
-            return
-        } else {
-            Log-Output "No match found for systemName"
-        }
-        
-        # Match by nodeName (case-insensitive)
-        Log-Output "Searching for nodeName (like): '$hostname'"
-        $match = $allDevices | Where-Object { $_.nodeName -like "*$hostname*" }
-        if ($match) {
-            $global:NinjaDeviceData = $match | Select-Object -First 1
-            Log-Output "SUCCESS: Device matched by NodeName: $($global:NinjaDeviceData.systemName) (ID: $($global:NinjaDeviceData.id))"
-            return
-        } else {
-            Log-Output "No match found for nodeName"
-        }
-        
-        Log-Output "ERROR: Device not found. Serial='$serial', Hostname='$hostname'"
-        Log-Output "Sample device properties from first device:"
-        if ($allDevices.Count -gt 0) {
-            $sample = $allDevices[0]
-            Log-Output "  id: $($sample.id)"
-            Log-Output "  systemName: $($sample.systemName)"
-            Log-Output "  nodeName: $($sample.nodeName)"
-            Log-Output "  serialNumber: $($sample.serialNumber)"
-        }
-    } catch {
-        Log-Output "FATAL ERROR in Get-NinjaDeviceData: $($_.Exception.Message)"
-        Log-Output "Stack Trace: $($_.ScriptStackTrace)"
-    }
-}
-
 # --- Tab Control Setup (Redesigned with Side Navigation) ---
 # Create main split container
 $mainContainer = New-Object System.Windows.Forms.Panel
@@ -629,9 +347,8 @@ $navItems = @(
     @{ Icon = [char]0x2699; Text = "Maintenance"; Index = 1 }
     @{ Icon = [char]0x2139; Text = "Diagnostics"; Index = 2 }
     @{ Icon = [char]0x21C4; Text = "Network"; Index = 3 }
-    @{ Icon = [char]0x2261; Text = "Integrations"; Index = 4 }
-    @{ Icon = [char]0x263A; Text = "Users & Shares"; Index = 5 }
-    @{ Icon = [char]0x2713; Text = "Security Audit"; Index = 6 }
+    @{ Icon = [char]0x263A; Text = "Users & Shares"; Index = 4 }
+    @{ Icon = [char]0x2713; Text = "Security Audit"; Index = 5 }
 )
 
 $global:NavButtons = @()
@@ -762,8 +479,7 @@ function Add-SectionHeader($parent, $text) {
 # Tab 2: Diagnostics - System info, logs, hardware details
 # Tab 3: Network - IP config, scanning, sharing
 # Tab 4: Users & Shares - User/share management
-# Tab 5: Integrations - NinjaOne RMM
-# Tab 6: Security Audit - HIPAA compliance report
+# Tab 5: Security Audit - HIPAA compliance report
 
 # --- Tab 0: Dashboard (Redesigned) ---
 $tabDashboard = New-Object System.Windows.Forms.TabPage
@@ -992,18 +708,6 @@ $btnRefreshDash.Add_Click({
             $dash += "No critical events in the last 7 days."
         }
         $dash += ""
-        
-        # NinjaOne Status
-        if ($global:NinjaDeviceData) {
-            $dash += "=" * 80
-            $dash += "NINJARMM STATUS"
-            $dash += "=" * 80
-            $dash += "Device ID:        $($global:NinjaDeviceData.id)"
-            $dash += "Organization:     $(if($global:NinjaDeviceData.organizationName){$global:NinjaDeviceData.organizationName}else{'ID: ' + $global:NinjaDeviceData.organizationId})"
-            $dash += "Last Contact:     $($global:NinjaDeviceData.lastContact)"
-            if ($global:NinjaDeviceData.publicIP) { $dash += "Public IP:        $($global:NinjaDeviceData.publicIP)" }
-            $dash += ""
-        }
         
         $dash += "=" * 80
         $dash += "Dashboard refreshed at $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
@@ -1470,129 +1174,6 @@ Add-Button $flowNet "Enable Network Sharing (Private/No FW)" {
 $tabNet.Controls.Add($flowNet)
 $tabNet.Controls.Add($netHeader)
 
-# --- Tab 5: Integrations (NinjaOne) - Redesigned ---
-$tabIntegrations = New-Object System.Windows.Forms.TabPage
-$tabIntegrations.Text = "Integrations"
-$tabIntegrations.BackColor = $Theme.Background
-$tabIntegrations.Padding = New-Object System.Windows.Forms.Padding(0)
-
-$intHeader = New-Object System.Windows.Forms.Label
-$intHeader.Text = "Integrations"
-$intHeader.Font = New-Object System.Drawing.Font("Segoe UI", 20, [System.Drawing.FontStyle]::Bold)
-$intHeader.ForeColor = $Theme.TextPrimary
-$intHeader.Dock = "Top"
-$intHeader.Height = 50
-$intHeader.Padding = New-Object System.Windows.Forms.Padding(0, 10, 0, 0)
-
-$grpNinja = New-Object System.Windows.Forms.Panel
-$grpNinja.Location = New-Object System.Drawing.Point(0, 60)
-$grpNinja.Size = New-Object System.Drawing.Size(500, 280)
-$grpNinja.BackColor = $Theme.Surface
-
-# Ninja header
-$lblNinjaTitle = New-Object System.Windows.Forms.Label
-$lblNinjaTitle.Text = [char]0x2601 + "  NinjaOne RMM"
-$lblNinjaTitle.Font = New-Object System.Drawing.Font("Segoe UI", 12, [System.Drawing.FontStyle]::Bold)
-$lblNinjaTitle.ForeColor = $Theme.TextPrimary
-$lblNinjaTitle.Location = New-Object System.Drawing.Point(20, 15)
-$lblNinjaTitle.AutoSize = $true
-$grpNinja.Controls.Add($lblNinjaTitle)
-
-$lblNinjaDesc = New-Object System.Windows.Forms.Label
-$lblNinjaDesc.Text = "Connect to pull device data for Security Audit"
-$lblNinjaDesc.Font = New-Object System.Drawing.Font("Segoe UI", 9)
-$lblNinjaDesc.ForeColor = $Theme.TextMuted
-$lblNinjaDesc.Location = New-Object System.Drawing.Point(20, 40)
-$lblNinjaDesc.AutoSize = $true
-$grpNinja.Controls.Add($lblNinjaDesc)
-
-# Load Settings
-$savedSettings = Get-NinjaSettings
-
-# Inputs
-$lblUrl = New-Object System.Windows.Forms.Label
-$lblUrl.Text = "Instance URL"
-$lblUrl.Location = New-Object System.Drawing.Point(20, 75)
-$lblUrl.AutoSize = $true
-$lblUrl.ForeColor = $Theme.TextSecondary
-$lblUrl.Font = New-Object System.Drawing.Font("Segoe UI", 8)
-
-$txtUrl = New-Object System.Windows.Forms.TextBox
-$txtUrl.Location = New-Object System.Drawing.Point(20, 95)
-$txtUrl.Width = 440
-$txtUrl.Height = 28
-$txtUrl.Font = New-Object System.Drawing.Font("Segoe UI", 10)
-$txtUrl.BackColor = $Theme.InputBg
-$txtUrl.ForeColor = $Theme.TextPrimary
-$txtUrl.BorderStyle = "FixedSingle"
-$txtUrl.Text = if ($savedSettings.Url) { $savedSettings.Url } else { "app.ninjarmm.com" }
-
-$lblCid = New-Object System.Windows.Forms.Label
-$lblCid.Text = "Client ID (blank = use embedded)"
-$lblCid.Location = New-Object System.Drawing.Point(20, 130)
-$lblCid.AutoSize = $true
-$lblCid.ForeColor = $Theme.TextSecondary
-$lblCid.Font = New-Object System.Drawing.Font("Segoe UI", 8)
-
-$txtCid = New-Object System.Windows.Forms.TextBox
-$txtCid.Location = New-Object System.Drawing.Point(20, 150)
-$txtCid.Width = 440
-$txtCid.Height = 28
-$txtCid.Font = New-Object System.Drawing.Font("Segoe UI", 10)
-$txtCid.BackColor = $Theme.InputBg
-$txtCid.ForeColor = $Theme.TextPrimary
-$txtCid.BorderStyle = "FixedSingle"
-$txtCid.Text = if ($savedSettings.ClientId) { $savedSettings.ClientId } else { "" }
-
-$lblSec = New-Object System.Windows.Forms.Label
-$lblSec.Text = "Client Secret (blank = use embedded)"
-$lblSec.Location = New-Object System.Drawing.Point(20, 185)
-$lblSec.AutoSize = $true
-$lblSec.ForeColor = $Theme.TextSecondary
-$lblSec.Font = New-Object System.Drawing.Font("Segoe UI", 8)
-
-$txtSec = New-Object System.Windows.Forms.TextBox
-$txtSec.Location = New-Object System.Drawing.Point(20, 205)
-$txtSec.Width = 440
-$txtSec.Height = 28
-$txtSec.Font = New-Object System.Drawing.Font("Segoe UI", 10)
-$txtSec.BackColor = $Theme.InputBg
-$txtSec.ForeColor = $Theme.TextPrimary
-$txtSec.BorderStyle = "FixedSingle"
-$txtSec.UseSystemPasswordChar = $true
-$txtSec.Text = if ($savedSettings.ClientSecret) { $savedSettings.ClientSecret } else { "" }
-
-$btnConnect = New-Object System.Windows.Forms.Button
-$btnConnect.Text = [char]0x2192 + "  Connect & Sync"
-$btnConnect.Location = New-Object System.Drawing.Point(20, 245)
-$btnConnect.Width = 180
-$btnConnect.Height = 36
-$btnConnect.FlatStyle = "Flat"
-$btnConnect.BackColor = $Theme.Accent
-$btnConnect.ForeColor = "White"
-$btnConnect.FlatAppearance.BorderSize = 0
-$btnConnect.Font = New-Object System.Drawing.Font("Segoe UI", 10)
-$btnConnect.Cursor = [System.Windows.Forms.Cursors]::Hand
-$btnConnect.Add_Click({
-    Log-Output "=== Connect Button Clicked ==="
-    Log-Output "URL Input: $($txtUrl.Text)"
-    Log-Output "Client ID Input: $(if($txtCid.Text){'<provided>'}else{'<blank>'})"
-    Log-Output "Client Secret Input: $(if($txtSec.Text){'<provided>'}else{'<blank>'})"
-    Save-NinjaSettings -Url $txtUrl.Text -Id $txtCid.Text -Secret $txtSec.Text
-    Connect-NinjaOne -ClientId $txtCid.Text -ClientSecret $txtSec.Text -InstanceUrl $txtUrl.Text
-})
-
-$grpNinja.Controls.Add($lblUrl)
-$grpNinja.Controls.Add($txtUrl)
-$grpNinja.Controls.Add($lblCid)
-$grpNinja.Controls.Add($txtCid)
-$grpNinja.Controls.Add($lblSec)
-$grpNinja.Controls.Add($txtSec)
-$grpNinja.Controls.Add($btnConnect)
-
-$tabIntegrations.Controls.Add($grpNinja)
-$tabIntegrations.Controls.Add($intHeader)
-
 # --- Tab 4: User & Shares (Redesigned) ---
 $tabUsers = New-Object System.Windows.Forms.TabPage
 $tabUsers.Text = "Users & Shares"
@@ -1918,7 +1499,7 @@ $tabControl.Add_Selected({
     }
 })
 
-# --- Tab 6: Security Audit (Redesigned) ---
+# --- Tab 5: Security Audit (Redesigned) ---
 $tabAudit = New-Object System.Windows.Forms.TabPage
 $tabAudit.Text = "Security Audit"
 $tabAudit.BackColor = $Theme.Background
@@ -1983,24 +1564,6 @@ $btnRunAudit.Add_Click({
     [System.Windows.Forms.Application]::DoEvents()
     
     try {
-        # Auto-connect to NinjaOne if not already connected
-        if (-not $global:NinjaToken) {
-            Log-Output "Not connected to NinjaOne. Attempting auto-connect..."
-            $savedSettings = Get-NinjaSettings
-            if ($savedSettings -and $savedSettings.Url) {
-                Connect-NinjaOne -ClientId $savedSettings.ClientId -ClientSecret $savedSettings.ClientSecret -InstanceUrl $savedSettings.Url
-            } else {
-                Log-Output "No saved NinjaOne settings. Skipping Ninja integration."
-            }
-        } else {
-            Log-Output "Already connected to NinjaOne. Token exists."
-            # Refresh device data if we have a token but no device data
-            if (-not $global:NinjaDeviceData) {
-                Log-Output "No device data cached. Fetching..."
-                Get-NinjaDeviceData
-            }
-        }
-        
         Log-Output "Starting Security Audit..."
         Invoke-SecurityAudit
     } finally {
@@ -2020,7 +1583,6 @@ $tabControl.Controls.Add($tabDashboard)
 $tabControl.Controls.Add($tabFixes)
 $tabControl.Controls.Add($tabInfo)
 $tabControl.Controls.Add($tabNet)
-$tabControl.Controls.Add($tabIntegrations)
 $tabControl.Controls.Add($tabUsers)
 $tabControl.Controls.Add($tabAudit)
 
@@ -2149,7 +1711,6 @@ function Invoke-SecurityAudit {
         const backupDefaults = {
             "Datto": { enc: "AES-256 (Datto Default)", rest: "Yes", transit: "Yes (TLS/SSL)" },
             "Veeam": { enc: "AES-256 (Industry Standard)", rest: "Yes", transit: "Yes (TLS/SSL)" },
-            "Ninja": { enc: "AES-256 (Ninja Backup)", rest: "Yes", transit: "Yes (TLS/SSL)" },
             "Acronis": { enc: "AES-256 (Acronis Cyber)", rest: "Yes", transit: "Yes (TLS/SSL)" },
             "Macrium": { enc: "AES-256 (Optional)", rest: "Yes", transit: "Yes (TLS/SSL)" },
             "Carbonite": { enc: "AES-256/Blowfish", rest: "Yes", transit: "Yes (TLS/SSL)" },
@@ -2394,7 +1955,7 @@ function Invoke-SecurityAudit {
     # 1. Backups
     Log-Output "[-] Checking Backup History..."
     if ($form -and $form.Visible) { [System.Windows.Forms.Application]::DoEvents() }
-    $BackupKeywords = "*Veeam*","*Acronis*","*Macrium*","*Datto*","*Carbonite*","*Veritas*","*CrashPlan*","*Ninja*"
+    $BackupKeywords = "*Veeam*","*Acronis*","*Macrium*","*Datto*","*Carbonite*","*Veritas*","*CrashPlan*"
     $DetectedServices = Get-Service | Where-Object { $d = $_.DisplayName; ($BackupKeywords | Where-Object { $d -like $_ }) }
 
     # Build Backup Options Array
@@ -2403,7 +1964,7 @@ function Invoke-SecurityAudit {
         foreach ($svc in $DetectedServices) { $BackupOptions += "[DETECTED] $($svc.DisplayName)" }
         $BackupOptions += "----------------"
     }
-    $BackupOptions += @("Datto", "Veeam", "Ninja Backup", "Acronis", "Macrium", "Carbonite", "CrashPlan", "Windows Server Backup", "Other (Manual)")
+    $BackupOptions += @("Datto", "Veeam", "Acronis", "Macrium", "Carbonite", "CrashPlan", "Windows Server Backup", "Other (Manual)")
 
     $WinBackup = Get-WinEvent -LogName "Microsoft-Windows-Backup" -MaxEvents 1 -ErrorAction SilentlyContinue
 
@@ -2414,13 +1975,6 @@ function Invoke-SecurityAudit {
     if ($WinBackup) {
         if ($WinBackup.Id -eq 4) { $BackupSuccessSel = "Yes"; $BackupFailedSel = "No"; $LastBackupTime = $WinBackup.TimeCreated.ToString("yyyy-MM-dd HH:mm") }
         else { $BackupSuccessSel = "No"; $BackupFailedSel = "Yes"; $LastBackupTime = "Failed at " + $WinBackup.TimeCreated.ToString("yyyy-MM-dd HH:mm") }
-    }
-
-    # Ninja Backup Override
-    if ($global:NinjaDeviceData -and $global:NinjaDeviceData.lastBackupJobStatus) {
-        $BackupSuccessSel = if ($global:NinjaDeviceData.lastBackupJobStatus -eq 'SUCCESS') { "Yes" } else { "No" }
-        $LastBackupTime = "Check Ninja Dashboard"
-        if ($global:NinjaDeviceData.lastBackupJobStatus -ne 'SUCCESS') { $BackupFailedSel = "Yes" }
     }
 
     # 2. Security & Patching
@@ -2442,18 +1996,6 @@ function Invoke-SecurityAudit {
             }
         }
     } catch { $MissingUpdatesHTML = "Error querying Windows Update." }
-
-    # Ninja Patch Override
-    if ($global:NinjaDeviceData -and $global:NinjaDeviceData.osPatchStatus) {
-        $pStatus = $global:NinjaDeviceData.osPatchStatus
-        if ($pStatus.failed -gt 0 -or $pStatus.pending -gt 0) {
-             # If we have valid Ninja data, we can overwrite a local error message
-             if ($MissingUpdatesHTML -like "Error*") { $MissingUpdatesHTML = "" }
-             
-             $MissingUpdatesCount = $pStatus.failed + $pStatus.pending
-             $MissingUpdatesHTML += "<li>Ninja Reports: $($pStatus.failed) Failed, $($pStatus.pending) Pending</li>"
-        }
-    }
 
     # Smart Update Logic (Last Hotfix + Pending Reboot)
     $LastHotFix = Get-HotFix | Sort-Object InstalledOn -Descending | Select-Object -First 1
@@ -2478,13 +2020,6 @@ function Invoke-SecurityAudit {
         if (-not $AV) {
             $AV = [PSCustomObject]@{ displayName = "Windows Defender" }
         }
-    }
-
-    # Ninja AV Override
-    if ($global:NinjaDeviceData -and $global:NinjaDeviceData.antivirusStatus) {
-        $avStat = $global:NinjaDeviceData.antivirusStatus
-        if ($avStat.protectionStatus -eq 'ENABLED') { $RTPEnabled = "Yes" }
-        if ($avStat.productName) { $AV = [PSCustomObject]@{ displayName = $avStat.productName } }
     }
 
     # Smart User Logic
@@ -2670,122 +2205,8 @@ function Invoke-SecurityAudit {
         }
     } catch {}
 
-    # Ninja Extra Data Integration
     $ClientNameVal = ""
     $LocationDefault = ""
-    $NinjaOrgName = ""
-    $NinjaLocationName = ""
-    $NinjaRAIDStatus = ""  # Will be populated from /v2/device/{id}/disks
-    $NinjaDiskInfo = ""    # Disk health summary
-    $NinjaLastReboot = ""
-    $NinjaLastLoggedUser = ""
-    $NinjaCustomFields = @{}
-    
-    Log-Output "Initializing Ninja integration variables..."
-    
-    if ($global:NinjaDeviceData) {
-        Log-Output "[-] Fetching extended NinjaOne device data..."
-        
-        # Basic identifiers
-        if ($global:NinjaDeviceData.organizationId) { $ClientNameVal = "Ninja Org ID: $($global:NinjaDeviceData.organizationId)" }
-        if ($global:NinjaDeviceData.locationId) { $LocationDefault += " (Ninja Loc: $($global:NinjaDeviceData.locationId))" }
-        if ($global:NinjaDeviceData.publicIP) { $OpenPortsStr += " [Public IP: $($global:NinjaDeviceData.publicIP)]" }
-        
-        # Last Reboot
-        if ($global:NinjaDeviceData.lastReboot) { 
-            $NinjaLastReboot = $global:NinjaDeviceData.lastReboot 
-            Log-Output "Ninja Last Reboot: $NinjaLastReboot"
-        }
-        
-        # Last Logged In User
-        if ($global:NinjaDeviceData.lastLoggedInUser) { 
-            $NinjaLastLoggedUser = $global:NinjaDeviceData.lastLoggedInUser 
-            Log-Output "Ninja Last User: $NinjaLastLoggedUser"
-        }
-        
-        # Fetch Detailed Info (Software/Disks/RAID/Custom Fields)
-        try {
-            $headers = @{ Authorization = "Bearer $global:NinjaToken" }
-            $devId = $global:NinjaDeviceData.id
-            Log-Output "Device ID for extended queries: $devId"
-            
-            # Organization Name
-            try {
-                if ($global:NinjaDeviceData.organizationId) {
-                    $orgUrl = "https://$($global:NinjaInstance)/v2/organizations/$($global:NinjaDeviceData.organizationId)"
-                    $org = Invoke-RestMethod -Uri $orgUrl -Headers $headers -ErrorAction Stop
-                    $NinjaOrgName = $org.name
-                    $ClientNameVal = $NinjaOrgName
-                    Log-Output "Organization Name: $NinjaOrgName"
-                }
-            } catch { Log-Output "Could not fetch organization name: $_" }
-            
-            # Location Name
-            try {
-                if ($global:NinjaDeviceData.locationId) {
-                    $locUrl = "https://$($global:NinjaInstance)/v2/organization/$($global:NinjaDeviceData.organizationId)/locations/$($global:NinjaDeviceData.locationId)"
-                    $loc = Invoke-RestMethod -Uri $locUrl -Headers $headers -ErrorAction Stop
-                    $NinjaLocationName = $loc.name
-                    $LocationDefault = $NinjaLocationName
-                    Log-Output "Location Name: $NinjaLocationName"
-                }
-            } catch { Log-Output "Could not fetch location name: $_" }
-            
-            # Software Inventory (ChiroTouch)
-            try {
-                $nSoft = Invoke-RestMethod -Uri "https://$($global:NinjaInstance)/v2/device/$devId/software" -Headers $headers -ErrorAction Stop
-                if ($nSoft -and ($nSoft | Where-Object { $_.name -match "ChiroTouch" })) { 
-                    $ChiroInstalled = $true
-                    if ($ChiroEncryptedSel -eq "N/A") { $ChiroEncryptedSel = if ($C_Encrypted) { "Yes" } else { "No" } }
-                    Log-Output "ChiroTouch detected via Ninja"
-                }
-            } catch { Log-Output "Could not fetch software inventory: $_" }
-            
-            # Disk/RAID Status
-            try {
-                $nDisks = Invoke-RestMethod -Uri "https://$($global:NinjaInstance)/v2/device/$devId/disks" -Headers $headers -ErrorAction Stop
-                if ($nDisks) {
-                    Log-Output "Disk data retrieved from Ninja: $($nDisks.Count) disks"
-                    
-                    # Look for RAID information
-                    $raidDisks = $nDisks | Where-Object { $_.raidType -or $_.volumeType -match "RAID" }
-                    if ($raidDisks) {
-                        $NinjaRAIDStatus = ($raidDisks | ForEach-Object { 
-                            "$($_.name): $($_.raidType) - $($_.health)" 
-                        }) -join "; "
-                        Log-Output "RAID Status from Ninja: $NinjaRAIDStatus"
-                    }
-                    
-                    # Disk health summary
-                    $unhealthyDisks = $nDisks | Where-Object { $_.health -ne "Healthy" -and $_.health -ne $null }
-                    if ($unhealthyDisks) {
-                        $NinjaDiskInfo = "WARNING: " + ($unhealthyDisks | ForEach-Object { 
-                            "$($_.name) ($($_.health))" 
-                        }) -join ", "
-                    } else {
-                        $NinjaDiskInfo = "All disks healthy"
-                    }
-                    Log-Output "Disk Health: $NinjaDiskInfo"
-                }
-            } catch { Log-Output "Could not fetch disk data: $_" }
-            
-            # Custom Fields (for client-specific data)
-            try {
-                $nCustom = Invoke-RestMethod -Uri "https://$($global:NinjaInstance)/v2/device/$devId/custom-fields" -Headers $headers -ErrorAction Stop
-                if ($nCustom) {
-                    foreach ($prop in $nCustom.PSObject.Properties) {
-                        $NinjaCustomFields[$prop.Name] = $prop.Value
-                    }
-                    Log-Output "Custom Fields: $($NinjaCustomFields.Keys -join ', ')"
-                }
-            } catch { Log-Output "Could not fetch custom fields: $_" }
-            
-        } catch { 
-            Log-Output "Ninja Detail Fetch Error: $_" 
-        }
-    } else {
-        Log-Output "No NinjaOne device data available for extended queries."
-    }
 
     # --- HTML GENERATION ---
 
@@ -2812,8 +2233,6 @@ function Invoke-SecurityAudit {
         <tr><th>OS Version</th><td>$($OSInfo.Caption) (Build $($OSInfo.BuildNumber)) $EOSWarning</td></tr>
         <tr><th>Role(s)</th><td>$(Get-HtmlInput "e.g., DC, Database" -Value $DetectedRoles)</td></tr>
         <tr><th>Who has administrative access?</th><td><ul>$($AdminGroup.Name | ForEach-Object { "<li>$_</li>" })</ul></td></tr>
-        $(if($NinjaLastLoggedUser){"<tr><th>Last Logged User (Ninja)</th><td>$NinjaLastLoggedUser</td></tr>"})
-        $(if($NinjaLastReboot){"<tr><th>Last Reboot (Ninja)</th><td>$NinjaLastReboot</td></tr>"})
     </table>
 
     <h2>1. Backup & Data Retention (HIPAA §164.308(a)(7))</h2>
@@ -2962,8 +2381,8 @@ function Invoke-SecurityAudit {
     </table>
     <h3>B. Redundancy</h3>
     <table>
-        <tr><th>RAID status</th><td>$(Get-HtmlInput "e.g., RAID 5 Healthy" -Value $(if($NinjaRAIDStatus){$NinjaRAIDStatus}else{""}))</td></tr>
-        <tr><th>Storage warnings?</th><td>$(Get-HtmlInput "Describe..." -Value $(if($StorageWarning -or $NinjaDiskInfo){"$StorageWarning $(if($NinjaDiskInfo){" | Ninja: $NinjaDiskInfo"})"}else{""}))</td></tr>
+        <tr><th>RAID status</th><td>$(Get-HtmlInput "e.g., RAID 5 Healthy")</td></tr>
+        <tr><th>Storage warnings?</th><td>$(Get-HtmlInput "Describe..." -Value $(if($StorageWarning){$StorageWarning}else{""}))</td></tr>
         <tr><th>Drive SMART status (any failing drives?)</th><td>$(Get-HtmlInput "Describe..." -Value $DiskHealthStr) (Check App Logs above)</td></tr>
     </table>
 

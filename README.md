@@ -1,6 +1,6 @@
 # WinFix Tool & Security Audit
 
-Windows system maintenance and security audit tool with NinjaOne RMM integration.
+Windows system maintenance and security audit tool.
 
 ## 🚀 Quick Start - One Line Install
 
@@ -41,9 +41,6 @@ irm https://raw.githubusercontent.com/jeremydbean/winfix/main/install.ps1 | iex
     *   Test Internet Connection (Ping).
 *   **Security Audit**:
     *   Generates the interactive HTML report for the Monthly Security Audit.
-*   **Integrations**:
-    *   **NinjaOne API**: Connect to your NinjaOne instance to automatically pull device data (Patch status, AV status, Backup status) into the Security Audit.
-    *   **Smart Local Detection**: Automatically detects the local NinjaRMM agent ID from the registry for accurate device matching.
 
 ## Troubleshooting
 

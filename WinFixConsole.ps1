@@ -117,244 +117,7 @@ function Start-TaskWindow {
     Start-Process -FilePath 'powershell.exe' -ArgumentList $full | Out-Null
 }
 
-# --- NinjaOne helpers (ported) ---
-$global:NinjaToken = $null
-$global:NinjaInstance = $null
-$global:NinjaDeviceData = $null
 
-function Get-NinjaSettings {
-    $configDir = Join-Path $env:APPDATA 'WinFixTool'
-    $configPath = Join-Path $configDir 'ninja_config.xml'
-    if (Test-Path $configPath) {
-        try { return Import-Clixml $configPath } catch { Write-Log 'Could not load saved NinjaOne settings.' }
-    }
-    return $null
-}
-
-function Save-NinjaSettings {
-    param([string]$Url, [string]$Id, [string]$Secret)
-    $configDir = Join-Path $env:APPDATA 'WinFixTool'
-    if (-not (Test-Path $configDir)) { New-Item -ItemType Directory -Path $configDir -Force | Out-Null }
-    $configPath = Join-Path $configDir 'ninja_config.xml'
-    [PSCustomObject]@{ Url = $Url; ClientId = $Id; ClientSecret = $Secret } | Export-Clixml -Path $configPath
-    Write-Log 'NinjaOne settings saved.'
-}
-
-function Decrypt-String {
-    param([string]$EncryptedString, [string]$Password)
-    try {
-        $bytes = [Convert]::FromBase64String($EncryptedString)
-        if ($bytes.Length -lt 32) { throw 'Invalid data' }
-        $salt = $bytes[0..15]; $iv = $bytes[16..31]; $cipherText = $bytes[32..($bytes.Length - 1)]
-        $derive = New-Object System.Security.Cryptography.Rfc2898DeriveBytes($Password, $salt, 100000, [System.Security.Cryptography.HashAlgorithmName]::SHA256)
-        $key = $derive.GetBytes(32)
-        $aes = [System.Security.Cryptography.Aes]::Create()
-        $aes.Mode = [System.Security.Cryptography.CipherMode]::CBC
-        $aes.Padding = [System.Security.Cryptography.PaddingMode]::PKCS7
-        $aes.Key = $key; $aes.IV = $iv
-        $decryptor = $aes.CreateDecryptor()
-        $ms = New-Object System.IO.MemoryStream(,$cipherText)
-        $cs = New-Object System.Security.Cryptography.CryptoStream($ms, $decryptor, [System.Security.Cryptography.CryptoStreamMode]::Read)
-        $sr = New-Object System.IO.StreamReader($cs)
-        return $sr.ReadToEnd()
-    } catch {
-        Write-Log "Decryption error: $_"
-        return $null
-    }
-}
-
-function Get-LocalNinjaNodeId {
-    $paths = @(
-        'HKLM:\SOFTWARE\NinjaRMM\Agent',
-        'HKLM:\SOFTWARE\WOW6432Node\NinjaRMM\Agent',
-        'HKLM:\SOFTWARE\NinjaMSP\Agent',
-        'HKLM:\SOFTWARE\WOW6432Node\NinjaMSP\Agent'
-    )
-
-    foreach ($path in $paths) {
-        if (Test-Path $path) {
-            $props = Get-ItemProperty -Path $path -ErrorAction SilentlyContinue
-            if ($props.NodeID) { return $props.NodeID }
-            if ($props.DeviceID) { return $props.DeviceID }
-            if ($props.id) { return $props.id }
-            if ($props.agent_id) { return $props.agent_id }
-        }
-    }
-    return $null
-}
-
-function Connect-NinjaOne {
-    param(
-        [string]$ClientId,
-        [string]$ClientSecret,
-        [Parameter(Mandatory)] [string]$InstanceUrl
-    )
-
-    Write-Log '=== Connect-NinjaOne ==='
-
-    Enable-Tls12
-
-    $InstanceUrl = $InstanceUrl -replace '^https?://', '' -replace '/$', ''
-    if ($InstanceUrl -match '/') { $InstanceUrl = ($InstanceUrl -split '/')[0] }
-
-    $EncId = "lBPqaFXSjLrCJAKy9V7db00ImBVi7TmzocC4R1xmdaquRX+F0GzTWa+acd1lnhLb2U/h6ORrbF0vIKW55pihnQ=="
-    $EncSec = "EiRj/vGljBBXUDGrBkAEoXYldnzwzmYL40JvGK8ahShnk8nzBKtbuRujuandJ41QEgPc04ttpCLkGfAsW6vTrkd85nfgGG3g0/gRrNsLoH8="
-    $Pass = 'smoke007'
-
-    $usedEmbeddedCreds = $false
-    if ([string]::IsNullOrWhiteSpace($ClientId)) { $usedEmbeddedCreds = $true; Write-Log 'Using embedded Client ID...'; $ClientId = Decrypt-String -EncryptedString $EncId -Password $Pass }
-    if ([string]::IsNullOrWhiteSpace($ClientSecret)) { $usedEmbeddedCreds = $true; Write-Log 'Using embedded Client Secret...'; $ClientSecret = Decrypt-String -EncryptedString $EncSec -Password $Pass }
-
-    $authHost = $InstanceUrl
-    $apiHost = $InstanceUrl
-    if ($apiHost -match '^app\.') { $apiHost = $apiHost -replace '^app\.', 'api.' }
-    elseif ($apiHost -match '^eu\.') { $apiHost = $apiHost -replace '^eu\.', 'eu-api.' }
-    elseif ($apiHost -match '^oc\.') { $apiHost = $apiHost -replace '^oc\.', 'oc-api.' }
-    elseif ($apiHost -match '^ca\.') { $apiHost = $apiHost -replace '^ca\.', 'ca-api.' }
-
-    $body = @{ grant_type = 'client_credentials'; client_id = $ClientId; client_secret = $ClientSecret; scope = 'monitoring management' }
-    $hostsToTry = @($apiHost)
-    if ($authHost -and $authHost -ne $apiHost) { $hostsToTry += $authHost }
-
-    $resp = $null
-    $tokenHost = $null
-    $lastErr = $null
-
-    foreach ($tokenHostCandidate in $hostsToTry) {
-        $tokenUrl = "https://$tokenHostCandidate/ws/oauth/token"
-        Write-Log "OAuth Token URL: $tokenUrl"
-        try {
-            $resp = Invoke-RestMethod -Uri $tokenUrl -Method Post -Body $body -ErrorAction Stop
-            $tokenHost = $tokenHostCandidate
-            break
-        } catch {
-            $lastErr = $_
-            Write-Log "OAuth FAILED for host '$tokenHostCandidate': $($_.Exception.Message)"
-            if ($_.Exception -and $_.Exception.Response -and $_.Exception.Response.StatusCode) {
-                Write-Log "HTTP Status: $($_.Exception.Response.StatusCode.value__)"
-            }
-            if ($_.ErrorDetails -and $_.ErrorDetails.Message) {
-                Write-Log "Details: $($_.ErrorDetails.Message)"
-            }
-        }
-    }
-
-    if (-not $resp -or -not $resp.access_token) {
-        $detailsText = $null
-        if ($lastErr -and $lastErr.ErrorDetails -and $lastErr.ErrorDetails.Message) {
-            $detailsText = [string]$lastErr.ErrorDetails.Message
-        }
-
-        if ($detailsText -and ($detailsText -match 'Client app not exist')) {
-            $incidentId = $null
-            try {
-                $obj = $detailsText | ConvertFrom-Json -ErrorAction Stop
-                if ($obj -and $obj.incidentId) { $incidentId = [string]$obj.incidentId }
-            } catch { }
-
-            $hint = if ($usedEmbeddedCreds) {
-                'Embedded NinjaOne credentials are not valid for this tenant. Provide a tenant-issued Client ID/Secret.'
-            } else {
-                'Verify the Client ID/Secret are correct for this tenant.'
-            }
-
-            $regionHint = "Verify the instance URL is correct (app/eu/oc/ca) and create an API Client in NinjaOne if needed."
-            $idHint = if ($incidentId) { " IncidentId: $incidentId" } else { '' }
-            throw "NinjaOne OAuth failed: Client app not exist. $hint $regionHint$idHint"
-        }
-
-        if ($lastErr) { throw $lastErr }
-        throw 'OAuth failed (no response token).'
-    }
-
-    $global:NinjaToken = $resp.access_token
-
-    # Prefer the derived API host for /v2 calls when available; otherwise fall back to the host that issued the token.
-    $bestApiHost = $tokenHost
-    if ($apiHost -and $apiHost -ne $tokenHost) {
-        try {
-            $headers = @{ Authorization = "Bearer $($global:NinjaToken)" }
-            $probeUrl = "https://$apiHost/v2/devices?pageSize=1&after=0"
-            $null = Invoke-RestMethod -Uri $probeUrl -Headers $headers -ErrorAction Stop
-            $bestApiHost = $apiHost
-            Write-Log "API host probe succeeded; using '$apiHost' for /v2."
-        } catch {
-            Write-Log "API host probe failed for '$apiHost'; using '$tokenHost' for /v2."
-        }
-    }
-
-    $global:NinjaInstance = $bestApiHost
-    Write-Log "Connected to NinjaOne. Host: $bestApiHost Token length: $($global:NinjaToken.Length)"
-    if ($usedEmbeddedCreds) {
-        Write-Log 'Note: If OAuth fails with "Client app not exist", provide your tenant-issued Client ID/Secret and correct instance URL (app/eu/oc/ca).'
-    }
-    Get-NinjaDeviceData
-}
-
-function Get-NinjaDeviceData {
-    Write-Log '=== Get-NinjaDeviceData ==='
-    if (-not $global:NinjaToken) { Write-Log 'Not connected (no token).'; return }
-
-    $headers = @{ Authorization = "Bearer $global:NinjaToken" }
-
-    $localId = Get-LocalNinjaNodeId
-    if ($localId) {
-        try {
-            $url = "https://$($global:NinjaInstance)/v2/devices/$localId"
-            $device = Invoke-RestMethod -Uri $url -Headers $headers -ErrorAction Stop
-            if ($device) {
-                $global:NinjaDeviceData = $device
-                Write-Log "Device found via Node ID: $($device.systemName)"
-                return
-            }
-        } catch {
-            Write-Log "Could not fetch by Node ID ($localId): $($_.Exception.Message)"
-        }
-    }
-
-    $serial = ''
-    try { $serial = (Get-CimInstance Win32_Bios -ErrorAction Stop).SerialNumber } catch { $serial = '' }
-    $hostname = $env:COMPUTERNAME
-
-    $allDevices = @()
-    $pageSize = 1000
-    $after = 0
-    $pageNum = 0
-    $maxPages = 200
-    $lastAfter = $null
-
-    do {
-        $pageNum++
-        if ($pageNum -gt $maxPages) { Write-Log "Reached maxPages=$maxPages; stopping."; break }
-
-        $url = "https://$($global:NinjaInstance)/v2/devices?pageSize=$pageSize&after=$after"
-        $page = Invoke-RestMethod -Uri $url -Headers $headers -ErrorAction Stop
-
-        if ($page -and $page.Count -gt 0) {
-            $allDevices += $page
-            $after += $page.Count
-            if ($null -ne $lastAfter -and $after -eq $lastAfter) { Write-Log "Pagination not advancing (after=$after); stopping."; break }
-            $lastAfter = $after
-        } else {
-            break
-        }
-    } while ($page.Count -eq $pageSize)
-
-    if (-not $allDevices -or $allDevices.Count -eq 0) { Write-Log 'No devices returned.'; return }
-
-    if (-not [string]::IsNullOrWhiteSpace($serial)) {
-        $m = $allDevices | Where-Object { $_.serialNumber -eq $serial } | Select-Object -First 1
-        if ($m) { $global:NinjaDeviceData = $m; Write-Log "Matched by Serial: $($m.systemName)"; return }
-    }
-
-    $m = $allDevices | Where-Object { $_.systemName -eq $hostname } | Select-Object -First 1
-    if ($m) { $global:NinjaDeviceData = $m; Write-Log "Matched by Hostname: $($m.systemName)"; return }
-
-    $m = $allDevices | Where-Object { $_.nodeName -like "*$hostname*" } | Select-Object -First 1
-    if ($m) { $global:NinjaDeviceData = $m; Write-Log "Matched by NodeName: $($m.systemName)"; return }
-
-    Write-Log "Device not found. Serial='$serial' Hostname='$hostname'"
-}
 
 # --- Core tasks (same behavior as GUI version) ---
 function Invoke-FreeDisk {
@@ -522,10 +285,6 @@ function Invoke-RefreshDashboard {
     $uptime = (Get-Date) - $os.LastBootUpTime
     Write-Host "Uptime:          $($uptime.Days)d $($uptime.Hours)h $($uptime.Minutes)m"
 
-    if ($global:NinjaDeviceData) {
-        Write-Host "Ninja Device ID: $($global:NinjaDeviceData.id)"
-        Write-Host "Last Contact:    $($global:NinjaDeviceData.lastContact)"
-    }
 }
 
 # --- Users & Shares ---
@@ -964,7 +723,6 @@ function Invoke-SecurityAudit {
         const backupDefaults = {
             "Datto": { enc: "AES-256 (Datto Default)", rest: "Yes", transit: "Yes (TLS/SSL)" },
             "Veeam": { enc: "AES-256 (Industry Standard)", rest: "Yes", transit: "Yes (TLS/SSL)" },
-            "Ninja": { enc: "AES-256 (Ninja Backup)", rest: "Yes", transit: "Yes (TLS/SSL)" },
             "Acronis": { enc: "AES-256 (Acronis Cyber)", rest: "Yes", transit: "Yes (TLS/SSL)" },
             "Macrium": { enc: "AES-256 (Optional)", rest: "Yes", transit: "Yes (TLS/SSL)" },
             "Carbonite": { enc: "AES-256/Blowfish", rest: "Yes", transit: "Yes (TLS/SSL)" },
@@ -1089,7 +847,7 @@ function Invoke-SecurityAudit {
     }
 
     # Backups
-    $backupKeywords = '*Veeam*','*Acronis*','*Macrium*','*Datto*','*Carbonite*','*Veritas*','*CrashPlan*','*Ninja*'
+    $backupKeywords = '*Veeam*','*Acronis*','*Macrium*','*Datto*','*Carbonite*','*Veritas*','*CrashPlan*'
     $detectedServices = Get-Service | Where-Object { $d = $_.DisplayName; ($backupKeywords | Where-Object { $d -like $_ }) }
 
     $backupOptions = @('Select...')
@@ -1097,7 +855,7 @@ function Invoke-SecurityAudit {
         foreach ($svc in $detectedServices) { $backupOptions += "[DETECTED] $($svc.DisplayName)" }
         $backupOptions += '----------------'
     }
-    $backupOptions += @('Datto', 'Veeam', 'Ninja Backup', 'Acronis', 'Macrium', 'Carbonite', 'CrashPlan', 'Windows Server Backup', 'Other (Manual)')
+    $backupOptions += @('Datto', 'Veeam', 'Acronis', 'Macrium', 'Carbonite', 'CrashPlan', 'Windows Server Backup', 'Other (Manual)')
 
     $winBackup = Get-WinEvent -LogName 'Microsoft-Windows-Backup' -MaxEvents 1 -ErrorAction SilentlyContinue
     $backupSuccessSel = 'Select...'
@@ -1106,13 +864,6 @@ function Invoke-SecurityAudit {
     if ($winBackup) {
         if ($winBackup.Id -eq 4) { $backupSuccessSel = 'Yes'; $backupFailedSel = 'No'; $lastBackupTime = $winBackup.TimeCreated.ToString('yyyy-MM-dd HH:mm') }
         else { $backupSuccessSel = 'No'; $backupFailedSel = 'Yes'; $lastBackupTime = 'Failed at ' + $winBackup.TimeCreated.ToString('yyyy-MM-dd HH:mm') }
-    }
-
-    # Ninja override
-    if ($global:NinjaDeviceData -and $global:NinjaDeviceData.lastBackupJobStatus) {
-        $backupSuccessSel = if ($global:NinjaDeviceData.lastBackupJobStatus -eq 'SUCCESS') { 'Yes' } else { 'No' }
-        $lastBackupTime = 'Check Ninja Dashboard'
-        if ($global:NinjaDeviceData.lastBackupJobStatus -ne 'SUCCESS') { $backupFailedSel = 'Yes' }
     }
 
     # Updates
@@ -1130,15 +881,6 @@ function Invoke-SecurityAudit {
             }
         }
     } catch { $missingUpdatesHtml = 'Error querying Windows Update.' }
-
-    if ($global:NinjaDeviceData -and $global:NinjaDeviceData.osPatchStatus) {
-        $pStatus = $global:NinjaDeviceData.osPatchStatus
-        if ($pStatus.failed -gt 0 -or $pStatus.pending -gt 0) {
-            if ($missingUpdatesHtml -like 'Error*') { $missingUpdatesHtml = '' }
-            $missingUpdatesCount = $pStatus.failed + $pStatus.pending
-            $missingUpdatesHtml += "<li>Ninja Reports: $($pStatus.failed) Failed, $($pStatus.pending) Pending</li>"
-        }
-    }
 
     $lastHotFix = Get-HotFix | Sort-Object InstalledOn -Descending | Select-Object -First 1
     $lastUpdateDate = if ($lastHotFix) { $lastHotFix.InstalledOn.ToString('yyyy-MM-dd') } else { '' }
@@ -1164,12 +906,6 @@ function Invoke-SecurityAudit {
         $rtpEnabled = if ($defender.RealTimeProtectionEnabled) { 'Yes' } else { 'No' }
         $lastScanDate = if ($defender.QuickScanEndTime) { $defender.QuickScanEndTime.ToString('yyyy-MM-dd') } else { 'Never' }
         if (-not $av) { $av = [PSCustomObject]@{ displayName = 'Windows Defender' } }
-    }
-
-    if ($global:NinjaDeviceData -and $global:NinjaDeviceData.antivirusStatus) {
-        $avStat = $global:NinjaDeviceData.antivirusStatus
-        if ($avStat.protectionStatus -eq 'ENABLED') { $rtpEnabled = 'Yes' }
-        if ($avStat.productName) { $av = [PSCustomObject]@{ displayName = $avStat.productName } }
     }
 
     # Users
@@ -1286,32 +1022,7 @@ function Invoke-SecurityAudit {
 
     $clientNameVal = ''
     $locationDefault = ''
-    $ninjaRaidStatus = ''
-    $ninjaDiskInfo = ''
-    $ninjaLastReboot = ''
-    $ninjaLastLoggedUser = ''
 
-    if ($global:NinjaDeviceData) {
-        if ($global:NinjaDeviceData.organizationId) { $clientNameVal = "Ninja Org ID: $($global:NinjaDeviceData.organizationId)" }
-        if ($global:NinjaDeviceData.locationId) { $locationDefault = "(Ninja Loc: $($global:NinjaDeviceData.locationId))" }
-        if ($global:NinjaDeviceData.lastReboot) { $ninjaLastReboot = $global:NinjaDeviceData.lastReboot }
-        if ($global:NinjaDeviceData.lastLoggedInUser) { $ninjaLastLoggedUser = $global:NinjaDeviceData.lastLoggedInUser }
-
-        try {
-            $headers = @{ Authorization = "Bearer $global:NinjaToken" }
-            $devId = $global:NinjaDeviceData.id
-            $nDisks = Invoke-RestMethod -Uri "https://$($global:NinjaInstance)/v2/device/$devId/disks" -Headers $headers -ErrorAction Stop
-            if ($nDisks) {
-                $raidDisks = $nDisks | Where-Object { $_.raidType -or ($_.volumeType -match 'RAID') }
-                if ($raidDisks) {
-                    $ninjaRaidStatus = ($raidDisks | ForEach-Object { "$($_.name): $($_.raidType) - $($_.health)" }) -join '; '
-                }
-                $unhealthy = $nDisks | Where-Object { $_.health -ne 'Healthy' -and $_.health -ne $null }
-                if ($unhealthy) { $ninjaDiskInfo = 'WARNING: ' + (($unhealthy | ForEach-Object { "$($_.name) ($($_.health))" }) -join ', ') }
-                else { $ninjaDiskInfo = 'All disks healthy' }
-            }
-        } catch { }
-    }
 
     $htmlBody = @"
     <div class='header-block'>
@@ -1336,8 +1047,6 @@ function Invoke-SecurityAudit {
         <tr><th>OS Version</th><td>$($os.Caption) (Build $($os.BuildNumber)) $eosWarning</td></tr>
         <tr><th>Role(s)</th><td>$(Get-HtmlInput "e.g., DC, Database" -Value $detectedRoles)</td></tr>
         <tr><th>Who has administrative access?</th><td><ul>$($adminGroup.Name | ForEach-Object { "<li>$_</li>" })</ul></td></tr>
-        $(if($ninjaLastLoggedUser){"<tr><th>Last Logged User (Ninja)</th><td>$ninjaLastLoggedUser</td></tr>"})
-        $(if($ninjaLastReboot){"<tr><th>Last Reboot (Ninja)</th><td>$ninjaLastReboot</td></tr>"})
     </table>
 
     <h2>1. Backup & Data Retention (HIPAA §164.308(a)(7))</h2>
@@ -1427,8 +1136,8 @@ function Invoke-SecurityAudit {
 
     <h2>6. Contingency & Failover</h2>
     <table>
-        <tr><th>RAID status</th><td>$(Get-HtmlInput "e.g., RAID 5 Healthy" -Value $(if($ninjaRaidStatus){$ninjaRaidStatus}else{''}))</td></tr>
-        <tr><th>Storage warnings?</th><td>$(Get-HtmlInput "Describe..." -Value $(if($storageWarning -or $ninjaDiskInfo){"$storageWarning $(if($ninjaDiskInfo){" | Ninja: $ninjaDiskInfo"})"}else{''}))</td></tr>
+        <tr><th>RAID status</th><td>$(Get-HtmlInput "e.g., RAID 5 Healthy" -Value '')</td></tr>
+        <tr><th>Storage warnings?</th><td>$(Get-HtmlInput "Describe..." -Value $storageWarning)</td></tr>
         <tr><th>Drive SMART status</th><td>$(Get-HtmlInput "Describe..." -Value $diskHealthStr)</td></tr>
     </table>
 
@@ -1439,24 +1148,6 @@ function Invoke-SecurityAudit {
     $htmlPage | Out-File -FilePath $reportPath -Encoding UTF8 -ErrorAction Stop
     Write-Log "Report generated: $reportPath"
     Invoke-Item $reportPath
-}
-
-function Invoke-NinjaConnectInteractive {
-    $saved = Get-NinjaSettings
-    $defaultUrl = if ($saved -and $saved.Url) { $saved.Url } else { 'app.ninjarmm.com' }
-    $url = Read-Host "NinjaOne Instance URL (default: $defaultUrl)"
-    if ([string]::IsNullOrWhiteSpace($url)) { $url = $defaultUrl }
-
-    $cid = Read-Host 'Client ID (blank = use embedded)'
-    if ([string]::IsNullOrWhiteSpace($cid) -and $saved -and $saved.ClientId) { $cid = $saved.ClientId }
-
-    $sec = Read-Host 'Client Secret (blank = use embedded)'
-    if ([string]::IsNullOrWhiteSpace($sec) -and $saved -and $saved.ClientSecret) { $sec = $saved.ClientSecret }
-
-    $save = Read-Host 'Save these settings? (y/N)'
-    if ($save -match '^(y|yes)$') { Save-NinjaSettings -Url $url -Id $cid -Secret $sec }
-
-    Connect-NinjaOne -ClientId $cid -ClientSecret $sec -InstanceUrl $url
 }
 
 # --- Task dispatcher ---
@@ -1488,8 +1179,6 @@ function Invoke-Task {
             'EnableNetworkSharing' { Invoke-EnableNetworkSharing }
 
             'ScanPrinters9100' { Invoke-ScanPrintersPort9100 }
-
-            'NinjaConnect' { Invoke-NinjaConnectInteractive }
 
             'ListUsers' { Invoke-ListLocalUsers }
             'CreateUser' { Invoke-CreateLocalUser -UserName $Args[0] -Password $Args[1] }
@@ -1539,9 +1228,8 @@ function Show-MainMenu {
     Write-Host '2) Maintenance'
     Write-Host '3) Network'
     Write-Host '4) Users & Shares'
-    Write-Host '5) Integrations (NinjaOne)'
-    Write-Host '6) Security Audit'
-    Write-Host '7) Diagnostics / Triage'
+    Write-Host '5) Security Audit'
+    Write-Host '6) Diagnostics / Triage'
     Write-Host ''
     Write-Host 'L) Open log file'
     Write-Host 'T) Tail log (live)'
@@ -1721,34 +1409,6 @@ function Menu-UsersShares {
     }
 }
 
-function Menu-Integrations {
-    while ($true) {
-        Show-Header
-        Write-Host 'Integrations'
-        Write-Host '1) Connect to NinjaOne'
-        Write-Host '2) Refresh Ninja device data'
-        Write-Host ''
-        Write-Host 'B) Back'
-        Write-Host 'L) Open log file'
-
-        $c = Read-Choice
-        switch ($c.ToUpperInvariant()) {
-            '1' { Start-TaskWindow -Name 'NinjaConnect' }
-            '2' {
-                if (-not $global:NinjaToken) {
-                    Write-Log 'Not connected to NinjaOne. Use option 1 first.'
-                    Pause-Window
-                } else {
-                    Start-TaskWindow -Name 'Dashboard'
-                }
-            }
-            'B' { return }
-            'L' { Open-LogFile }
-            default { }
-        }
-    }
-}
-
 # --- Entry ---
 Write-Log '=== WinFix Console Started ==='
 Write-Log "Computer: $env:COMPUTERNAME"
@@ -1776,9 +1436,8 @@ while ($true) {
         '2' { Menu-Maintenance }
         '3' { Menu-Network }
         '4' { Menu-UsersShares }
-        '5' { Menu-Integrations }
-        '6' { Start-TaskWindow -Name 'SecurityAudit' }
-        '7' { Menu-Diagnostics }
+        '5' { Start-TaskWindow -Name 'SecurityAudit' }
+        '6' { Menu-Diagnostics }
         'L' { Open-LogFile }
         'T' { Start-TaskWindow -Name 'TailLog' }
         'E' { Start-TaskWindow -Name 'ExportBundle' }
