@@ -48,6 +48,21 @@ if (-not $script:Theme) {
     }
 }
 
+# Basic logger used throughout the UI.
+$script:LogPath = Join-Path $env:TEMP 'WinFix_Debug.log'
+try { $null = New-Item -Path $script:LogPath -ItemType File -Force -ErrorAction SilentlyContinue } catch { }
+function Log {
+    param([string]$Message)
+    $timestamp = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
+    $line = "[$timestamp] $Message"
+    try { Add-Content -Path $script:LogPath -Value $line -Encoding UTF8 -ErrorAction SilentlyContinue } catch { }
+    if ($script:txtLog) {
+        $script:txtLog.AppendText("[$((Get-Date).ToString('HH:mm:ss'))] $Message`r`n")
+        $script:txtLog.SelectionStart = $script:txtLog.Text.Length
+        $script:txtLog.ScrollToCaret()
+    }
+}
+
 trap {
     try {
         $logPath = Join-Path $env:TEMP 'WinFix_Debug.log'
