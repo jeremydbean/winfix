@@ -34,17 +34,21 @@ try {
 }
 
 # Provide a default theme palette so color assignments never receive $null.
-if (-not $script:Theme) {
-    $script:Theme = @{
-        Bg      = [System.Drawing.Color]::FromArgb(18, 18, 24)
-        Surface = [System.Drawing.Color]::FromArgb(26, 27, 38)
-        Card    = [System.Drawing.Color]::FromArgb(36, 37, 51)
-        Text    = [System.Drawing.Color]::FromArgb(237, 237, 245)
-        Dim     = [System.Drawing.Color]::FromArgb(148, 150, 172)
-        Accent  = [System.Drawing.Color]::FromArgb(99, 102, 241)
-        Green   = [System.Drawing.Color]::FromArgb(34, 197, 94)
-        Yellow  = [System.Drawing.Color]::FromArgb(250, 204, 21)
-        Red     = [System.Drawing.Color]::FromArgb(239, 68, 68)
+$defaultTheme = @{
+    Bg      = [System.Drawing.Color]::FromArgb(18, 18, 24)
+    Surface = [System.Drawing.Color]::FromArgb(26, 27, 38)
+    Card    = [System.Drawing.Color]::FromArgb(36, 37, 51)
+    Text    = [System.Drawing.Color]::FromArgb(237, 237, 245)
+    Dim     = [System.Drawing.Color]::FromArgb(148, 150, 172)
+    Accent  = [System.Drawing.Color]::FromArgb(99, 102, 241)
+    Green   = [System.Drawing.Color]::FromArgb(34, 197, 94)
+    Yellow  = [System.Drawing.Color]::FromArgb(250, 204, 21)
+    Red     = [System.Drawing.Color]::FromArgb(239, 68, 68)
+}
+if (-not $script:Theme) { $script:Theme = @{} }
+foreach ($key in $defaultTheme.Keys) {
+    if (-not $script:Theme.ContainsKey($key) -or -not $script:Theme[$key]) {
+        $script:Theme[$key] = $defaultTheme[$key]
     }
 }
 
