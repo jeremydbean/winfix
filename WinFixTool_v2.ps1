@@ -1229,47 +1229,47 @@ $btnAudit.Add_Click({
                 el.parentNode.replaceChild(span, el);
             });
             
-            // Create full HTML document with styles
-            var htmlContent = '<!DOCTYPE html><html><head><meta charset="UTF-8"><style>' +
-                document.querySelector('style').innerHTML +
-                '</style></head><body>' +
-                clone.innerHTML +
-                '</body></html>';
-            
-            // Get plain text version
+            // Create a temporary container with inline styles
             var temp = document.createElement('div');
-            temp.innerHTML = clone.innerHTML;
-            var plainText = temp.innerText;
+            temp.style.position = 'absolute';
+            temp.style.left = '-9999px';
             
-            // Copy both HTML and plain text to clipboard
-            if (navigator.clipboard && window.ClipboardItem) {
-                var blob = new Blob([htmlContent], { type: 'text/html' });
-                var textBlob = new Blob([plainText], { type: 'text/plain' });
-                var item = new ClipboardItem({ 'text/html': blob, 'text/plain': textBlob });
-                navigator.clipboard.write([item]).then(function() {
-                    alert('Report copied to clipboard with formatting!');
-                }).catch(function() {
-                    fallbackCopy(clone);
-                });
-            } else {
-                fallbackCopy(clone);
-            }
-        }
-        
-        function fallbackCopy(clone) {
-            var temp = document.createElement('div');
-            temp.style.transform = 'scale(0.75)';
-            temp.style.transformOrigin = 'top left';
-            temp.style.width = '133%';
-            temp.innerHTML = clone.innerHTML;
+            // Clone and inline all styles
+            var styleContent = document.querySelector('style').innerHTML;
+            var styledContent = '<div style="font-family: Arial, sans-serif; line-height: 1.6; color: #2c3e50;">' +
+                clone.innerHTML + '</div>';
+            
+            temp.innerHTML = styledContent;
             document.body.appendChild(temp);
+            
+            // Add inline styles to all elements based on CSS classes
+            temp.querySelectorAll('h1').forEach(el => el.style.cssText = 'color: #2c3e50; border-bottom: 3px solid #3498db; padding-bottom: 10px;');
+            temp.querySelectorAll('h2').forEach(el => el.style.cssText = 'color: #2980b9; margin-top: 30px; border-bottom: 2px solid #bdc3c7; padding-bottom: 5px;');
+            temp.querySelectorAll('h3').forEach(el => el.style.cssText = 'color: #34495e; margin-top: 20px;');
+            temp.querySelectorAll('table').forEach(el => el.style.cssText = 'width: 100%; border-collapse: collapse; margin-bottom: 20px; background: white;');
+            temp.querySelectorAll('th').forEach(el => el.style.cssText = 'background: #3498db; color: white; padding: 12px; text-align: left; font-weight: bold;');
+            temp.querySelectorAll('td').forEach(el => el.style.cssText = 'padding: 10px; border: 1px solid #ecf0f1;');
+            temp.querySelectorAll('.good').forEach(el => el.style.cssText = 'color: #27ae60; font-weight: bold;');
+            temp.querySelectorAll('.alert').forEach(el => el.style.cssText = 'color: #c0392b; font-weight: bold;');
+            temp.querySelectorAll('.warn').forEach(el => el.style.cssText = 'color: #e67e22; font-weight: bold;');
+            temp.querySelectorAll('span[style*="font-weight"]').forEach(el => el.style.fontWeight = 'bold');
+            
+            // Select and copy
             var range = document.createRange();
             range.selectNodeContents(temp);
-            window.getSelection().removeAllRanges();
-            window.getSelection().addRange(range);
-            document.execCommand('copy');
+            var selection = window.getSelection();
+            selection.removeAllRanges();
+            selection.addRange(range);
+            
+            try {
+                document.execCommand('copy');
+                alert('Report copied with formatting! Paste into Freshdesk ticket.');
+            } catch (err) {
+                alert('Copy failed. Please select all (Ctrl+A) and copy manually.');
+            }
+            
+            selection.removeAllRanges();
             document.body.removeChild(temp);
-            alert('Report copied to clipboard!');
         }
     </script>
 </head>
