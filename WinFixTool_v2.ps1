@@ -771,10 +771,11 @@ $btnAudit.BackColor = $script:Theme.Accent
 $btnAudit.ForeColor = "White"
 $btnAudit.FlatAppearance.BorderSize = 0
 $btnAudit.Add_Click({
-    Log "Generating Polar Nite Audit..."
-    $this.Enabled = $false
-    $this.Text = "Scanning..."
-    [System.Windows.Forms.Application]::DoEvents()
+    try {
+        Log "Generating Polar Nite Audit..."
+        $this.Enabled = $false
+        $this.Text = "Scanning..."
+        [System.Windows.Forms.Application]::DoEvents()
     
     # --- Gather Local Data ---
     Log "Getting system information..."
@@ -1420,14 +1421,26 @@ $btnAudit.Add_Click({
 
 
     # Save and open
+    Log "Saving HTML report..."
+    [System.Windows.Forms.Application]::DoEvents()
     $reportPath = "$env:TEMP\SecurityAudit_$($env:COMPUTERNAME)_$(Get-Date -Format 'yyyyMMdd_HHmm').html"
     $html | Out-File -FilePath $reportPath -Encoding UTF8
+    
+    Log "Opening report in browser..."
+    [System.Windows.Forms.Application]::DoEvents()
     Invoke-Item $reportPath
     
     Log "Audit report saved to $reportPath"
     $this.Text = "Generate Audit Report"
     $this.Enabled = $true
     [System.Windows.Forms.MessageBox]::Show("Audit report opened in browser.`n`nFile saved to:`n$reportPath", "Audit Complete", "OK", "Information")
+    
+    } catch {
+        Log "ERROR generating audit: $_"
+        $this.Text = "Generate Audit Report"
+        $this.Enabled = $true
+        [System.Windows.Forms.MessageBox]::Show("Audit generation failed:`n`n$($_.Exception.Message)`n`nCheck the log for details.", "Audit Error", "OK", "Error")
+    }
 })
 
 $pageAudit.Controls.AddRange(@($lblAuditTitle, $lblAuditDesc, $btnAudit))
