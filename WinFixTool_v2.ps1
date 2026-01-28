@@ -1,6 +1,7 @@
 <#
 .SYNOPSIS
-    WinFix Tool v2.1 - Lightweight Windows Maintenance & Diagnostics
+    WinFix Tool v2.1.1 - Lightweight Windows Maintenance & Diagnostics
+    BUILD: 2026-01-28-FIXED (Server 2012 R2 Compatible)
 .DESCRIPTION
     Fast, snappy GUI tool for Windows maintenance. No auto-loading - refresh on demand.
 .NOTES
@@ -223,7 +224,7 @@ function Invoke-DeepDiskCleanup {
 
 # --- Create Main Form ---
 $form = New-Object System.Windows.Forms.Form
-$form.Text = "WinFix Tool v2.1"
+$form.Text = "WinFix Tool v2.1.1 (2026-01-28)"
 $form.Size = New-Object System.Drawing.Size(780, 560)
 $form.MinimumSize = New-Object System.Drawing.Size(640, 480)
 $form.StartPosition = "CenterScreen"
@@ -1388,7 +1389,7 @@ $form.Controls.Add($panelHeader)
 # --- Initialize ---
 $form.Add_Shown({
     Show-Page "Dashboard"
-    Log "WinFix Tool v2.1 ready - click Refresh to scan"
+    Log "WinFix Tool v2.1.1 (Server 2012 R2 Fixed) ready - click Refresh to scan"
 })
 
 [void]$form.ShowDialog()
