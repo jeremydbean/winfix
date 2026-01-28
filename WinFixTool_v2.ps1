@@ -777,6 +777,8 @@ $btnAudit.Add_Click({
     [System.Windows.Forms.Application]::DoEvents()
     
     # --- Gather Local Data ---
+    Log "Getting system information..."
+    [System.Windows.Forms.Application]::DoEvents()
     $CompInfo = Get-CimInstance Win32_ComputerSystem -EA SilentlyContinue
     $OSInfo = Get-CimInstance Win32_OperatingSystem -EA SilentlyContinue
     $AdminGroup = Get-LocalGroupMember -Group "Administrators" -EA SilentlyContinue
@@ -796,12 +798,20 @@ $btnAudit.Add_Click({
     # Note: Server 2008 R2 and 2012 R2 have extended support until 2023/2026
     
     # Roles
+    Log "Detecting server roles..."
+    [System.Windows.Forms.Application]::DoEvents()
     $DetectedRoles = "Workstation"
     if (Get-Command Get-WindowsFeature -EA SilentlyContinue) {
-        try { $DetectedRoles = (Get-WindowsFeature | Where-Object Installed).Name -join ", " } catch {}
+        try { 
+            $DetectedRoles = "Checking (this may take a moment)..."
+            $roles = Get-WindowsFeature | Where-Object Installed | Select-Object -First 50 -ExpandProperty Name
+            $DetectedRoles = $roles -join ", "
+        } catch { $DetectedRoles = "Unable to enumerate" }
     }
     
     # Backup Detection
+    Log "Scanning for backup software..."
+    [System.Windows.Forms.Application]::DoEvents()
     $BackupKeywords = @("Veeam","Acronis","Datto","Carbonite","Cyber Protect","Backup Exec","Backblaze","Ahsay","CrashPlan","ShadowProtect")
     $BackupServices = @()
     try {
@@ -841,12 +851,16 @@ $btnAudit.Add_Click({
     $DetectedBackup = if ($BackupSoftwareListAll) { $BackupSoftwareListAll -join '; ' } else { 'Not Detected' }
     
     # Updates
+    Log "Checking Windows Updates..."
+    [System.Windows.Forms.Application]::DoEvents()
     $LastHotFix = Get-HotFix -EA SilentlyContinue | Sort-Object InstalledOn -Descending | Select-Object -First 1
     $LastUpdateDate = if ($LastHotFix.InstalledOn) { $LastHotFix.InstalledOn.ToString('yyyy-MM-dd') } else { "Unknown" }
     $PendingReboot = (Test-Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending") -or 
                      (Test-Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\RebootRequired")
     
     # AV
+    Log "Checking antivirus status..."
+    [System.Windows.Forms.Application]::DoEvents()
     $AV = Get-CimInstance -Namespace root/SecurityCenter2 -ClassName AntivirusProduct -EA SilentlyContinue
     $AVName = if ($AV) { $AV.displayName } else { "None Detected" }
     $Defender = $null
@@ -947,6 +961,8 @@ $btnAudit.Add_Click({
     }
     
     # Local Users
+    Log "Enumerating local users..."
+    [System.Windows.Forms.Application]::DoEvents()
     $LocalUserCmd = Get-Command Get-LocalUser -ErrorAction SilentlyContinue
     $LocalUserObjects = if ($LocalUserCmd) { Get-LocalUser -EA SilentlyContinue } else { @() }
     $LocalUsersDetailed = @()
@@ -998,6 +1014,8 @@ $btnAudit.Add_Click({
     $MfaStatus = "Unknown (verify with identity provider)"
     
     # Password Policy
+    Log "Checking password policy..."
+    [System.Windows.Forms.Application]::DoEvents()
     $PassComplex = "Unknown"
     $secPol = $null
     try {
@@ -1017,35 +1035,57 @@ $btnAudit.Add_Click({
     $PatchEntries = @()
     $PatchListHtml = 'Unknown'
     $PatchSummary = 'Unknown'
-    try {
-        $wuSession = New-Object -ComObject 'Microsoft.Update.Session' -ErrorAction Stop
-        $wuSearcher = $wuSession.CreateUpdateSearcher()
-        # Set timeout to prevent hanging
-        $wuSearcher.Online = $false  # Search local cache only for speed
-        $wuResult = $wuSearcher.Search("IsInstalled=0 and Type='Software' and IsHidden=0")
-        $pendingCount = 0
+    Log "Checking for pending patches (may be slow)..."
+    [System.Windows.Forms.Application]::DoEvents()
+    
+    # Use background job with timeout to prevent hanging
+    $patchJob = Start-Job -ScriptBlock {
+        try {
+            $wuSession = New-Object -ComObject 'Microsoft.Update.Session' -ErrorAction Stop
+            $wuSearcher = $wuSession.CreateUpdateSearcher()
+            $wuSearcher.Online = $false  # Search local cache only
+            $wuResult = $wuSearcher.Search("IsInstalled=0 and Type='Software' and IsHidden=0")
+            return $wuResult
+        } catch {
+            return $null
+        }
+    }
+    
+    # Wait max 15 seconds for patch check
+    $completed = Wait-Job $patchJob -Timeout 15
+    if ($completed) {
+        $wuResult = Receive-Job $patchJob
+        Remove-Job $patchJob -Force
+        
         if ($wuResult -and $wuResult.Updates) {
             $pendingCount = $wuResult.Updates.Count
-        }
-        if ($pendingCount -le 0) {
-            $PatchSummary = 'None detected'
-            $PatchListHtml = 'No pending patches detected.'
-        } else {
-            $PatchSummary = "$pendingCount pending"
-            $maxToShow = 10
-            for ($i = 0; $i -lt $pendingCount -and $i -lt $maxToShow; $i++) {
-                $u = $wuResult.Updates.Item($i)
-                if ($u -and $u.Title) {
-                    $PatchEntries += "<li>$(Escape-ForHtmlAttr $u.Title)</li>"
+            if ($pendingCount -le 0) {
+                $PatchSummary = 'None detected'
+                $PatchListHtml = 'No pending patches detected.'
+            } else {
+                $PatchSummary = "$pendingCount pending"
+                $maxToShow = 10
+                for ($i = 0; $i -lt $pendingCount -and $i -lt $maxToShow; $i++) {
+                    $u = $wuResult.Updates.Item($i)
+                    if ($u -and $u.Title) {
+                        $PatchEntries += "<li>$(Escape-ForHtmlAttr $u.Title)</li>"
+                    }
                 }
+                $PatchListHtml = if ($PatchEntries) {
+                    '<ul style="margin:0; padding-left:16px;">' + ($PatchEntries -join '') + '</ul>'
+                } else { 'Pending updates detected (details unavailable).' }
             }
-            $PatchListHtml = if ($PatchEntries) {
-                '<ul style="margin:0; padding-left:16px;">' + ($PatchEntries -join '') + '</ul>'
-            } else { 'Pending updates detected (details unavailable).' }
+        } else {
+            $PatchSummary = 'Unable to check'
+            $PatchListHtml = 'Unable to check'
         }
-    } catch {
-        $PatchSummary = 'Unknown (WU API unavailable)'
-        $PatchListHtml = 'Unknown'
+    } else {
+        # Timeout occurred
+        Stop-Job $patchJob -ErrorAction SilentlyContinue
+        Remove-Job $patchJob -Force -ErrorAction SilentlyContinue
+        $PatchSummary = 'Check timed out (>15s)'
+        $PatchListHtml = 'Check timed out - verify manually'
+        Log "Patch check timed out after 15 seconds"
     }
 
     $BackupEncryptionMap = @{
@@ -1123,9 +1163,11 @@ $btnAudit.Add_Click({
     $PerformanceSummary = Format-EventSummary $PerformanceEvents
 
     # Repeating critical/log entries (warnings/errors/critical) in last 30 days
+    Log "Analyzing event logs..."
+    [System.Windows.Forms.Application]::DoEvents()
     $EventFilters = @{ LogName = 'System','Application','Security'; Level = 1,2,3; StartTime = (Get-Date).AddDays(-30) }
     $RecentEventEntries = @()
-    try { $RecentEventEntries = Get-WinEvent -FilterHashtable $EventFilters -MaxEvents 1000 -EA SilentlyContinue } catch {}
+    try { $RecentEventEntries = Get-WinEvent -FilterHashtable $EventFilters -MaxEvents 100 -EA SilentlyContinue } catch {}
     $RepeatedEvents = @()
     if ($RecentEventEntries) {
         $RepeatedEvents = $RecentEventEntries | Group-Object { "$($_.ProviderName)|$($_.Id)|$($_.Level)" } | Where-Object { $_.Count -gt 1 }
@@ -1144,6 +1186,8 @@ $btnAudit.Add_Click({
     }
     
     # --- Generate HTML ---
+    Log "Generating HTML report..."
+    [System.Windows.Forms.Application]::DoEvents()
     $html = @"
 <!DOCTYPE html>
 <html>
