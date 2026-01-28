@@ -847,7 +847,10 @@ $btnAudit.Add_Click({
     # AV
     $AV = Get-CimInstance -Namespace root/SecurityCenter2 -ClassName AntivirusProduct -EA SilentlyContinue
     $AVName = if ($AV) { $AV.displayName } else { "None Detected" }
-    $Defender = Get-MpComputerStatus -EA SilentlyContinue
+    $Defender = $null
+    if (Get-Command Get-MpComputerStatus -ErrorAction SilentlyContinue) {
+        $Defender = Get-MpComputerStatus -EA SilentlyContinue
+    }
     if ($Defender) {
         $RTPEnabled = if ($Defender.RealTimeProtectionEnabled) { "Yes" } else { "No" }
         $LastScan = if ($Defender.QuickScanEndTime) { $Defender.QuickScanEndTime.ToString("yyyy-MM-dd") } else { "Unknown" }
