@@ -790,9 +790,10 @@ $btnAudit.Add_Click({
     
     # EOS Check
     $EOSWarning = ""
-    if ($OSInfo.Caption -match "Server 2003|Server 2008|Server 2012|Windows 7|Windows 8|SBS 2011") {
+    if ($OSInfo.Caption -match "Server 2003|Server 2008 [^R]|Server 2012 [^R]|Windows 7|Windows 8[^.]|SBS 2011") {
         $EOSWarning = "<span class='alert'>[END OF SUPPORT - SECURITY RISK]</span>"
     }
+    # Note: Server 2008 R2 and 2012 R2 have extended support until 2023/2026
     
     # Roles
     $DetectedRoles = "Workstation"
@@ -878,8 +879,21 @@ $btnAudit.Add_Click({
     }
     
     # Firewall
-    $FWProfiles = (Get-NetFirewallProfile -EA SilentlyContinue | Where-Object Enabled).Name -join ", "
-    if (-not $FWProfiles) { $FWProfiles = "DISABLED" }
+    $FWProfiles = "Unknown"
+    if (Get-Command Get-NetFirewallProfile -ErrorAction SilentlyContinue) {
+        $FWProfiles = (Get-NetFirewallProfile -EA SilentlyContinue | Where-Object Enabled).Name -join ", "
+        if (-not $FWProfiles) { $FWProfiles = "DISABLED" }
+    } else {
+        # Fallback for older systems
+        try {
+            $fwPolicy = New-Object -ComObject HNetCfg.FwPolicy2 -EA Stop
+            $profiles = @()
+            if ($fwPolicy.FirewallEnabled(1)) { $profiles += "Domain" }
+            if ($fwPolicy.FirewallEnabled(2)) { $profiles += "Private" }
+            if ($fwPolicy.FirewallEnabled(4)) { $profiles += "Public" }
+            $FWProfiles = if ($profiles) { $profiles -join ", " } else { "DISABLED" }
+        } catch { $FWProfiles = "Unable to determine" }
+    }
     
     # RDP
     $RDP = Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server" -Name fDenyTSConnections -EA SilentlyContinue
@@ -893,17 +907,24 @@ $btnAudit.Add_Click({
     }
     
     # Disk Health & RAID
-    $Disks = Get-PhysicalDisk -EA SilentlyContinue | Select-Object FriendlyName, MediaType, HealthStatus
-    $DiskHealth = if ($Disks) { ($Disks | ForEach-Object { "$($_.MediaType): $($_.HealthStatus)" }) -join "; " } else { "Unknown" }
+    $Disks = $null
+    if (Get-Command Get-PhysicalDisk -ErrorAction SilentlyContinue) {
+        $Disks = Get-PhysicalDisk -EA SilentlyContinue | Select-Object FriendlyName, MediaType, HealthStatus
+    }
+    $DiskHealth = if ($Disks) { ($Disks | ForEach-Object { "$($_.MediaType): $($_.HealthStatus)" }) -join "; " } else { "Unknown (cmdlet unavailable)" }
     
     $RAIDStatus = "Unknown"
     if ($IsVM) {
         $RAIDStatus = "Virtual Machine - Check Host RAID"
     } else {
         # Try local
-        $pDisks = Get-PhysicalDisk -ErrorAction SilentlyContinue
-        if ($pDisks) {
-             $RAIDStatus = ($pDisks | Select-Object -ExpandProperty MediaType -Unique) -join ", "
+        if (Get-Command Get-PhysicalDisk -ErrorAction SilentlyContinue) {
+            $pDisks = Get-PhysicalDisk -ErrorAction SilentlyContinue
+            if ($pDisks) {
+                 $RAIDStatus = ($pDisks | Select-Object -ExpandProperty MediaType -Unique) -join ", "
+            }
+        } else {
+            $RAIDStatus = "Physical disk cmdlet unavailable"
         }
     }
     
@@ -978,6 +999,7 @@ $btnAudit.Add_Click({
     
     # Password Policy
     $PassComplex = "Unknown"
+    $secPol = $null
     try {
         $secFile = "$env:TEMP\secpol.cfg"
         secedit /export /cfg $secFile /quiet 2>$null
@@ -996,8 +1018,10 @@ $btnAudit.Add_Click({
     $PatchListHtml = 'Unknown'
     $PatchSummary = 'Unknown'
     try {
-        $wuSession = New-Object -ComObject 'Microsoft.Update.Session'
+        $wuSession = New-Object -ComObject 'Microsoft.Update.Session' -ErrorAction Stop
         $wuSearcher = $wuSession.CreateUpdateSearcher()
+        # Set timeout to prevent hanging
+        $wuSearcher.Online = $false  # Search local cache only for speed
         $wuResult = $wuSearcher.Search("IsInstalled=0 and Type='Software' and IsHidden=0")
         $pendingCount = 0
         if ($wuResult -and $wuResult.Updates) {
@@ -1060,7 +1084,24 @@ $btnAudit.Add_Click({
     $BackupFailuresThisMonth = "Unknown"
 
     # Open Ports
-    $OpenPorts = (Get-NetTCPConnection -State Listen -EA SilentlyContinue | Select-Object -ExpandProperty LocalPort -Unique | Sort-Object {[int]$_}) -join ", "
+    $OpenPorts = "Unknown"
+    if (Get-Command Get-NetTCPConnection -ErrorAction SilentlyContinue) {
+        try {
+            $OpenPorts = (Get-NetTCPConnection -State Listen -EA SilentlyContinue | Select-Object -ExpandProperty LocalPort -Unique | Sort-Object {[int]$_}) -join ", "
+        } catch {
+            $OpenPorts = "Unable to enumerate"
+        }
+    } else {
+        # Fallback for older systems
+        try {
+            $netstat = netstat -an | Select-String "LISTENING" | ForEach-Object {
+                if ($_ -match ':([0-9]+)\s') { $matches[1] }
+            } | Select-Object -Unique | Sort-Object {[int]$_}
+            $OpenPorts = $netstat -join ", "
+        } catch {
+            $OpenPorts = "Unable to enumerate"
+        }
+    }
 
     # Security log metadata
     $SecurityLogInfo = $null
