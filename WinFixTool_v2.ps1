@@ -1190,6 +1190,9 @@ $btnAudit.Add_Click({
         $EventsHTML = "No repeating warnings/errors/critical events detected in the last 30 days"
     }
     
+    # Disk Encryption reason text
+    $diskEncryptionReason = if ($IsVM) { "Virtual Machine" } else { "Verify host encryption" }
+    
     # --- Generate HTML ---
     Log "Generating HTML report..."
     [System.Windows.Forms.Application]::DoEvents()
@@ -1328,7 +1331,7 @@ $btnAudit.Add_Click({
     <tr><th>Is full-disk encryption enabled?</th><td>$(if($BitLockerStatus -eq 'Encrypted'){"<span class='good'>Yes (BitLocker)</span>"}else{"<span class='warn'>$BitLockerStatus</span>"})</td></tr>
     <tr><th>Encryption status</th><td>$BitLockerStatus</td></tr>
     <tr><th>TPM present/enabled</th><td>$TpmStatus</td></tr>
-    <tr><th>If not encrypted, reason why</th><td><input class='input' value='$(Escape-ForHtmlAttr (if($IsVM){"Virtual Machine"}{"Verify host encryption"}))'></td></tr>
+    <tr><th>If not encrypted, reason why</th><td><input class='input' value='$(Escape-ForHtmlAttr $diskEncryptionReason)'></td></tr>
 </table>
 
 <h3>B. Data Encryption</h3>
