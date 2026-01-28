@@ -1035,72 +1035,61 @@ $btnAudit.Add_Click({
     $PatchEntries = @()
     $PatchListHtml = 'Unknown'
     $PatchSummary = 'Unknown'
-    Log "Checking for pending patches (may be slow)..."
+    Log "Checking for pending patches..."
     [System.Windows.Forms.Application]::DoEvents()
     
-    # Use background job with timeout to prevent hanging
-    $patchJob = Start-Job -ScriptBlock {
+    # Simplified approach - run directly with timeout protection
+    try {
+        $wuSession = New-Object -ComObject 'Microsoft.Update.Session' -ErrorAction Stop
+        $wuSearcher = $wuSession.CreateUpdateSearcher()
+        $wuSearcher.Online = $false  # Search local cache only
+        
+        # Try to get update count
         try {
-            $wuSession = New-Object -ComObject 'Microsoft.Update.Session' -ErrorAction Stop
-            $wuSearcher = $wuSession.CreateUpdateSearcher()
-            $wuSearcher.Online = $false  # Search local cache only
             $wuResult = $wuSearcher.Search("IsInstalled=0 and Type='Software' and IsHidden=0")
             
-            # Convert to serializable object
-            $updates = @()
             if ($wuResult -and $wuResult.Updates) {
-                for ($i = 0; $i -lt $wuResult.Updates.Count; $i++) {
-                    $u = $wuResult.Updates.Item($i)
-                    $updates += @{
-                        Title = $u.Title
-                        Description = $u.Description
+                $pendingCount = $wuResult.Updates.Count
+                
+                if ($pendingCount -le 0) {
+                    $PatchSummary = 'None detected'
+                    $PatchListHtml = 'No pending patches detected.'
+                } else {
+                    $PatchSummary = "$pendingCount pending"
+                    $maxToShow = [Math]::Min(10, $pendingCount)
+                    
+                    # Safely iterate updates
+                    for ($i = 0; $i -lt $maxToShow; $i++) {
+                        try {
+                            $update = $wuResult.Updates.Item($i)
+                            if ($update -and $update.Title) {
+                                $PatchEntries += "<li>$(Escape-ForHtmlAttr $update.Title)</li>"
+                            }
+                        } catch {
+                            # Skip update if error accessing it
+                            continue
+                        }
+                    }
+                    
+                    $PatchListHtml = if ($PatchEntries.Count -gt 0) {
+                        '<ul style="margin:0; padding-left:16px;">' + ($PatchEntries -join '') + '</ul>'
+                    } else {
+                        "$pendingCount pending (details unavailable)"
                     }
                 }
-            }
-            return @{
-                Count = $wuResult.Updates.Count
-                Updates = $updates
+            } else {
+                $PatchSummary = 'No results'
+                $PatchListHtml = 'Windows Update API returned no results'
             }
         } catch {
-            return $null
+            $PatchSummary = 'Check failed'
+            $PatchListHtml = "Error: $($_.Exception.Message)"
+            Log "Patch check error: $_"
         }
-    }
-    
-    # Wait max 15 seconds for patch check
-    $completed = Wait-Job $patchJob -Timeout 15
-    if ($completed) {
-        $jobResult = Receive-Job $patchJob -ErrorAction SilentlyContinue
-        Remove-Job $patchJob -Force
-        
-        if ($jobResult -and $jobResult.Count -ne $null) {
-            $pendingCount = $jobResult.Count
-            if ($pendingCount -le 0) {
-                $PatchSummary = 'None detected'
-                $PatchListHtml = 'No pending patches detected.'
-            } else {
-                $PatchSummary = "$pendingCount pending"
-                $maxToShow = [Math]::Min(10, $jobResult.Updates.Count)
-                for ($i = 0; $i -lt $maxToShow; $i++) {
-                    $u = $jobResult.Updates[$i]
-                    if ($u -and $u.Title) {
-                        $PatchEntries += "<li>$(Escape-ForHtmlAttr $u.Title)</li>"
-                    }
-                }
-                $PatchListHtml = if ($PatchEntries) {
-                    '<ul style="margin:0; padding-left:16px;">' + ($PatchEntries -join '') + '</ul>'
-                } else { 'Pending updates detected (details unavailable).' }
-            }
-        } else {
-            $PatchSummary = 'Unable to check'
-            $PatchListHtml = 'Unable to check (WU API unavailable)'
-        }
-    } else {
-        # Timeout occurred
-        Stop-Job $patchJob -ErrorAction SilentlyContinue
-        Remove-Job $patchJob -Force -ErrorAction SilentlyContinue
-        $PatchSummary = 'Check timed out (>15s)'
-        $PatchListHtml = 'Check timed out - verify manually'
-        Log "Patch check timed out after 15 seconds"
+    } catch {
+        $PatchSummary = 'WU API unavailable'
+        $PatchListHtml = 'Windows Update COM object unavailable'
+        Log "Cannot create Windows Update Session: $_"
     }
 
     $BackupEncryptionMap = @{
