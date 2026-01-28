@@ -1228,6 +1228,35 @@ $btnAudit.Add_Click({
                 span.style.fontWeight = 'bold';
                 el.parentNode.replaceChild(span, el);
             });
+            
+            // Create full HTML document with styles
+            var htmlContent = '<!DOCTYPE html><html><head><meta charset="UTF-8"><style>' +
+                document.querySelector('style').innerHTML +
+                '</style></head><body>' +
+                clone.innerHTML +
+                '</body></html>';
+            
+            // Get plain text version
+            var temp = document.createElement('div');
+            temp.innerHTML = clone.innerHTML;
+            var plainText = temp.innerText;
+            
+            // Copy both HTML and plain text to clipboard
+            if (navigator.clipboard && window.ClipboardItem) {
+                var blob = new Blob([htmlContent], { type: 'text/html' });
+                var textBlob = new Blob([plainText], { type: 'text/plain' });
+                var item = new ClipboardItem({ 'text/html': blob, 'text/plain': textBlob });
+                navigator.clipboard.write([item]).then(function() {
+                    alert('Report copied to clipboard with formatting!');
+                }).catch(function() {
+                    fallbackCopy(clone);
+                });
+            } else {
+                fallbackCopy(clone);
+            }
+        }
+        
+        function fallbackCopy(clone) {
             var temp = document.createElement('div');
             temp.style.transform = 'scale(0.75)';
             temp.style.transformOrigin = 'top left';
