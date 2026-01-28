@@ -1045,7 +1045,22 @@ $btnAudit.Add_Click({
             $wuSearcher = $wuSession.CreateUpdateSearcher()
             $wuSearcher.Online = $false  # Search local cache only
             $wuResult = $wuSearcher.Search("IsInstalled=0 and Type='Software' and IsHidden=0")
-            return $wuResult
+            
+            # Convert to serializable object
+            $updates = @()
+            if ($wuResult -and $wuResult.Updates) {
+                for ($i = 0; $i -lt $wuResult.Updates.Count; $i++) {
+                    $u = $wuResult.Updates.Item($i)
+                    $updates += @{
+                        Title = $u.Title
+                        Description = $u.Description
+                    }
+                }
+            }
+            return @{
+                Count = $wuResult.Updates.Count
+                Updates = $updates
+            }
         } catch {
             return $null
         }
@@ -1054,19 +1069,19 @@ $btnAudit.Add_Click({
     # Wait max 15 seconds for patch check
     $completed = Wait-Job $patchJob -Timeout 15
     if ($completed) {
-        $wuResult = Receive-Job $patchJob
+        $jobResult = Receive-Job $patchJob -ErrorAction SilentlyContinue
         Remove-Job $patchJob -Force
         
-        if ($wuResult -and $wuResult.Updates) {
-            $pendingCount = $wuResult.Updates.Count
+        if ($jobResult -and $jobResult.Count -ne $null) {
+            $pendingCount = $jobResult.Count
             if ($pendingCount -le 0) {
                 $PatchSummary = 'None detected'
                 $PatchListHtml = 'No pending patches detected.'
             } else {
                 $PatchSummary = "$pendingCount pending"
-                $maxToShow = 10
-                for ($i = 0; $i -lt $pendingCount -and $i -lt $maxToShow; $i++) {
-                    $u = $wuResult.Updates.Item($i)
+                $maxToShow = [Math]::Min(10, $jobResult.Updates.Count)
+                for ($i = 0; $i -lt $maxToShow; $i++) {
+                    $u = $jobResult.Updates[$i]
                     if ($u -and $u.Title) {
                         $PatchEntries += "<li>$(Escape-ForHtmlAttr $u.Title)</li>"
                     }
@@ -1077,7 +1092,7 @@ $btnAudit.Add_Click({
             }
         } else {
             $PatchSummary = 'Unable to check'
-            $PatchListHtml = 'Unable to check'
+            $PatchListHtml = 'Unable to check (WU API unavailable)'
         }
     } else {
         # Timeout occurred
