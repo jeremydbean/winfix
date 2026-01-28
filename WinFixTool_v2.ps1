@@ -20,18 +20,34 @@ try {
     }
 } catch { }
 
+# Load assemblies first
 try {
-    Add-Type -AssemblyName System.Windows.Forms
-    Add-Type -AssemblyName System.Drawing
-    [System.Windows.Forms.Application]::EnableVisualStyles()
-    [System.Windows.Forms.Application]::SetCompatibleTextRenderingDefault($false)
+    Add-Type -AssemblyName System.Windows.Forms -ErrorAction Stop
+    Add-Type -AssemblyName System.Drawing -ErrorAction Stop
 } catch {
     try {
         $logPath = Join-Path $env:TEMP 'WinFix_Debug.log'
-        "[$(Get-Date -Format s)] WinFixTool_v2 startup failed (WinForms load): $($_.Exception.Message)" | Out-File -FilePath $logPath -Append -Encoding UTF8
+        "[$(Get-Date -Format s)] WinFixTool_v2 startup failed (Assembly load): $($_.Exception.Message)" | Out-File -FilePath $logPath -Append -Encoding UTF8
     } catch { }
     Write-Error "Failed to load WinForms assemblies. This tool must run on Windows PowerShell with .NET Framework WinForms available. Error: $($_.Exception.Message)"
     exit 1
+}
+
+# Initialize application settings (must be called before any controls are created)
+try {
+    [System.Windows.Forms.Application]::EnableVisualStyles()
+} catch {
+    # If visual styles fail, continue anyway - not critical
+}
+
+try {
+    [System.Windows.Forms.Application]::SetCompatibleTextRenderingDefault($false)
+} catch {
+    # If already set or fails, ignore - this can happen if called multiple times
+    try {
+        $logPath = Join-Path $env:TEMP 'WinFix_Debug.log'
+        "[$(Get-Date -Format s)] SetCompatibleTextRenderingDefault warning (non-fatal): $($_.Exception.Message)" | Out-File -FilePath $logPath -Append -Encoding UTF8
+    } catch { }
 }
 
 # Provide a default theme palette so color assignments never receive $null.
