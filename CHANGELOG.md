@@ -1,6 +1,10 @@
 # Changelog
 
 ## 2026-04-29
+- Fixed `WinFixTool_v2.ps1` v5.2 → v5.3: glob mismatch (report never auto-opened), nav button crash for stub pages, locale-dependent Administrators group lookup (now uses SID S-1-5-32-544), caption-regex EOS detection replaced with build→date table, `Out-File -Encoding UTF8` BOM replaced with `WriteAllText`, `Get-HotFix` replaced with `QueryHistory(0,50)` + HotFix fallback, RDP failure count now filters LogonType=10, `copyForFreshdesk` rewritten with data-key snapshot + modern `navigator.clipboard.write()` + fallback, Defender signature age grading, elevation check + in-app warning, DC detection before local user enumeration, broader VM fingerprint, `$ErrorActionPreference` corrected to `Continue`.
+
+
+## 2026-04-29
 - Expanded `WinFixTool_v2.ps1` into the Max Audit engine for HIPAA-oriented MSP monthly audits.
 - Added registry/service/process/path detection for NinjaRMM, Huntress, GoToAssist, remote access tools, and backup products.
 - Added report sections for BitLocker, drive usage, Windows Update status/history, support lifecycle, event-log indicators, network shares, printers, RDP posture, custom scheduled tasks, system specs, and PowerShell version.

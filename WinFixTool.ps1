@@ -1591,29 +1591,133 @@ $form.Controls.Add($mainContainer)
 
 # --- SECURITY AUDIT LOGIC (Embedded) ---
 function Invoke-SecurityAudit {
-    # This function contains the logic provided by the user
-    
-    Log-Output "Initializing Jeremy Bean Audit..."
-    Log-Output "NOTE: This process takes 30-60 seconds. The window may appear unresponsive."
+    Log-Output "Initializing Security Audit..."
+    Log-Output "NOTE: This process may take 30-90 seconds depending on Windows Update cache."
     if ($form -and $form.Visible) { [System.Windows.Forms.Application]::DoEvents() }
-    
-    # --- Configuration & Path Robustness ---
-    # Robustly find the Desktop path (handles OneDrive redirection)
-    $DesktopPath = [Environment]::GetFolderPath("Desktop")
-    if (-not (Test-Path $DesktopPath)) { $DesktopPath = $env:TEMP } # Fallback to Temp if Desktop fails
 
+    # --- Elevation check ---
+    $isElevated = $false
+    try {
+        $wid = [System.Security.Principal.WindowsIdentity]::GetCurrent()
+        $wp = New-Object System.Security.Principal.WindowsPrincipal($wid)
+        $isElevated = $wp.IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator)
+    } catch {}
+    if (-not $isElevated) {
+        Log-Output "WARNING: Not running as Administrator. Several checks (secedit, BitLocker, Security log, TPM) will be blank."
+    }
+
+    # --- Output path with TEMP fallback ---
+    $DesktopPath = [Environment]::GetFolderPath("Desktop")
+    if ([string]::IsNullOrWhiteSpace($DesktopPath) -or -not (Test-Path $DesktopPath)) { $DesktopPath = $env:TEMP }
     $ReportPath = Join-Path -Path $DesktopPath -ChildPath "JeremyBean_SecurityAudit_$(Get-Date -Format 'yyyyMMdd_HHmm').html"
     $EventLookbackDays = 30
     $MaxEventsToShow = 15
 
-    # --- Styling & Scripting (Jeremy Bean - Light Theme) ---
+    # --- Helpers ---
+    function HtmlEnc {
+        param($Value)
+        if ($null -eq $Value) { return '' }
+        $s = [string]$Value
+        $s = $s -replace '&','&amp;'
+        $s = $s -replace '<','&lt;'
+        $s = $s -replace '>','&gt;'
+        $s = $s -replace '"','&quot;'
+        $s = $s -replace "'",'&#39;'
+        return $s
+    }
+
+    $script:_AuditKeyN = 0
+    function New-AuditKey { $script:_AuditKeyN++; return "audit-$script:_AuditKeyN" }
+
+    function Get-HtmlInput {
+        param($Placeholder="Enter details...", $Value="", $Id="")
+        $key = New-AuditKey
+        $idAttr = if ($Id) { "id='$(HtmlEnc $Id)'" } else { "" }
+        $ph = HtmlEnc $Placeholder
+        $vl = HtmlEnc $Value
+        return "<input type='text' $idAttr data-key='$key' class='user-input' placeholder='$ph' value='$vl'>"
+    }
+
+    function Get-HtmlSelect {
+        param($Options=@("Select...", "Yes", "No", "N/A"), $SelectedValue="", $Id="", $OnChange="")
+        $key = New-AuditKey
+        $idAttr = if ($Id) { "id='$(HtmlEnc $Id)'" } else { "" }
+        $changeAttr = if ($OnChange) { "onchange='$(HtmlEnc $OnChange)'" } else { "" }
+        if (-not ($Options -contains "N/A")) { $Options += "N/A" }
+        $optHtml = ""
+        foreach($opt in $Options) {
+            $sel = if($opt -eq $SelectedValue){ "selected" } else { "" }
+            $oEnc = HtmlEnc $opt
+            $optHtml += "<option value='$oEnc' $sel>$oEnc</option>"
+        }
+        return "<select class='user-select' $idAttr $changeAttr data-key='$key'>$optHtml</select>"
+    }
+
+    function Get-HtmlTextArea {
+        $key = New-AuditKey
+        return "<textarea class='user-input' rows='3' placeholder='Enter details...' data-key='$key'></textarea>"
+    }
+
+    function Get-OSEndOfSupport {
+        param([int]$Build, [string]$Caption)
+        $eosTable = @{
+            3790  = @{ Name='Server 2003 / XP x64';   End=[datetime]'2015-07-14' }
+            6002  = @{ Name='Server 2008 / Vista';    End=[datetime]'2020-01-14' }
+            7601  = @{ Name='Server 2008 R2 / Win 7'; End=[datetime]'2020-01-14' }
+            9200  = @{ Name='Server 2012 / Win 8';    End=[datetime]'2023-10-10' }
+            9600  = @{ Name='Server 2012 R2 / 8.1';   End=[datetime]'2023-10-10' }
+            10240 = @{ Name='Win 10 1507';            End=[datetime]'2017-05-09' }
+            10586 = @{ Name='Win 10 1511';            End=[datetime]'2017-10-10' }
+            14393 = @{ Name='Server 2016 / Win10 1607'; End=[datetime]'2027-01-12' }
+            15063 = @{ Name='Win 10 1703';            End=[datetime]'2018-10-09' }
+            16299 = @{ Name='Win 10 1709';            End=[datetime]'2019-04-09' }
+            17134 = @{ Name='Win 10 1803';            End=[datetime]'2019-11-12' }
+            17763 = @{ Name='Server 2019 / Win10 1809'; End=[datetime]'2029-01-09' }
+            18362 = @{ Name='Win 10 1903';            End=[datetime]'2020-12-08' }
+            18363 = @{ Name='Win 10 1909';            End=[datetime]'2022-05-10' }
+            19041 = @{ Name='Win 10 2004';            End=[datetime]'2021-12-14' }
+            19042 = @{ Name='Win 10 20H2';            End=[datetime]'2023-05-09' }
+            19043 = @{ Name='Win 10 21H1';            End=[datetime]'2022-12-13' }
+            19044 = @{ Name='Win 10 21H2';            End=[datetime]'2024-06-11' }
+            19045 = @{ Name='Win 10 22H2';            End=[datetime]'2025-10-14' }
+            20348 = @{ Name='Server 2022';            End=[datetime]'2031-10-14' }
+            22000 = @{ Name='Win 11 21H2';            End=[datetime]'2023-10-10' }
+            22621 = @{ Name='Win 11 22H2';            End=[datetime]'2024-10-08' }
+            22631 = @{ Name='Win 11 23H2';            End=[datetime]'2025-11-11' }
+            26100 = @{ Name='Win 11 24H2 / Server 2025'; End=[datetime]'2034-10-10' }
+        }
+        if ($eosTable.ContainsKey($Build)) {
+            $row = $eosTable[$Build]
+            return [PSCustomObject]@{
+                Name = $row.Name
+                EndDate = $row.End
+                IsEOL = ((Get-Date) -gt $row.End)
+            }
+        }
+        return $null
+    }
+
+    function Get-EventSolution {
+        param($Source, $Message)
+        $predefined = @{
+            "Disk" = "Check physical drive health (SMART)."
+            "Ntfs" = "File system corruption."
+            "VSS"  = "VSS Shadow Copy error."
+            "WindowsUpdate" = "Check Update Service."
+            "BugCheck" = "BSOD detected."
+        }
+        foreach ($key in $predefined.Keys) { if ($Source -match $key) { return $predefined[$key] } }
+        return "Check Event ID."
+    }
+
+    # --- Styling & Scripting ---
     $style = @"
     <style>
         :root {
             --bg-color: #f4f7f6;
             --card-bg: #ffffff;
             --text-main: #2c3e50;
-            --accent-cyan: #0056b3; 
+            --accent-cyan: #0056b3;
             --accent-blue: #3498db;
             --alert: #e74c3c;
             --good: #27ae60;
@@ -1621,116 +1725,49 @@ function Invoke-SecurityAudit {
             --manual: #7f8c8d;
         }
         body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: var(--bg-color); color: var(--text-main); margin: 0; padding: 20px; padding-bottom: 80px; }
-        
-        /* Header Block */
         .header-block { border-bottom: 3px solid var(--accent-cyan); margin-bottom: 30px; padding-bottom: 10px; }
         h1 { color: var(--accent-cyan); text-transform: uppercase; letter-spacing: 1px; margin: 0; font-size: 1.8em; }
         .meta-info { display: flex; justify-content: space-between; margin-top: 15px; font-weight: bold; color: #555; align-items: center; }
-        
-        /* Section Headers */
-        h2 { 
-            background-color: #e8f4f8; 
-            color: var(--accent-cyan); 
-            padding: 10px; 
-            margin-top: 40px; 
-            font-size: 1.2em; 
-            border-top: 3px solid var(--accent-cyan);
-            font-weight: bold;
-        }
+        h2 { background-color: #e8f4f8; color: var(--accent-cyan); padding: 10px; margin-top: 40px; font-size: 1.2em; border-top: 3px solid var(--accent-cyan); font-weight: bold; }
         h3 { color: var(--accent-cyan); margin-top: 20px; border-left: 4px solid var(--accent-blue); padding-left: 10px; font-size: 1.1em; }
-        
-        /* Tables */
         table { border-collapse: collapse; width: 100%; margin-bottom: 15px; background-color: var(--card-bg); box-shadow: 0 2px 5px rgba(0,0,0,0.1); }
         th, td { text-align: left; padding: 12px; border-bottom: 1px solid #ecf0f1; vertical-align: top; }
         th { background-color: #ecf0f1; color: var(--text-main); font-weight: 700; width: 45%; }
-        
-        /* Inputs & Interactivity */
-        .user-input {
-            border: 1px solid #bdc3c7;
-            padding: 5px;
-            border-radius: 4px;
-            width: 90%;
-            font-family: inherit;
-            background-color: #fafafa;
-            color: #333; 
-        }
+        .user-input { border: 1px solid #bdc3c7; padding: 5px; border-radius: 4px; width: 90%; font-family: inherit; background-color: #fafafa; color: #333; }
         .user-input:focus { outline: 2px solid var(--accent-blue); background-color: #fff; }
-        
-        .user-select {
-            border: 1px solid #bdc3c7;
-            padding: 5px;
-            border-radius: 4px;
-            background-color: #fafafa;
-            font-weight: bold;
-            color: #333; 
-        }
-        
-        /* Copy Button */
-        .copy-btn {
-            background-color: var(--accent-cyan);
-            color: white; 
-            border: none;
-            padding: 10px 20px;
-            border-radius: 5px;
-            cursor: pointer;
-            font-weight: bold;
-            box-shadow: 0 4px 6px rgba(0,0,0,0.2);
-            transition: background 0.2s;
-        }
+        .user-select { border: 1px solid #bdc3c7; padding: 5px; border-radius: 4px; background-color: #fafafa; font-weight: bold; color: #333; }
+        .copy-btn { background-color: var(--accent-cyan); color: white; border: none; padding: 10px 20px; border-radius: 5px; cursor: pointer; font-weight: bold; box-shadow: 0 4px 6px rgba(0,0,0,0.2); transition: background 0.2s; }
         .copy-btn:hover { background-color: var(--accent-blue); }
-        
-        .floating-action {
-            position: fixed;
-            bottom: 30px;
-            right: 30px;
-            z-index: 1000;
-        }
-
-        /* Status Colors */
+        .floating-action { position: fixed; bottom: 30px; right: 30px; z-index: 1000; }
         .alert { color: var(--alert); font-weight: bold; }
         .good { color: var(--good); font-weight: bold; }
         .warning { color: var(--warn); font-weight: bold; }
-        
-        /* AI Link */
-        .ai-link {
-            display: inline-block;
-            margin-top: 5px;
-            color: var(--accent-cyan);
-            font-weight: bold;
-            text-decoration: none;
-            font-size: 0.85em;
-            border: 1px solid var(--accent-blue);
-            padding: 2px 6px;
-            border-radius: 4px;
-            background-color: white;
-        }
+        .ai-link { display: inline-block; margin-top: 5px; color: var(--accent-cyan); font-weight: bold; text-decoration: none; font-size: 0.85em; border: 1px solid var(--accent-blue); padding: 2px 6px; border-radius: 4px; background-color: white; }
     </style>
 
     <script>
-        // --- Backup Knowledge Base (Hard-coded Standards) ---
         const backupDefaults = {
-            "Datto": { enc: "AES-256 (Datto Default)", rest: "Yes", transit: "Yes (TLS/SSL)" },
-            "Veeam": { enc: "AES-256 (Industry Standard)", rest: "Yes", transit: "Yes (TLS/SSL)" },
-            "Acronis": { enc: "AES-256 (Acronis Cyber)", rest: "Yes", transit: "Yes (TLS/SSL)" },
-            "Macrium": { enc: "AES-256 (Optional)", rest: "Yes", transit: "Yes (TLS/SSL)" },
-            "Carbonite": { enc: "AES-256/Blowfish", rest: "Yes", transit: "Yes (TLS/SSL)" },
-            "CrashPlan": { enc: "AES-256", rest: "Yes", transit: "Yes (TLS/SSL)" },
-            "Veritas": { enc: "AES-128/256", rest: "Yes", transit: "Yes" },
+            "Datto":     { enc: "AES-256 (Datto Default)",     rest: "Yes", transit: "Yes (TLS/SSL)" },
+            "Veeam":     { enc: "AES-256 (Industry Standard)", rest: "Yes", transit: "Yes (TLS/SSL)" },
+            "Acronis":   { enc: "AES-256 (Acronis Cyber)",     rest: "Yes", transit: "Yes (TLS/SSL)" },
+            "Macrium":   { enc: "AES-256 (Optional)",          rest: "Yes", transit: "Yes (TLS/SSL)" },
+            "Carbonite": { enc: "AES-256/Blowfish",             rest: "Yes", transit: "Yes (TLS/SSL)" },
+            "CrashPlan": { enc: "AES-256",                      rest: "Yes", transit: "Yes (TLS/SSL)" },
+            "Veritas":   { enc: "AES-128/256",                  rest: "Yes", transit: "Yes" },
+            "Cove":      { enc: "AES-256",                      rest: "Yes", transit: "Yes (TLS/SSL)" },
+            "Axcient":   { enc: "AES-256",                      rest: "Yes", transit: "Yes (TLS/SSL)" },
+            "Rubrik":    { enc: "AES-256",                      rest: "Yes", transit: "Yes (TLS/SSL)" },
             "Windows Server Backup": { enc: "None (Unless BitLocker used)", rest: "No", transit: "N/A" }
         };
 
         function updateBackupDefaults(selectElem) {
             const selected = selectElem.value;
-            // Simple fuzzy match to find vendor in selection
             let key = Object.keys(backupDefaults).find(k => selected.includes(k));
-            
             if (key && backupDefaults[key]) {
                 const def = backupDefaults[key];
                 document.getElementById('backupEncStd').value = def.enc;
                 document.getElementById('backupEncRest').value = def.rest;
                 document.getElementById('backupEncTransit').value = def.transit;
-                
-                // Visual feedback
                 selectElem.style.borderColor = '#27ae60';
                 document.getElementById('backupEncStd').style.borderColor = '#27ae60';
                 setTimeout(() => {
@@ -1740,214 +1777,185 @@ function Invoke-SecurityAudit {
             }
         }
 
-        function copyReport() {
-            var originalInputs = document.querySelectorAll('input, textarea, select');
-            var clone = document.body.cloneNode(true);
-            var buttons = clone.querySelectorAll('.copy-btn, .floating-action');
-            buttons.forEach(b => b.remove());
+        function buildSnapshotContainer() {
+            const clone = document.body.cloneNode(true);
+            clone.querySelectorAll('.copy-btn, .floating-action').forEach(b => b.remove());
 
-            // 1. Snapshot Live Inputs
-            var cloneInputs = clone.querySelectorAll('input, textarea, select');
-            for (var i = 0; i < originalInputs.length; i++) {
-                var original = originalInputs[i];
-                var cloneEl = cloneInputs[i];
-                var val = "";
-                
-                if (original.tagName === 'SELECT') {
-                    if (original.selectedIndex >= 0) val = original.options[original.selectedIndex].text;
-                    else val = "Select...";
-                } else { val = original.value; }
-
-                if (!val) val = "N/A";
-
-                var span = document.createElement('span');
+            // Snapshot inputs by data-key
+            const originals = document.querySelectorAll('[data-key]');
+            const cloneMap = {};
+            clone.querySelectorAll('[data-key]').forEach(el => { cloneMap[el.getAttribute('data-key')] = el; });
+            originals.forEach(orig => {
+                const key = orig.getAttribute('data-key');
+                const target = cloneMap[key];
+                if (!target) return;
+                let val = '';
+                if (orig.tagName === 'SELECT') {
+                    val = (orig.selectedIndex >= 0) ? orig.options[orig.selectedIndex].text : 'Select...';
+                } else {
+                    val = orig.value;
+                }
+                if (!val) val = 'N/A';
+                const span = document.createElement('span');
                 span.textContent = val;
                 span.style.fontWeight = 'bold';
-                
-                if(val === 'No' || val === 'Failed' || val === 'Non-Compliant') span.style.color = '#e74c3c';
-                else if(val === 'Yes' || val === 'Success' || val === 'Compliant' || val === 'Enabled') span.style.color = '#27ae60';
+                if (val === 'No' || val === 'Failed' || val === 'Non-Compliant') span.style.color = '#e74c3c';
+                else if (val === 'Yes' || val === 'Success' || val === 'Compliant' || val === 'Enabled') span.style.color = '#27ae60';
                 else span.style.color = '#333';
-                
-                if (cloneEl && cloneEl.parentNode) cloneEl.parentNode.replaceChild(span, cloneEl);
-            }
+                if (target.parentNode) target.parentNode.replaceChild(span, target);
+            });
 
-            // 2. TICKET MODE TRANSFORMATION
-            var container = document.createElement('div');
+            const container = document.createElement('div');
             container.style.fontFamily = "'Segoe UI', Tahoma, Geneva, Verdana, sans-serif";
-            container.style.fontSize = "13px";
-            container.style.lineHeight = "1.4";
-            container.style.color = "#333";
-            container.style.maxWidth = "600px";
+            container.style.fontSize = '13px';
+            container.style.lineHeight = '1.4';
+            container.style.color = '#333';
+            container.style.maxWidth = '600px';
             container.innerHTML = clone.innerHTML;
 
-            // Simplify Headers
-            container.querySelectorAll('h1').forEach(h => { h.style.fontSize="18px"; h.style.marginBottom="10px"; h.style.color="#0056b3"; });
-            container.querySelectorAll('h2').forEach(h => { 
-                h.style.fontSize="15px"; 
-                h.style.backgroundColor="#e8f4f8"; 
-                h.style.color="#0056b3"; 
-                h.style.padding="5px"; 
-                h.style.marginTop="20px";
-                h.style.borderTop="2px solid #0056b3";
+            container.querySelectorAll('h1').forEach(h => { h.style.fontSize='18px'; h.style.marginBottom='10px'; h.style.color='#0056b3'; });
+            container.querySelectorAll('h2').forEach(h => {
+                h.style.fontSize='15px'; h.style.backgroundColor='#e8f4f8'; h.style.color='#0056b3';
+                h.style.padding='5px'; h.style.marginTop='20px'; h.style.borderTop='2px solid #0056b3';
             });
-            container.querySelectorAll('h3').forEach(h => { h.style.fontSize="14px"; h.style.marginTop="10px"; h.style.color="#0056b3"; });
+            container.querySelectorAll('h3').forEach(h => { h.style.fontSize='14px'; h.style.marginTop='10px'; h.style.color='#0056b3'; });
 
-            // Transform Wide Tables to Vertical Stacks
-            var tables = container.querySelectorAll('table');
-            tables.forEach(table => {
-                var firstRow = table.querySelector('tr');
-                var isFormTable = false;
-                // Check if it's a "Label | Value" form table
+            container.querySelectorAll('table').forEach(table => {
+                const firstRow = table.querySelector('tr');
+                let isFormTable = false;
                 if (firstRow && firstRow.children.length === 2 && firstRow.children[0].tagName === 'TH') isFormTable = true;
-
                 if (isFormTable) {
-                    var listBlock = document.createElement('div');
-                    listBlock.style.marginBottom = "15px";
-                    
+                    const listBlock = document.createElement('div');
+                    listBlock.style.marginBottom = '15px';
                     table.querySelectorAll('tr').forEach(row => {
-                        var th = row.querySelector('th');
-                        var td = row.querySelector('td');
+                        const th = row.querySelector('th');
+                        const td = row.querySelector('td');
                         if (th && td) {
-                            var item = document.createElement('div');
-                            item.style.marginBottom = "6px";
-                            item.style.borderBottom = "1px solid #eee";
-                            item.style.paddingBottom = "4px";
-
-                            var label = th.textContent.trim();
-                            if (!label.match(/[:?]$/)) label += ":";
-
+                            const item = document.createElement('div');
+                            item.style.marginBottom = '6px';
+                            item.style.borderBottom = '1px solid #eee';
+                            item.style.paddingBottom = '4px';
+                            let label = th.textContent.trim();
+                            if (!label.match(/[:?]$/)) label += ':';
                             item.innerHTML = "<strong style='color:#444;'>" + label + "</strong> <span style='margin-left:5px;'>" + td.innerHTML + "</span>";
                             listBlock.appendChild(item);
                         } else if (row.cells.length === 1) {
-                            // Full width rows (Notes)
-                            var item = document.createElement('div');
+                            const item = document.createElement('div');
                             item.innerHTML = row.cells[0].innerHTML;
                             listBlock.appendChild(item);
                         }
                     });
                     if (table.parentNode) table.parentNode.replaceChild(listBlock, table);
                 } else {
-                    // Data Tables (Events, etc.) - Keep as table but compact
-                    table.style.width = "100%";
-                    table.style.border = "1px solid #ddd";
-                    table.style.borderCollapse = "collapse";
+                    table.style.width = '100%';
+                    table.style.border = '1px solid #ddd';
+                    table.style.borderCollapse = 'collapse';
                     table.querySelectorAll('th, td').forEach(c => {
-                        c.style.padding = "4px";
-                        c.style.border = "1px solid #ddd";
-                        c.style.fontSize = "12px";
+                        c.style.padding='4px'; c.style.border='1px solid #ddd'; c.style.fontSize='12px';
                     });
                 }
             });
 
-            // Flatten Meta Info
             container.querySelectorAll('.meta-info').forEach(meta => {
-                var newMeta = document.createElement('div');
-                newMeta.style.marginBottom = "10px";
-                newMeta.style.color = "#666";
+                const newMeta = document.createElement('div');
+                newMeta.style.marginBottom = '10px';
+                newMeta.style.color = '#666';
                 meta.querySelectorAll('span').forEach(s => {
-                    var p = document.createElement('div');
+                    const p = document.createElement('div');
                     p.innerHTML = s.innerHTML;
                     newMeta.appendChild(p);
                 });
                 meta.parentNode.replaceChild(newMeta, meta);
             });
 
-            // Copy
-            var tempDiv = document.createElement('div');
+            return container;
+        }
+
+        async function copyReport() {
+            const container = buildSnapshotContainer();
+            const html = container.outerHTML;
+            const plain = container.textContent;
+            try {
+                if (navigator.clipboard && window.ClipboardItem) {
+                    await navigator.clipboard.write([new ClipboardItem({
+                        'text/html': new Blob([html], { type: 'text/html' }),
+                        'text/plain': new Blob([plain], { type: 'text/plain' })
+                    })]);
+                    alert('Report Copied! Formatted for Ticket System (Vertical Layout).');
+                    return;
+                }
+            } catch (e) { /* fall through to legacy path */ }
+
+            // Legacy fallback: select node + execCommand
+            const tempDiv = document.createElement('div');
             tempDiv.style.position = 'absolute';
             tempDiv.style.left = '-9999px';
             tempDiv.appendChild(container);
             document.body.appendChild(tempDiv);
-
-            var range = document.createRange();
+            const range = document.createRange();
             range.selectNodeContents(tempDiv);
-            var selection = window.getSelection();
-            selection.removeAllRanges();
-            selection.addRange(range);
-            
+            const sel = window.getSelection();
+            sel.removeAllRanges();
+            sel.addRange(range);
             try {
                 document.execCommand('copy');
                 alert('Report Copied! Formatted for Ticket System (Vertical Layout).');
             } catch (err) {
                 alert('Copy failed.');
             }
-
             document.body.removeChild(tempDiv);
-            selection.removeAllRanges();
+            sel.removeAllRanges();
         }
     </script>
 "@
 
-    # --- Helper Functions ---
-    function Get-EventSolution {
-        param($Source, $Message)
-        $predefined = @{
-            "Disk" = "Check physical drive health (SMART)."; "Ntfs" = "File system corruption."; 
-            "VSS" = "VSS Shadow Copy error."; "WindowsUpdate" = "Check Update Service."; 
-            "BugCheck" = "BSOD detected."
-        }
-        foreach ($key in $predefined.Keys) { if ($Source -match $key) { return $predefined[$key] } }
-        return "Check Event ID."
-    }
-
-    function Get-HtmlInput {
-        param($Placeholder="Enter details...", $Value="", $Id="")
-        $idAttr = if ($Id) { "id='$Id'" } else { "" }
-        return "<input type='text' $idAttr class='user-input' placeholder='$Placeholder' value='$Value'>"
-    }
-
-    function Get-HtmlSelect {
-        param($Options=@("Select...", "Yes", "No", "N/A"), $SelectedValue="", $Id="", $OnChange="")
-        $idAttr = if ($Id) { "id='$Id'" } else { "" }
-        $changeAttr = if ($OnChange) { "onchange='$OnChange'" } else { "" }
-        $optHtml = ""
-        # Ensure N/A is always an option if not explicitly excluded
-        if (-not ($Options -contains "N/A")) { $Options += "N/A" }
-        
-        foreach($opt in $Options) { 
-            $sel = if($opt -eq $SelectedValue){ "selected" } else { "" }
-            $optHtml += "<option value='$opt' $sel>$opt</option>" 
-        }
-        return "<select class='user-select' $idAttr $changeAttr>$optHtml</select>"
-    }
-
-    function Get-HtmlTextArea {
-        return "<textarea class='user-input' rows='3' placeholder='Enter details...'></textarea>"
-    }
-
-    Log-Output "Initializing Polar Nite Audit..."
-
-    # --- DATA GATHERING & AUTOMATION ---
+    # --- DATA GATHERING ---
 
     # 0. Server Info
     Log-Output "[-] Gathering System Info..."
     $CompInfo = Get-CimInstance Win32_ComputerSystem
     $OSInfo = Get-CimInstance Win32_OperatingSystem
-    $AdminGroup = Get-LocalGroupMember -Group "Administrators" -ErrorAction SilentlyContinue
 
-    # New: Uptime
+    # Domain Controller detection (DomainRole 4 = Backup DC, 5 = Primary DC)
+    $IsDC = ($CompInfo.DomainRole -ge 4)
+
+    # Administrators group via well-known SID (locale-independent)
+    $AdminGroup = @()
+    try {
+        $AdminGroup = Get-LocalGroupMember -SID 'S-1-5-32-544' -ErrorAction Stop
+    } catch {
+        try { $AdminGroup = Get-LocalGroupMember -Group 'Administrators' -ErrorAction SilentlyContinue } catch { $AdminGroup = @() }
+    }
+
     $Uptime = (Get-Date) - $OSInfo.LastBootUpTime
     $UptimeStr = "{0} Days, {1} Hours" -f $Uptime.Days, $Uptime.Hours
 
-    # New: VM Detection
-    $IsVM = ($CompInfo.Model -match "Virtual" -or $CompInfo.Model -match "VMware" -or $CompInfo.Manufacturer -match "Microsoft Corporation" -and $CompInfo.Model -match "Virtual")
-
-    # New: End of Support Check
-    $EOSWarning = ""
-    $OSName = $OSInfo.Caption
-    if ($OSName -match "Server 2003|Server 2008|Server 2012|Windows 7|Windows 8|Windows 10|SBS 2011|Windows XP|Vista") {
-        $EOSWarning = "<span style='color:#dc3545; font-weight:bold; margin-left:10px;'> [WARNING: OS End of Support - Security Risk]</span>"
+    # Broadened VM detection
+    $vmHints = @('Virtual','VMware','VirtualBox','KVM','QEMU','Xen','Parallels','Hyper-V','Bochs','innotek')
+    $modelStr = "$($CompInfo.Model) $($CompInfo.Manufacturer)"
+    $IsVM = $false
+    foreach ($h in $vmHints) { if ($modelStr -match [regex]::Escape($h)) { $IsVM = $true; break } }
+    if (-not $IsVM) {
+        $vmSvcs = Get-Service -ErrorAction SilentlyContinue | Where-Object { $_.Name -in @('vmtools','VMTools','vmicheartbeat','vmicvss','vmicshutdown','vboxservice') -and $_.Status -eq 'Running' }
+        if ($vmSvcs) { $IsVM = $true }
     }
 
-    # New: Server Roles Auto-Detection (Server OS Only)
+    # OS End-of-Support (build-based table)
+    $EOSWarning = ''
+    $eos = Get-OSEndOfSupport -Build ([int]$OSInfo.BuildNumber) -Caption $OSInfo.Caption
+    if ($eos -and $eos.IsEOL) {
+        $endStr = HtmlEnc ($eos.EndDate.ToString('yyyy-MM-dd'))
+        $nameEnc = HtmlEnc $eos.Name
+        $EOSWarning = "<span style='color:#dc3545; font-weight:bold; margin-left:10px;'> [WARNING: $nameEnc reached End-of-Support on $endStr]</span>"
+    }
+
+    # Server Roles (Server SKUs only)
     $DetectedRoles = ""
     if (Get-Command Get-WindowsFeature -ErrorAction SilentlyContinue) {
         try {
-            $Feats = Get-WindowsFeature | Where-Object { $_.Installed -eq $True -and $_.FeatureType -eq 'Role' }
+            $Feats = Get-WindowsFeature | Where-Object { $_.Installed -eq $true -and $_.FeatureType -eq 'Role' }
             if ($Feats) { $DetectedRoles = ($Feats.Name -join ", ") }
-        } catch {
-            $DetectedRoles = "Could not query roles"
-        }
+        } catch { $DetectedRoles = "Could not query roles" }
     } else {
         $DetectedRoles = "Workstation / Roles Not Available"
     }
@@ -1955,211 +1963,216 @@ function Invoke-SecurityAudit {
     # 1. Backups
     Log-Output "[-] Checking Backup History..."
     if ($form -and $form.Visible) { [System.Windows.Forms.Application]::DoEvents() }
-    $BackupKeywords = "*Veeam*","*Acronis*","*Macrium*","*Datto*","*Carbonite*","*Veritas*","*CrashPlan*"
-    $DetectedServices = Get-Service | Where-Object { $d = $_.DisplayName; ($BackupKeywords | Where-Object { $d -like $_ }) }
+    $BackupKeywords = "*Veeam*","*Acronis*","*Macrium*","*Datto*","*Carbonite*","*Veritas*","*CrashPlan*","*Cove*","*Axcient*","*Rubrik*","*N-able*","*SentinelOne*"
+    $DetectedServices = Get-Service -ErrorAction SilentlyContinue | Where-Object { $d = $_.DisplayName; ($BackupKeywords | Where-Object { $d -like $_ }) }
 
-    # Build Backup Options Array
     $BackupOptions = @("Select...")
     if ($DetectedServices) {
         foreach ($svc in $DetectedServices) { $BackupOptions += "[DETECTED] $($svc.DisplayName)" }
         $BackupOptions += "----------------"
     }
-    $BackupOptions += @("Datto", "Veeam", "Acronis", "Macrium", "Carbonite", "CrashPlan", "Windows Server Backup", "Other (Manual)")
+    $BackupOptions += @("Datto","Veeam","Acronis","Macrium","Carbonite","CrashPlan","Cove","Axcient","Rubrik","Windows Server Backup","Other (Manual)")
 
-    $WinBackup = Get-WinEvent -LogName "Microsoft-Windows-Backup" -MaxEvents 1 -ErrorAction SilentlyContinue
-
-    # Smart Backup Logic (Windows Native)
+    # Pull last 30 backup events to count successes/failures, not just the most recent
+    $WinBackupEvents = Get-WinEvent -LogName "Microsoft-Windows-Backup" -MaxEvents 30 -ErrorAction SilentlyContinue
     $BackupSuccessSel = "Select..."
     $LastBackupTime = ""
     $BackupFailedSel = "Select..."
-    if ($WinBackup) {
-        if ($WinBackup.Id -eq 4) { $BackupSuccessSel = "Yes"; $BackupFailedSel = "No"; $LastBackupTime = $WinBackup.TimeCreated.ToString("yyyy-MM-dd HH:mm") }
-        else { $BackupSuccessSel = "No"; $BackupFailedSel = "Yes"; $LastBackupTime = "Failed at " + $WinBackup.TimeCreated.ToString("yyyy-MM-dd HH:mm") }
+    $BackupSummary = ""
+    if ($WinBackupEvents) {
+        $succ = @($WinBackupEvents | Where-Object { $_.Id -eq 4 })
+        $fail = @($WinBackupEvents | Where-Object { $_.Id -ne 4 })
+        if ($succ.Count -gt 0) {
+            $BackupSuccessSel = "Yes"
+            $LastBackupTime = $succ[0].TimeCreated.ToString("yyyy-MM-dd HH:mm")
+        } else {
+            $BackupSuccessSel = "No"
+        }
+        $BackupFailedSel = if ($fail.Count -gt 0) { "Yes" } else { "No" }
+        $BackupSummary = "Last 30 events: $($succ.Count) success / $($fail.Count) failure"
     }
 
-    # 2. Security & Patching
+    # 2. Updates - prefer Update Session history over Get-HotFix
     Log-Output "[-] Auditing Security & Updates..."
     if ($form -and $form.Visible) { [System.Windows.Forms.Application]::DoEvents() }
     $AV = Get-CimInstance -Namespace root/SecurityCenter2 -ClassName AntivirusProduct -ErrorAction SilentlyContinue
-    # Windows Updates (COM)
+
+    $LastUpdateDate = ""
+    try {
+        $UpdateSession = New-Object -ComObject Microsoft.Update.Session
+        $hist = $UpdateSession.QueryHistory(0, 50) | Where-Object { $_.ResultCode -eq 2 } | Sort-Object Date -Descending | Select-Object -First 1
+        if ($hist) { $LastUpdateDate = $hist.Date.ToString('yyyy-MM-dd') }
+    } catch {}
+    if (-not $LastUpdateDate) {
+        try {
+            $LastHotFix = Get-HotFix -ErrorAction SilentlyContinue | Sort-Object InstalledOn -Descending | Select-Object -First 1
+            if ($LastHotFix -and $LastHotFix.InstalledOn) { $LastUpdateDate = $LastHotFix.InstalledOn.ToString('yyyy-MM-dd') }
+        } catch {}
+    }
+
+    # Missing updates - run search in a background job with timeout to avoid hanging the UI
     $MissingUpdatesCount = 0
     $MissingUpdatesHTML = ""
     try {
-        $UpdateSession = New-Object -ComObject Microsoft.Update.Session
-        $UpdateSearcher = $UpdateSession.CreateUpdateSearcher()
-        $SearchResult = $UpdateSearcher.Search("IsInstalled=0 and Type='Software' and IsHidden=0")
-        $MissingUpdatesCount = $SearchResult.Updates.Count
-        if ($MissingUpdatesCount -gt 0) {
-            foreach ($u in $SearchResult.Updates) {
-                $uQuery = [uri]::EscapeDataString("Windows Update $($u.Title) problems")
-                $MissingUpdatesHTML += "<li>$($u.Title) (<a href='https://www.google.com/search?q=$uQuery' target='_blank' class='ai-link'>Analyze</a>)</li>"
-            }
+        $job = Start-Job -ScriptBlock {
+            $sess = New-Object -ComObject Microsoft.Update.Session
+            $searcher = $sess.CreateUpdateSearcher()
+            $res = $searcher.Search("IsInstalled=0 and Type='Software' and IsHidden=0")
+            $titles = @()
+            foreach ($u in $res.Updates) { $titles += [string]$u.Title }
+            return @{ Count = [int]$res.Updates.Count; Titles = $titles }
         }
-    } catch { $MissingUpdatesHTML = "Error querying Windows Update." }
+        $finished = Wait-Job $job -Timeout 90
+        if ($finished) {
+            $r = Receive-Job $job -ErrorAction SilentlyContinue
+            $MissingUpdatesCount = [int]$r.Count
+            if ($MissingUpdatesCount -gt 0) {
+                foreach ($t in $r.Titles) {
+                    $tEnc = HtmlEnc $t
+                    $uQuery = [uri]::EscapeDataString("Windows Update $t problems")
+                    $MissingUpdatesHTML += "<li>$tEnc (<a href='https://www.google.com/search?q=$uQuery' target='_blank' class='ai-link'>Analyze</a>)</li>"
+                }
+            }
+        } else {
+            $MissingUpdatesHTML = "Update search timed out after 90 seconds (WSUS unreachable?)."
+        }
+        Remove-Job $job -Force -ErrorAction SilentlyContinue
+    } catch {
+        $MissingUpdatesHTML = "Error querying Windows Update: " + (HtmlEnc $_.Exception.Message)
+    }
 
-    # Smart Update Logic (Last Hotfix + Pending Reboot)
-    $LastHotFix = Get-HotFix | Sort-Object InstalledOn -Descending | Select-Object -First 1
-    $LastUpdateDate = if ($LastHotFix) { $LastHotFix.InstalledOn.ToString('yyyy-MM-dd') } else { "" }
-
-    # Check Pending Reboot
+    # Pending Reboot
     $PendingReboot = $false
     if (Test-Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending") { $PendingReboot = $true }
     if (Test-Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\RebootRequired") { $PendingReboot = $true }
     $UpdateNote = if ($PendingReboot) { "<span class='alert'><b>(Reboot Pending)</b></span>" } else { "" }
 
-
-    # Smart Defender Logic
+    # Defender
     $Defender = Get-MpComputerStatus -ErrorAction SilentlyContinue
     $RTPEnabled = "Select..."
     $LastScanDate = ""
     if ($Defender) {
         $RTPEnabled = if ($Defender.RealTimeProtectionEnabled) { "Yes" } else { "No" }
         $LastScanDate = if ($Defender.QuickScanEndTime) { $Defender.QuickScanEndTime.ToString("yyyy-MM-dd") } else { "Never" }
-        
-        # Fix for Server OS where SecurityCenter2 is missing
-        if (-not $AV) {
-            $AV = [PSCustomObject]@{ displayName = "Windows Defender" }
+        if (-not $AV) { $AV = [PSCustomObject]@{ displayName = "Windows Defender" } }
+    }
+
+    # Local users (skip on DC - no local SAM)
+    $LocalUsers = @()
+    $DisabledUsers = @()
+    $DisabledUsersSel = "Select..."
+    $LocalUsersNote = ""
+    if ($IsDC) {
+        $LocalUsersNote = "Domain Controller - see Active Directory Users"
+        $DisabledUsersSel = "N/A"
+    } else {
+        try {
+            $LocalUsers = Get-LocalUser -ErrorAction Stop | Select-Object Name, Enabled, PasswordLastSet, SID
+            $DisabledUsers = $LocalUsers | Where-Object { $_.Enabled -eq $false }
+            $DisabledUsersSel = if ($DisabledUsers) { "Yes" } else { "No" }
+        } catch {
+            $LocalUsersNote = "Could not enumerate local users"
         }
     }
 
-    # Smart User Logic
-    try {
-        $LocalUsers = Get-LocalUser -ErrorAction Stop | Select-Object Name, Enabled, PasswordLastSet
-    } catch {
-        $LocalUsers = @()
-        Log-Output "Warning: Could not list local users."
-    }
-    $DisabledUsers = $LocalUsers | Where-Object { $_.Enabled -eq $false }
-    $DisabledUsersSel = if ($DisabledUsers) { "Yes" } else { "No" }
-
-    # Smart Admin Password Last Set & Age Check
+    # Built-in Administrator (RID -500)
     $AdminPassLastSet = "Unknown / Domain Account"
     $AdminPassChangedRegularly = "Select..."
+    $AdminEnabledNote = ""
     try {
-        # Get-LocalUser with SID filter (LocalUsers select doesn't include SID)
-        $BuiltInAdmin = Get-LocalUser -ErrorAction SilentlyContinue | Where-Object { $_.SID -like "*-500" }
-        
-        if ($BuiltInAdmin -and $BuiltInAdmin.PasswordLastSet) {
-            $AdminPassLastSet = $BuiltInAdmin.PasswordLastSet.ToString("yyyy-MM-dd")
-            $DaysSinceChange = (New-TimeSpan -Start $BuiltInAdmin.PasswordLastSet -End (Get-Date)).Days
-            if ($DaysSinceChange -gt 90) { 
-                $AdminPassChangedRegularly = "No" 
-                $AdminPassLastSet += " ($DaysSinceChange days ago)"
+        $BuiltInAdmin = $null
+        if (-not $IsDC) {
+            $BuiltInAdmin = Get-LocalUser -ErrorAction SilentlyContinue | Where-Object { $_.SID -like "*-500" } | Select-Object -First 1
+        }
+        if ($BuiltInAdmin) {
+            $AdminEnabledNote = if ($BuiltInAdmin.Enabled) { " (Built-in Administrator: ENABLED)" } else { " (Built-in Administrator: disabled)" }
+            if ($BuiltInAdmin.PasswordLastSet) {
+                $AdminPassLastSet = $BuiltInAdmin.PasswordLastSet.ToString("yyyy-MM-dd")
+                $DaysSinceChange = (New-TimeSpan -Start $BuiltInAdmin.PasswordLastSet -End (Get-Date)).Days
+                if ($DaysSinceChange -gt 90) {
+                    $AdminPassChangedRegularly = "No"
+                    $AdminPassLastSet += " ($DaysSinceChange days ago)"
+                } else {
+                    $AdminPassChangedRegularly = "Yes"
+                }
             } else {
-                $AdminPassChangedRegularly = "Yes"
+                $AdminPassLastSet = "Never Set"
             }
-        } elseif ($BuiltInAdmin) {
-            $AdminPassLastSet = "Never Set"
+        } elseif ($IsDC) {
+            $AdminPassLastSet = "Domain Controller - see AD"
         }
     } catch {
         $AdminPassLastSet = "N/A (See AD)"
     }
 
-    # Smart Password Policy (SecEdit)
+    # Password policy (requires admin)
     $PassComplexSel = "Select..."
     $PassInfoStr = ""
-    try {
-        $SecEditFile = "$env:TEMP\secpol.cfg"
-        secedit /export /cfg $SecEditFile /quiet
-        $SecPol = Get-Content $SecEditFile
-        
-        # Complexity
-        if ($SecPol -match "PasswordComplexity\s*=\s*1") { 
-            $PassComplexSel = "Yes" 
-            $PassInfoStr += "Complexity: Enabled. "
-        } elseif ($SecPol -match "PasswordComplexity\s*=\s*0") {
-            $PassComplexSel = "No"
-            $PassInfoStr += "Complexity: Disabled. "
-        }
-
-        # Length
-        if ($SecPol -match "MinimumPasswordLength\s*=\s*(\d+)") {
-            $PassInfoStr += "Min Length: $($matches[1])."
-        }
-        
-        Remove-Item $SecEditFile -ErrorAction SilentlyContinue
-    } catch {
-        $PassInfoStr = "Could not verify local policy."
+    if ($isElevated) {
+        try {
+            $SecEditFile = Join-Path $env:TEMP "secpol_$([guid]::NewGuid().ToString('N')).cfg"
+            secedit /export /cfg $SecEditFile /quiet | Out-Null
+            if (Test-Path $SecEditFile) {
+                $SecPol = Get-Content $SecEditFile
+                if ($SecPol -match "PasswordComplexity\s*=\s*1") { $PassComplexSel = "Yes"; $PassInfoStr += "Complexity: Enabled. " }
+                elseif ($SecPol -match "PasswordComplexity\s*=\s*0") { $PassComplexSel = "No"; $PassInfoStr += "Complexity: Disabled. " }
+                if ($SecPol -match "MinimumPasswordLength\s*=\s*(\d+)") { $PassInfoStr += "Min Length: $($matches[1])." }
+                Remove-Item $SecEditFile -ErrorAction SilentlyContinue
+            }
+        } catch { $PassInfoStr = "Could not verify local policy." }
+    } else {
+        $PassInfoStr = "(Elevation required to read policy.)"
     }
 
-    # 3. Encryption (BitLocker)
+    # 3. BitLocker / TPM
     Log-Output "[-] Checking Encryption..."
     if ($form -and $form.Visible) { [System.Windows.Forms.Application]::DoEvents() }
     $TPM = $null
-    try {
-        # TBS service may not be available on all systems
-        $TPM = Get-Tpm -ErrorAction Stop
-    } catch {
-        Log-Output "TPM check skipped (TBS service not available or not supported): $_"
-    }
+    try { $TPM = Get-Tpm -ErrorAction Stop } catch { Log-Output "TPM check skipped: $($_.Exception.Message)" }
     $BitLocker = if (Get-Command "Get-BitLockerVolume" -ErrorAction SilentlyContinue) { Get-BitLockerVolume -ErrorAction SilentlyContinue } else { $null }
 
-    # Smart BitLocker Logic
     $BitLockerSel = "Select..."
     $BitLockerReason = ""
+    $BitLockerStatus = "Not Encrypted"
     $C_Encrypted = $false
-    if ($BitLocker -and ($BitLocker | Where-Object ProtectionStatus -eq 'On')) {
+    if ($BitLocker -and ($BitLocker | Where-Object ProtectionStatus -EQ 'On')) {
         $BitLockerSel = "Yes"
         $BitLockerStatus = ($BitLocker | ForEach-Object { "$($_.MountPoint) [$($_.ProtectionStatus)]" }) -join ", "
         if ($BitLocker | Where-Object { $_.MountPoint -like "C:*" -and $_.ProtectionStatus -eq 'On' }) { $C_Encrypted = $true }
     } else {
-        $BitLockerStatus = "Not Encrypted"
-        if ($IsVM) {
-            $BitLockerSel = "N/A"
-            $BitLockerReason = "Virtual Machine"
-        } else {
-            $BitLockerSel = "No"
-            $BitLockerReason = "Physical Server - No Encryption Detected"
-        }
+        if ($IsVM) { $BitLockerSel = "N/A"; $BitLockerReason = "Virtual Machine" }
+        else { $BitLockerSel = "No"; $BitLockerReason = "Physical Server - No Encryption Detected" }
     }
 
-    # Smart ChiroTouch Logic
     $ChiroPath = "C:\Program Files\PSChiro"
     $ChiroInstalled = (Test-Path $ChiroPath)
-    $ChiroEncryptedSel = "Select..."
-    if ($ChiroInstalled) {
-        $ChiroEncryptedSel = if ($C_Encrypted) { "Yes" } else { "No" }
-    } else {
-        $ChiroEncryptedSel = "N/A"
-    }
+    $ChiroEncryptedSel = if ($ChiroInstalled) { if ($C_Encrypted) { "Yes" } else { "No" } } else { "N/A" }
 
     # 4. Firewall & RDP
     Log-Output "[-] Auditing Network & RDP..."
     if ($form -and $form.Visible) { [System.Windows.Forms.Application]::DoEvents() }
-    $Firewall = Get-NetFirewallProfile | Where-Object Enabled -eq True
+    $Firewall = Get-NetFirewallProfile -ErrorAction SilentlyContinue | Where-Object Enabled -EQ $true
     $RDPReg = Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server" -Name "fDenyTSConnections" -ErrorAction SilentlyContinue
-    
-    # Smart SMB Share Logic
-    $Shares = Get-SmbShare -ErrorAction SilentlyContinue | Where-Object { $_.Name -notin @("IPC$", "ADMIN$", "C$", "D$", "E$") }
+
+    $Shares = Get-SmbShare -ErrorAction SilentlyContinue | Where-Object { $_.Name -notin @("IPC$","ADMIN$","C$","D$","E$") }
     $ShareList = if ($Shares) { "Shares: " + ($Shares.Name -join ", ") } else { "No Custom Shares" }
 
-    # Smart RDP Logic
-    $RDPVPNSel = "Select..."
-    $RDPMFASel = "Select..."
-    $RDPExternalSel = "Select..."
-    $RDPFailSel = "Select..."
-    $RDPFailCount = 0
-
-    if ($RDPReg.fDenyTSConnections -ne 0) { 
-        # RDP Disabled
+    $RDPVPNSel = "Select..."; $RDPMFASel = "Select..."; $RDPExternalSel = "Select..."; $RDPFailSel = "Select..."; $RDPFailCount = 0
+    if ($RDPReg -and $RDPReg.fDenyTSConnections -ne 0) {
         $RDPStatus = "<span class='good'>Disabled</span>"
-        $RDPVPNSel = "N/A"
-        $RDPMFASel = "N/A"
-        $RDPExternalSel = "N/A"
-        $RDPFailSel = "N/A"
+        $RDPVPNSel = "N/A"; $RDPMFASel = "N/A"; $RDPExternalSel = "N/A"; $RDPFailSel = "N/A"
     } else {
-        # RDP Enabled
         $RDPStatus = "<span class='warning'>Enabled (Open)</span>"
-        # RDP Failure Scan (Security Log ID 4625)
-        $RDPFailures = Get-WinEvent -FilterHashtable @{LogName='Security'; Id=4625; StartTime=(Get-Date).AddDays(-30)} -ErrorAction SilentlyContinue
-        $RDPFailCount = if ($RDPFailures) { $RDPFailures.Count } else { 0 }
-        $RDPFailSel = if ($RDPFailCount -gt 0) { "Yes" } else { "No" }
-        
-        # Default assumptions for active RDP (Safe default)
-        $RDPExternalSel = "No" 
+        if ($isElevated) {
+            $RDPFailures = Get-WinEvent -FilterHashtable @{LogName='Security'; Id=4625; StartTime=(Get-Date).AddDays(-30)} -MaxEvents 500 -ErrorAction SilentlyContinue
+            $RDPFailCount = if ($RDPFailures) { @($RDPFailures).Count } else { 0 }
+            $RDPFailSel = if ($RDPFailCount -gt 0) { "Yes" } else { "No" }
+        } else {
+            $RDPFailSel = "Select..."
+        }
+        $RDPExternalSel = "No"
     }
 
-    # New: Listening Ports for Inbound Review
     $OpenPortsStr = ""
     try {
         $OpenPorts = Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty LocalPort -Unique | Sort-Object { [int]$_ }
@@ -2169,58 +2182,102 @@ function Invoke-SecurityAudit {
     # 5. Logs & Hardware
     Log-Output "[-] Analyzing Logs & Health..."
     if ($form -and $form.Visible) { [System.Windows.Forms.Application]::DoEvents() }
-    $LogSettings = Get-EventLog -List | Where-Object { $_.Log -eq 'Security' }
-    $Events = Get-WinEvent -FilterHashtable @{LogName='System','Application'; Level=1,2; StartTime=(Get-Date).AddDays(-$EventLookbackDays)} -ErrorAction SilentlyContinue | Select-Object -First $MaxEventsToShow
 
-    # App Error Scan
-    $AppErrors = Get-WinEvent -FilterHashtable @{LogName='Application'; Level=2; StartTime=(Get-Date).AddDays(-30)} -ErrorAction SilentlyContinue | Select-Object -First 1
+    $SecurityLogInfo = Get-WinEvent -ListLog 'Security' -ErrorAction SilentlyContinue
+    $LogSettings = if ($SecurityLogInfo) {
+        [PSCustomObject]@{
+            Log = 'Security'
+            MaximumKilobytes = [math]::Round($SecurityLogInfo.MaximumSizeInBytes / 1KB, 0)
+            IsEnabled = $SecurityLogInfo.IsEnabled
+        }
+    } else { $null }
+
+    $Events = Get-WinEvent -FilterHashtable @{LogName='System','Application'; Level=1,2; StartTime=(Get-Date).AddDays(-$EventLookbackDays)} -MaxEvents $MaxEventsToShow -ErrorAction SilentlyContinue
+
+    $AppErrors = Get-WinEvent -FilterHashtable @{LogName='Application'; Level=2; StartTime=(Get-Date).AddDays(-30)} -MaxEvents 1 -ErrorAction SilentlyContinue
     $AppErrorSel = if ($AppErrors) { "Yes" } else { "No" }
 
-    # New: Database Error Scan (SQL/MySQL/Oracle keywords)
-    # ProviderName wildcards are not reliable in FilterHashtable; do a bounded fetch and match locally.
+    # DB error scan - whitelist provider names instead of substring matching messages
+    $DBProviderRegex = '^(MSSQLSERVER|MSSQL\$|SQLAgent|SQLBrowser|MySQL|MariaDB|OracleService|OracleOraDb|PostgreSQL)'
     $DBErrors = $null
     try {
-        $recentApp = Get-WinEvent -FilterHashtable @{LogName='Application'; Level=1,2; StartTime=(Get-Date).AddDays(-30)} -MaxEvents 300 -ErrorAction SilentlyContinue
+        $recentApp = Get-WinEvent -FilterHashtable @{LogName='Application'; Level=1,2; StartTime=(Get-Date).AddDays(-30)} -MaxEvents 500 -ErrorAction SilentlyContinue
         if ($recentApp) {
-            $DBErrors = $recentApp | Where-Object {
-                ($_.ProviderName -match 'SQL|Database|MySQL|Oracle') -or ($_.Message -match 'SQL|Database|MySQL|Oracle')
-            } | Select-Object -First 1
+            $DBErrors = $recentApp | Where-Object { $_.ProviderName -match $DBProviderRegex } | Select-Object -First 1
         }
-    } catch {
-        $DBErrors = $null
-    }
+    } catch { $DBErrors = $null }
     $DBErrorSel = if ($DBErrors) { "Yes" } else { "No" }
 
-    # Physical Disk Health & Space Check
-    $Disks = Get-PhysicalDisk | Select-Object FriendlyName, MediaType, HealthStatus -ErrorAction SilentlyContinue
+    # Disk health
+    $Disks = Get-PhysicalDisk -ErrorAction SilentlyContinue | Select-Object FriendlyName, MediaType, HealthStatus
     $DiskHealthStr = if ($Disks) { ($Disks | ForEach-Object { "$($_.MediaType) ($($_.HealthStatus))" }) -join "; " } else { "Unknown" }
 
-    # Smart Disk Space Check (C: Drive)
     $StorageWarning = ""
     try {
-        $CDrive = Get-CimInstance Win32_LogicalDisk -Filter "DeviceID='C:'"
-        $FreePct = [math]::Round(($CDrive.FreeSpace / $CDrive.Size) * 100, 1)
-        if ($FreePct -lt 15) {
-            $StorageWarning = "Low Disk Space on C: ($FreePct% Free)"
+        $CDrive = Get-CimInstance Win32_LogicalDisk -Filter "DeviceID='C:'" -ErrorAction SilentlyContinue
+        if ($CDrive -and $CDrive.Size -gt 0) {
+            $FreePct = [math]::Round(($CDrive.FreeSpace / $CDrive.Size) * 100, 1)
+            if ($FreePct -lt 15) { $StorageWarning = "Low Disk Space on C: ($FreePct% Free)" }
         }
     } catch {}
 
     $ClientNameVal = ""
     $LocationDefault = ""
 
-    # --- HTML GENERATION ---
+    # --- Pre-render encoded values used in HTML ---
+    $compNameEnc = HtmlEnc $CompInfo.Name
+    $osCaptionEnc = HtmlEnc $OSInfo.Caption
+    $osBuildEnc = HtmlEnc $OSInfo.BuildNumber
+    $rolesValue = if ($IsDC) { "Domain Controller" + (if ($DetectedRoles) { " - $DetectedRoles" } else { "" }) } else { $DetectedRoles }
 
+    $adminListHtml = if ($AdminGroup -and $AdminGroup.Count -gt 0) {
+        ($AdminGroup | ForEach-Object { "<li>$(HtmlEnc $_.Name)</li>" }) -join ''
+    } else { "<li><em>(none / could not enumerate)</em></li>" }
+
+    $localUserListHtml = if ($IsDC) {
+        "<li><em>$(HtmlEnc $LocalUsersNote)</em></li>"
+    } elseif ($LocalUsers -and $LocalUsers.Count -gt 0) {
+        ($LocalUsers | ForEach-Object {
+            $tag = if ($_.Enabled) { '' } else { ' (disabled)' }
+            "<li>$(HtmlEnc $_.Name)$(HtmlEnc $tag)</li>"
+        }) -join ''
+    } else {
+        "<li><em>$(HtmlEnc $LocalUsersNote)</em></li>"
+    }
+
+    $disabledNoteHtml = if ($DisabledUsers -and $DisabledUsers.Count -gt 0) {
+        "<br><small>Disabled: " + (HtmlEnc (($DisabledUsers.Name) -join ", ")) + "</small>"
+    } else { "" }
+
+    $eventTableHtml = if ($Events) {
+        $rows = ($Events | ForEach-Object {
+            $q = [uri]::EscapeDataString("Windows Event $($_.Id) $($_.ProviderName)")
+            $msg = if ($_.Message) { $_.Message.Substring(0, [Math]::Min(80, $_.Message.Length)) } else { "(No message)" }
+            "<tr><td>$(HtmlEnc $_.ProviderName)</td><td>$(HtmlEnc $_.Id)</td><td>$(HtmlEnc $msg)...</td><td><a href='https://www.google.com/search?q=$q' target='_blank' class='ai-link'>Ask AI</a></td></tr>"
+        }) -join ''
+        "<table style='font-size:0.9em; width:100%; border-collapse:collapse; border:1px solid #ddd;'><tr><th>Src</th><th>ID</th><th>Msg</th><th>Fix</th></tr>$rows</table>"
+    } else { "None found." }
+
+    $missingUpdatesUlContent = if ($MissingUpdatesHTML) { $MissingUpdatesHTML } else { "<li>None pending.</li>" }
+    $secLogSizeMB = if ($LogSettings) { [math]::Round($LogSettings.MaximumKilobytes/1024,0) } else { 0 }
+
+    $elevationBanner = if (-not $isElevated) {
+        "<div style='background:#fff3cd; border:1px solid #ffe69c; color:#664d03; padding:10px; margin-bottom:15px; border-radius:4px;'><strong>Notice:</strong> This audit was generated without Administrator rights. Several fields (BitLocker, secedit policy, Security log queries, TPM) may be blank or incomplete.</div>"
+    } else { "" }
+
+    # --- HTML BODY ---
     $HTMLBody = @"
+    $elevationBanner
     <div class='header-block'>
         <div style='display:flex; justify-content:space-between; align-items:flex-start;'>
             <div>
-                <h1>Internal Server Security & Backup Audit Form</h1>
+                <h1>Internal Server Security &amp; Backup Audit Form</h1>
                 <div class='meta-info'>
                     <span>Client: $(Get-HtmlInput "Client Name" -Value $ClientNameVal)</span>
                     <span style='margin-left:20px;'>Audit Month: $(Get-HtmlInput "e.g. October" -Value "$(Get-Date -Format 'MMMM')")</span>
-                    <span style='margin-left:20px;'>Completed By: $env:USERNAME</span>
+                    <span style='margin-left:20px;'>Completed By: $(HtmlEnc $env:USERNAME)</span>
                 </div>
-                <div style='margin-top:5px; font-size:0.85em; color:#666;'>Uptime: $UptimeStr</div>
+                <div style='margin-top:5px; font-size:0.85em; color:#666;'>Uptime: $(HtmlEnc $UptimeStr)</div>
             </div>
             <button onclick="copyReport()" class="copy-btn">Copy to Clipboard</button>
         </div>
@@ -2228,14 +2285,14 @@ function Invoke-SecurityAudit {
 
     <h3>Server Identifying Information</h3>
     <table>
-        <tr><th>Server Name</th><td>$($CompInfo.Name)</td></tr>
+        <tr><th>Server Name</th><td>$compNameEnc</td></tr>
         <tr><th>Location (onsite/offsite)</th><td>$(Get-HtmlInput "e.g., Server Closet" -Value $LocationDefault)</td></tr>
-        <tr><th>OS Version</th><td>$($OSInfo.Caption) (Build $($OSInfo.BuildNumber)) $EOSWarning</td></tr>
-        <tr><th>Role(s)</th><td>$(Get-HtmlInput "e.g., DC, Database" -Value $DetectedRoles)</td></tr>
-        <tr><th>Who has administrative access?</th><td><ul>$($AdminGroup.Name | ForEach-Object { "<li>$_</li>" })</ul></td></tr>
+        <tr><th>OS Version</th><td>$osCaptionEnc (Build $osBuildEnc) $EOSWarning</td></tr>
+        <tr><th>Role(s)</th><td>$(Get-HtmlInput "e.g., DC, Database" -Value $rolesValue)</td></tr>
+        <tr><th>Who has administrative access?</th><td><ul>$adminListHtml</ul></td></tr>
     </table>
 
-    <h2>1. Backup & Data Retention (HIPAA §164.308(a)(7))</h2>
+    <h2>1. Backup &amp; Data Retention (HIPAA &#167;164.308(a)(7))</h2>
     <h3>A. Backup System Review</h3>
     <table>
         <tr><th>Backup solution used</th><td>
@@ -2243,12 +2300,12 @@ function Invoke-SecurityAudit {
             <br><small>Select to auto-fill encryption defaults.</small>
         </td></tr>
         <tr><th>Are backups completing successfully?</th><td>
-            $(Get-HtmlSelect @("Select...", "Yes", "No", "N/A") -SelectedValue $BackupSuccessSel)
-            $(if($WinBackup){ "<br><small>WinBackup Result: " + $WinBackup.Result + "</small>" })
+            $(Get-HtmlSelect @("Select...","Yes","No","N/A") -SelectedValue $BackupSuccessSel)
+            $(if ($BackupSummary) { "<br><small>" + (HtmlEnc $BackupSummary) + "</small>" })
         </td></tr>
-        <tr><th>Last successful backup date & time</th><td>$(Get-HtmlInput "YYYY-MM-DD HH:MM" -Value $LastBackupTime)</td></tr>
+        <tr><th>Last successful backup date &amp; time</th><td>$(Get-HtmlInput "YYYY-MM-DD HH:MM" -Value $LastBackupTime)</td></tr>
         <tr><th>Backup frequency (hourly/daily)</th><td>$(Get-HtmlInput "e.g., Hourly")</td></tr>
-        <tr><th>Are there any failed backups this month?</th><td>$(Get-HtmlSelect @("Select...", "Yes", "No", "N/A") -SelectedValue $BackupFailedSel)</td></tr>
+        <tr><th>Are there any failed backups this month?</th><td>$(Get-HtmlSelect @("Select...","Yes","No","N/A") -SelectedValue $BackupFailedSel)</td></tr>
     </table>
 
     <h3>B. Backup Encryption</h3>
@@ -2261,7 +2318,7 @@ function Invoke-SecurityAudit {
     <h3>C. Backup Retention</h3>
     <table>
         <tr><th>Retention period</th><td>$(Get-HtmlInput "days/weeks/months/years")</td></tr>
-        <tr><th>Does retention meet HIPAA’s 6-year requirement?</th><td>$(Get-HtmlSelect)</td></tr>
+        <tr><th>Does retention meet HIPAA's 6-year requirement?</th><td>$(Get-HtmlSelect)</td></tr>
     </table>
 
     <h3>D. Restore Testing</h3>
@@ -2271,91 +2328,82 @@ function Invoke-SecurityAudit {
         <tr><th>Result</th><td>$(Get-HtmlInput "Successful / Issues found")</td></tr>
     </table>
 
-    <h2>2. Server Security & Patch Compliance (HIPAA §164.308(a)(1), §164.312(c))</h2>
+    <h2>2. Server Security &amp; Patch Compliance</h2>
     <h3>A. Update Status</h3>
     <table>
         <tr><th>Are Windows Updates current?</th><td>$(if($MissingUpdatesCount -eq 0){"<span class='good'>Yes</span>"}else{"<span class='alert'>No ($MissingUpdatesCount Pending)</span>"}) $UpdateNote</td></tr>
         <tr><th>Last update date</th><td>$(Get-HtmlInput "Check Update History" -Value $LastUpdateDate)</td></tr>
-        <tr><th>Pending patches?</th><td><ul>$MissingUpdatesHTML</ul></td></tr>
+        <tr><th>Pending patches?</th><td><ul>$missingUpdatesUlContent</ul></td></tr>
     </table>
 
     <h3>B. Antivirus / EDR</h3>
     <table>
-        <tr><th>AV/EDR installed</th><td>$(if($AV){$AV.displayName}else{"<span class='alert'>None Detected</span>"})</td></tr>
-        <tr><th>Real-time protection enabled?</th><td>$(Get-HtmlSelect @("Select...", "Yes", "No", "N/A") -SelectedValue $RTPEnabled)</td></tr>
+        <tr><th>AV/EDR installed</th><td>$(if($AV){HtmlEnc $AV.displayName}else{"<span class='alert'>None Detected</span>"})</td></tr>
+        <tr><th>Real-time protection enabled?</th><td>$(Get-HtmlSelect @("Select...","Yes","No","N/A") -SelectedValue $RTPEnabled)</td></tr>
         <tr><th>Last scan date</th><td>$(Get-HtmlInput "YYYY-MM-DD" -Value $LastScanDate)</td></tr>
         <tr><th>Any detections this month?</th><td>$(Get-HtmlSelect) $(Get-HtmlInput "Attach or summarize if yes")</td></tr>
     </table>
 
     <h3>C. Local User Accounts</h3>
     <table>
-        <tr><th>List all local server accounts</th><td><ul>$($LocalUsers.Name | ForEach-Object{"<li>$_</li>"})</ul></td></tr>
+        <tr><th>List all local server accounts</th><td><ul>$localUserListHtml</ul></td></tr>
         <tr><th>Any accounts without MFA?</th><td>$(Get-HtmlSelect)</td></tr>
-        <tr><th>Any disabled but unremoved accounts?</th><td>$(Get-HtmlSelect @("Select...", "Yes", "No", "N/A") -SelectedValue $DisabledUsersSel) $(if($DisabledUsers){ "<br><small>Disabled: " + ($DisabledUsers.Name -join ", ") + "</small>" })</td></tr>
+        <tr><th>Any disabled but unremoved accounts?</th><td>$(Get-HtmlSelect @("Select...","Yes","No","N/A") -SelectedValue $DisabledUsersSel) $disabledNoteHtml</td></tr>
         <tr><th>Any unexpected accounts?</th><td>$(Get-HtmlSelect) $(Get-HtmlInput "Document if yes")</td></tr>
     </table>
 
     <h3>D. Administrator Access</h3>
     <table>
         <tr><th>Who has administrative credentials</th><td>(See Server Info Header)</td></tr>
-        <tr><th>Are admin passwords changed regularly?</th><td>$(Get-HtmlSelect @("Select...", "Yes", "No", "N/A") -SelectedValue $AdminPassChangedRegularly) <br><small>Last Set: $AdminPassLastSet</small></td></tr>
-        <tr><th>Is password complexity enforced?</th><td>$(Get-HtmlSelect @("Select...", "Yes", "No", "N/A") -SelectedValue $PassComplexSel) <small>$PassInfoStr</small></td></tr>
+        <tr><th>Are admin passwords changed regularly?</th><td>$(Get-HtmlSelect @("Select...","Yes","No","N/A") -SelectedValue $AdminPassChangedRegularly) <br><small>Last Set: $(HtmlEnc $AdminPassLastSet)$(HtmlEnc $AdminEnabledNote)</small></td></tr>
+        <tr><th>Is password complexity enforced?</th><td>$(Get-HtmlSelect @("Select...","Yes","No","N/A") -SelectedValue $PassComplexSel) <small>$(HtmlEnc $PassInfoStr)</small></td></tr>
         <tr><th>Are there any shared admin accounts?</th><td>$(Get-HtmlSelect) $(Get-HtmlInput "Document if yes")</td></tr>
     </table>
 
-    <h2>3. Server Encryption (HIPAA §164.312(a)(2)(iv))</h2>
+    <h2>3. Server Encryption (HIPAA &#167;164.312(a)(2)(iv))</h2>
     <h3>A. Disk Encryption</h3>
     <table>
         <tr><th>Is full-disk encryption enabled?</th><td>
-            $(Get-HtmlSelect @("Select...", "Yes", "No", "N/A") -SelectedValue $BitLockerSel)
+            $(Get-HtmlSelect @("Select...","Yes","No","N/A") -SelectedValue $BitLockerSel)
             $(if(-not $BitLocker){"<span class='warning'>(BitLocker cmdlets not available)</span>"})
         </td></tr>
         <tr><th>Encryption status</th><td>$(Get-HtmlInput "e.g. Encrypted" -Value $BitLockerStatus)</td></tr>
-        <tr><th>TPM present/enabled</th><td>$(if($TPM.TpmPresent){"Yes"}else{"No"})</td></tr>
+        <tr><th>TPM present/enabled</th><td>$(if($TPM -and $TPM.TpmPresent){"Yes"}else{"No"})</td></tr>
         <tr><th>If not encrypted, reason why</th><td>$(Get-HtmlInput "Reason..." -Value $BitLockerReason)</td></tr>
     </table>
     <h3>B. Data Encryption</h3>
     <table>
-        <tr><th>Are ChiroTouch data files stored in encrypted form?</th><td>$(Get-HtmlSelect @("Select...", "Yes", "No", "N/A") -SelectedValue $ChiroEncryptedSel)</td></tr>
+        <tr><th>Are ChiroTouch data files stored in encrypted form?</th><td>$(Get-HtmlSelect @("Select...","Yes","No","N/A") -SelectedValue $ChiroEncryptedSel)</td></tr>
         <tr><th>Are database backups encrypted?</th><td>$(Get-HtmlSelect)</td></tr>
     </table>
 
-    <h2>4. Server Firewall & Network Security (HIPAA §164.312(e))</h2>
+    <h2>4. Server Firewall &amp; Network Security (HIPAA &#167;164.312(e))</h2>
     <h3>A. Local Firewall</h3>
     <table>
-        <tr><th>Windows Firewall enabled?</th><td>$(if($Firewall){"Yes (Profiles: $($Firewall.Name -join ', '))"}else{"<span class='alert'>No</span>"})</td></tr>
+        <tr><th>Windows Firewall enabled?</th><td>$(if($Firewall){"Yes (Profiles: " + (HtmlEnc ($Firewall.Name -join ', ')) + ")"}else{"<span class='alert'>No</span>"})</td></tr>
         <tr><th>Inbound rule review</th><td>$(Get-HtmlInput "List allowed inbound ports" -Value "$OpenPortsStr | $ShareList")</td></tr>
         <tr><th>Outbound rule review</th><td>$(Get-HtmlInput "Confirm non-essential ports blocked")</td></tr>
     </table>
     <h3>B. Remote Access</h3>
     <table>
         <tr><th>Does anyone RDP to the server?</th><td>Config Status: $RDPStatus $(Get-HtmlSelect)</td></tr>
-        <tr><th>Is RDP protected by VPN?</th><td>$(Get-HtmlSelect @("Select...", "Yes", "No", "N/A") -SelectedValue $RDPVPNSel)</td></tr>
-        <tr><th>MFA required?</th><td>$(Get-HtmlSelect @("Select...", "Yes", "No", "N/A") -SelectedValue $RDPMFASel)</td></tr>
-        <tr><th>External RDP open to internet?</th><td>$(Get-HtmlSelect @("Select...", "Yes", "No", "N/A") -SelectedValue $RDPExternalSel) (Should be No)</td></tr>
-        <tr><th>Any failed RDP attempts this month?</th><td>$(Get-HtmlSelect @("Select...", "Yes", "No", "N/A") -SelectedValue $RDPFailSel) <small>(Detected: $RDPFailCount)</small></td></tr>
+        <tr><th>Is RDP protected by VPN?</th><td>$(Get-HtmlSelect @("Select...","Yes","No","N/A") -SelectedValue $RDPVPNSel)</td></tr>
+        <tr><th>MFA required?</th><td>$(Get-HtmlSelect @("Select...","Yes","No","N/A") -SelectedValue $RDPMFASel)</td></tr>
+        <tr><th>External RDP open to internet?</th><td>$(Get-HtmlSelect @("Select...","Yes","No","N/A") -SelectedValue $RDPExternalSel) (Should be No)</td></tr>
+        <tr><th>Any failed RDP attempts this month?</th><td>$(Get-HtmlSelect @("Select...","Yes","No","N/A") -SelectedValue $RDPFailSel) <small>(Detected: $RDPFailCount)</small></td></tr>
     </table>
 
-    <h2>5. Server Monitoring & Logs (HIPAA §164.312(b))</h2>
+    <h2>5. Server Monitoring &amp; Logs (HIPAA &#167;164.312(b))</h2>
     <h3>A. Event Logs</h3>
     <table>
-        <tr><th>Security logs enabled?</th><td>$(if($LogSettings){"Yes"}else{"No"})</td></tr>
-        <tr><th>Retention period (in days)</th><td>$(Get-HtmlInput "Check Log Properties") (Size Limit: $(if($LogSettings){[math]::Round($LogSettings.MaximumKilobytes/1024,0)}else{"0"}) MB)</td></tr>
-        <tr><th>Any critical events found this month?</th><td>
-            $(if($Events){
-                "<table style='font-size:0.9em; width:100%; border-collapse:collapse; border:1px solid #ddd;'><tr><th>Src</th><th>ID</th><th>Msg</th><th>Fix</th></tr>" + 
-                ($Events | ForEach-Object {
-                    $q = [uri]::EscapeDataString("Windows Event $($_.Id) $($_.ProviderName)")
-                    $evtMsg = if ($_.Message) { $_.Message.Substring(0, [Math]::Min(50, $_.Message.Length)) } else { "(No message)" }
-                    "<tr><td>$($_.ProviderName)</td><td>$($_.Id)</td><td>$evtMsg...</td><td><a href='https://www.google.com/search?q=$q' target='_blank' class='ai-link'>Ask AI</a></td></tr>"
-                } | Out-String) + "</table>"
-            } else { "None found." })
-        </td></tr>
+        <tr><th>Security logs enabled?</th><td>$(if($LogSettings){"Yes"}else{"Unknown"})</td></tr>
+        <tr><th>Retention period (in days)</th><td>$(Get-HtmlInput "Check Log Properties") (Size Limit: $secLogSizeMB MB)</td></tr>
+        <tr><th>Any critical events found this month?</th><td>$eventTableHtml</td></tr>
     </table>
     <h3>B. Application Logs</h3>
     <table>
-        <tr><th>Any application errors?</th><td>$(Get-HtmlSelect @("Select...", "Yes", "No", "N/A") -SelectedValue $AppErrorSel) $(Get-HtmlInput "Describe..." -Value "See critical events above if Yes")</td></tr>
-        <tr><th>Any database errors?</th><td>$(Get-HtmlSelect @("Select...", "Yes", "No", "N/A") -SelectedValue $DBErrorSel) $(Get-HtmlInput "Describe...")</td></tr>
+        <tr><th>Any application errors?</th><td>$(Get-HtmlSelect @("Select...","Yes","No","N/A") -SelectedValue $AppErrorSel) $(Get-HtmlInput "Describe..." -Value "See critical events above if Yes")</td></tr>
+        <tr><th>Any database errors?</th><td>$(Get-HtmlSelect @("Select...","Yes","No","N/A") -SelectedValue $DBErrorSel) $(Get-HtmlInput "Describe...")</td></tr>
         <tr><th>Any performance concerns logged?</th><td>$(Get-HtmlInput "Describe...")</td></tr>
     </table>
     <h3>C. Huntress / EDR Logs</h3>
@@ -2363,7 +2411,7 @@ function Invoke-SecurityAudit {
         <tr><th>Any incidents detected on the server?</th><td>$(Get-HtmlSelect) $(Get-HtmlInput "Attach if yes")</td></tr>
     </table>
 
-    <h2>6. Physical Security (HIPAA §164.310)</h2>
+    <h2>6. Physical Security (HIPAA &#167;164.310)</h2>
     <h3>A. Server Location</h3>
     <table>
         <tr><th>Where is the server physically located?</th><td>$(Get-HtmlInput "closet, office, rack")</td></tr>
@@ -2372,17 +2420,17 @@ function Invoke-SecurityAudit {
         <tr><th>Any environmental risks?</th><td>$(Get-HtmlInput "Heat, water, unlocked room")</td></tr>
     </table>
 
-    <h2>7. Contingency & Failover (HIPAA §164.308(a)(7)(ii)(C))</h2>
+    <h2>7. Contingency &amp; Failover (HIPAA &#167;164.308(a)(7)(ii)(C))</h2>
     <h3>A. Disaster Recovery</h3>
     <table>
-        <tr><th>If the server failed, how would be restored?</th><td>$(Get-HtmlInput "Method...")</td></tr>
+        <tr><th>If the server failed, how would it be restored?</th><td>$(Get-HtmlInput "Method...")</td></tr>
         <tr><th>Estimated recovery time (RTO)</th><td>$(Get-HtmlInput "e.g., 4 Hours")</td></tr>
         <tr><th>Are offsite backups present?</th><td>$(Get-HtmlSelect)</td></tr>
     </table>
     <h3>B. Redundancy</h3>
     <table>
         <tr><th>RAID status</th><td>$(Get-HtmlInput "e.g., RAID 5 Healthy")</td></tr>
-        <tr><th>Storage warnings?</th><td>$(Get-HtmlInput "Describe..." -Value $(if($StorageWarning){$StorageWarning}else{""}))</td></tr>
+        <tr><th>Storage warnings?</th><td>$(Get-HtmlInput "Describe..." -Value $StorageWarning)</td></tr>
         <tr><th>Drive SMART status (any failing drives?)</th><td>$(Get-HtmlInput "Describe..." -Value $DiskHealthStr) (Check App Logs above)</td></tr>
     </table>
 
@@ -2392,9 +2440,9 @@ function Invoke-SecurityAudit {
         <tr>
             <td>$(Get-HtmlTextArea)</td>
             <td>$(Get-HtmlInput "Safeguard")</td>
-            <td>$(Get-HtmlSelect @("Low", "Moderate", "High"))</td>
-            <td>$(Get-HtmlSelect @("Jeremy Bean IT", "Client"))</td>
-            <td>$(Get-HtmlSelect @("Planned", "In Progress", "Not Scheduled"))</td>
+            <td>$(Get-HtmlSelect @("Low","Moderate","High"))</td>
+            <td>$(Get-HtmlSelect @("Jeremy Bean IT","Client"))</td>
+            <td>$(Get-HtmlSelect @("Planned","In Progress","Not Scheduled"))</td>
         </tr>
         <tr><td colspan="5"><strong>Notes:</strong> $(Get-HtmlInput "Additional Notes")</td></tr>
     </table>
@@ -2403,16 +2451,29 @@ function Invoke-SecurityAudit {
 "@
 
     if ([string]::IsNullOrWhiteSpace($HTMLBody)) { Log-Output "Error: HTML Body is empty!" }
-    
-    $HTMLPage = "<html><head><title>Security Audit Report</title>$style</head><body>$HTMLBody</body></html>"
-    
+
+    $HTMLPage = "<!DOCTYPE html><html><head><meta charset='utf-8'><title>Security Audit Report</title>$style</head><body>$HTMLBody</body></html>"
+
+    # Write UTF-8 without BOM, with TEMP fallback if write to Desktop fails
+    $writeOk = $false
     try {
-        $HTMLPage | Out-File -FilePath $ReportPath -Encoding UTF8 -ErrorAction Stop
-        Log-Output "Report generated at: $ReportPath"
-        Log-Output "Report Size: $( (Get-Item $ReportPath).Length ) bytes"
-        Invoke-Item $ReportPath
+        [System.IO.File]::WriteAllText($ReportPath, $HTMLPage, (New-Object System.Text.UTF8Encoding($false)))
+        $writeOk = $true
     } catch {
-        Log-Output "Failed to write report file: $($_.Exception.Message)"
+        Log-Output "Failed to write report to ${ReportPath}: $($_.Exception.Message). Falling back to TEMP."
+        $ReportPath = Join-Path -Path $env:TEMP -ChildPath (Split-Path -Leaf $ReportPath)
+        try {
+            [System.IO.File]::WriteAllText($ReportPath, $HTMLPage, (New-Object System.Text.UTF8Encoding($false)))
+            $writeOk = $true
+        } catch {
+            Log-Output "Failed to write report to TEMP: $($_.Exception.Message)"
+        }
+    }
+
+    if ($writeOk) {
+        Log-Output "Report generated at: $ReportPath"
+        try { Log-Output "Report Size: $((Get-Item $ReportPath).Length) bytes" } catch {}
+        try { Invoke-Item $ReportPath } catch { Log-Output "Could not auto-open report: $($_.Exception.Message)" }
     }
 }
 
