@@ -1,10 +1,10 @@
 <#
 .SYNOPSIS
-    WinFix Tool v3.9 - The Ultimate Auditor
-    BUILD: 2026-04-30-EXTREME-AUDIT
+    WinFix Tool v4.0 - Legacy OS Compatibility (Server 2012 R2 Fix)
+    BUILD: 2026-04-30-LEGACY-FIX
 .DESCRIPTION
-    Comprehensive audit adding Remote Access Tools, Network/Printer Shares, 
-    and exhaustive security metrics. Fully Freshdesk-optimized.
+    Fixes "Get-LocalUser not recognized" errors on older Windows versions.
+    Uses ADSI/WMI fallbacks for users and group members.
 #>
 
 $ErrorActionPreference = 'Stop'
@@ -39,9 +39,6 @@ $script:Theme = @{
     Red     = [System.Drawing.Color]::FromArgb(239, 68, 68)
 }
 
-# --- Shared UI Icons ---
-$script:StatusPending = "⏳"
-
 # --- Logging ---
 $script:LogPath = Join-Path $env:TEMP 'WinFix_Debug.log'
 function Log {
@@ -73,15 +70,14 @@ $script:JobTimer.Add_Tick({
 
 # --- Main Form ---
 $form = New-Object System.Windows.Forms.Form
-$form.Text = "WinFix Tool v3.9 - The Ultimate Auditor"; $form.Size = New-Object System.Drawing.Size(900, 650)
-$form.BackColor = $script:Theme.Bg; $form.ForeColor = $script:Theme.Text
-$form.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+$form.Text = "WinFix Tool v4.0 - Legacy Compatibility Edition"; $form.Size = New-Object System.Drawing.Size(900, 650)
+$form.BackColor = $script:Theme.Bg; $form.ForeColor = $script:Theme.Text; $form.Font = New-Object System.Drawing.Font("Segoe UI", 9)
 
-# --- Layout Panels ---
+# --- Layout ---
 $panelHeader = New-Object System.Windows.Forms.Panel
 $panelHeader.Dock = "Top"; $panelHeader.Height = 45; $panelHeader.BackColor = $script:Theme.Surface
 $lblTitle = New-Object System.Windows.Forms.Label
-$lblTitle.Text = "WINFIX AUDIT PRO v3.9"; $lblTitle.Location = New-Object System.Drawing.Point(15, 12); $lblTitle.AutoSize = $true
+$lblTitle.Text = "WINFIX AUDIT PRO v4.0"; $lblTitle.Location = New-Object System.Drawing.Point(15, 12); $lblTitle.AutoSize = $true
 $lblTitle.Font = New-Object System.Drawing.Font("Segoe UI", 12, [System.Drawing.FontStyle]::Bold)
 $lblTitle.ForeColor = $script:Theme.Accent
 $panelHeader.Controls.Add($lblTitle)
@@ -105,7 +101,6 @@ function Show-Page {
     foreach($b in $navButtons){ $b.BackColor = if($b.Tag -eq $n){$script:Theme.Accent}else{$script:Theme.Card} }
 }
 
-$navItems = @("Dashboard", "Quick Fix", "Diagnostics", "Network", "Audit")
 $navY = 5
 foreach($n in @("Dashboard", "Quick Fix", "Diagnostics", "Network", "Audit")){
     $b = New-Object System.Windows.Forms.Button
@@ -119,48 +114,69 @@ $script:AuditScript = {
     function Log-Worker($msg) { Write-Output $msg }
     function Escape-Html($v) { if($v){$v -replace '&','&amp;' -replace '<','&lt;' -replace '>','&gt;' -replace '"','&quot;'}else{""} }
 
-    Log-Worker "Gathering Identity & Product Key..."
+    Log-Worker "Gathering Identity & Hardware Stats..."
+    $OS = Get-CimInstance Win32_OperatingSystem
+    $CS = Get-CimInstance Win32_ComputerSystem
     $BIOS = Get-CimInstance Win32_Bios
+    
+    # 1. Product Key detection
     $WinKey = "Not Found"
     try { $WinKey = (Get-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\SoftwareProtectionPlatform").BackupProductKeyDefault } catch {}
 
+    # 2. Legacy User/Admin Fallback (For 2012 R2)
+    Log-Worker "Auditing Users (using legacy fallbacks)..."
+    $UserRows = ""; $AdminsList = @(); $ExpiredList = @()
+    
+    if (Get-Command Get-LocalUser -ErrorAction SilentlyContinue) {
+        # Modern Method
+        $Users = Get-LocalUser
+        foreach($u in $Users) {
+            $st = if($u.Enabled){"Active"}else{"Disabled"}
+            $UserRows += "<tr><td>$($u.Name)</td><td>$st</td><td>$($u.PasswordLastSet)</td></tr>"
+            if($u.PasswordExpired){ $ExpiredList += $u.Name }
+        }
+        $AdminsList = Get-LocalGroupMember -Group "Administrators" -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name
+    } else {
+        # Legacy Fallback (ADSI/WMI)
+        $Users = Get-CimInstance Win32_UserAccount -Filter "LocalAccount = True"
+        foreach($u in $Users) {
+            $st = if($u.Disabled){"Disabled"}else{"Active"}
+            $UserRows += "<tr><td>$($u.Name)</td><td>$st</td><td>WMI-NoDate</td></tr>"
+        }
+        # Admins via ADSI
+        try {
+            $group = [ADSI]"WinNT://$ComputerName/Administrators,group"
+            $AdminsList = $group.psbase.Invoke("Members") | ForEach-Object { $_.GetType().InvokeMember("Name", 'GetProperty', $null, $_, $null) }
+        } catch {}
+    }
+    $Admins = if($AdminsList){ $AdminsList -join ", " } else { "Unknown" }
+    $ExpiredText = if($ExpiredList){ $ExpiredList -join ", " } else { "None" }
+
+    # 3. RAT/Remote Access Scan
     Log-Worker "Scanning for Remote Access Tools..."
-    $RATKeywords = @("TeamViewer", "AnyDesk", "LogMeIn", "ScreenConnect", "Ninja", "Splashtop", "BeyondTrust", "GoToMyPC", "RealVNC", "UltraVNC", "RustDesk", "ConnectWise", "N-able", "Atera", "Kaseya")
+    $RATKeywords = @("TeamViewer","AnyDesk","LogMeIn","ScreenConnect","Ninja","Splashtop","BeyondTrust","GoToMyPC","VNC","RustDesk","ConnectWise")
     $FoundRATs = Get-Service | Where-Object { $d = $_.DisplayName; $RATKeywords | Where-Object { $d -like "*$_*" } }
     $RATText = if($FoundRATs){ ($FoundRATs.DisplayName | Sort-Object -Unique) -join "; " } else { "None Detected" }
 
+    # 4. Shares & Printers
     Log-Worker "Enumerating Shares & Printers..."
-    $Shares = Get-SmbShare | Where-Object { $_.Name -notmatch "\$" }
-    $ShareRows = ""; foreach($s in $Shares){ $ShareRows += "<tr><td>$($s.Name)</td><td>$($s.Path)</td></tr>" }
-    $Printers = Get-Printer | Where-Object Shared
-    $PrinterRows = ""; foreach($p in $Printers){ $PrinterRows += "<tr><td>$($p.Name)</td><td>$($p.ShareName)</td></tr>" }
+    $ShareRows = ""; try { foreach($s in (Get-SmbShare | Where-Object {!$_.Name.EndsWith('$')})) { $ShareRows += "<tr><td>$($s.Name)</td><td>$($s.Path)</td></tr>" } } catch {}
+    $PrinterRows = ""; try { foreach($p in (Get-Printer | Where-Object Shared)) { $PrinterRows += "<tr><td>$($p.Name)</td><td>$($p.ShareName)</td></tr>" } } catch {}
 
-    Log-Worker "Analyzing Password Policies..."
-    $secFile = "$TempPath\secpol.cfg"; secedit /export /cfg $secFile /quiet
-    $secPol = Get-Content $secFile; Remove-Item $secFile -EA SilentlyContinue
-    function Get-Pol($k) { if($secPol -match "$k\s*=\s*(\d+)") { $matches[1] } else { "Unknown" } }
-    $MinLen = Get-Pol "MinimumPasswordLength"; $MaxAge = Get-Pol "MaximumPasswordAge"
-
-    Log-Worker "Auditing Users..."
-    $Users = Get-LocalUser | Select-Object Name, Enabled, PasswordExpired, PasswordLastSet
-    $UserRows = ""; foreach($u in $Users) { 
-        $st = if($u.Enabled){"Active"}else{"Disabled"}
-        $UserRows += "<tr><td>$($u.Name)</td><td>$st</td><td>$($u.PasswordLastSet)</td></tr>" 
-    }
-    $Admins = (Get-LocalGroupMember -Group "Administrators" -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name) -join ", "
-
-    Log-Worker "Pulling Performance Stats..."
-    $OS = Get-CimInstance Win32_OperatingSystem; $CS = Get-CimInstance Win32_ComputerSystem
+    # 5. Performance & Resource Stats
+    Log-Worker "Pulling Performance Data..."
+    $RAM = [math]::Round($CS.TotalPhysicalMemory/1GB,1)
     $DiskRows = ""; foreach($d in (Get-CimInstance Win32_LogicalDisk -Filter "DriveType=3")) {
         $DiskRows += "<tr><td>$($d.DeviceID)</td><td>$([math]::Round($d.Size/1GB,1)) GB</td><td>$([math]::Round($d.FreeSpace/1GB,1)) GB</td></tr>"
     }
 
-    Log-Worker "Detecting Backups (Synology/Veeam)..."
-    $BKeywords = @("Veeam","Acronis","Datto","Carbonite","Backblaze","Synology","Active Backup")
+    # 6. Backups (Synology/Veeam)
+    Log-Worker "Detecting Backup Solutions..."
+    $BKeywords = @("Veeam","Acronis","Datto","Carbonite","Backblaze","Synology","Active Backup","Hyper Backup")
     $fB = Get-Service | Where-Object { $d = $_.DisplayName; $BKeywords | Where-Object { $d -like "*$_*" } }
     $BText = if($fB){($fB.DisplayName | Sort-Object -Unique) -join "; "}else{"Not Detected"}
 
-    Log-Worker "Building v3.9 Extreme HTML Report..."
+    Log-Worker "Compiling v4.0 HTML Report..."
     $ReportPath = Join-Path $TempPath "WinFix_Audit_$($ComputerName)_$(Get-Date -Format 'yyyyMMdd_HHmm').html"
     $HTML = @"
 <!DOCTYPE html><html><head><style>
@@ -195,45 +211,39 @@ $script:AuditScript = {
         const r = document.createRange(); r.selectNodeContents(temp);
         window.getSelection().removeAllRanges(); window.getSelection().addRange(r);
         document.execCommand('copy'); document.body.removeChild(temp);
-        alert('Ultimate Audit copied for Freshdesk!');
+        alert('v4.0 Legacy Audit copied for Freshdesk!');
     }
 </script></head>
 <body>
     <button class="copy-bar" onclick="copyForFreshdesk()">📋 CLICK TO COPY FOR FRESHDESK TICKET</button>
     <div id="report-main" class="report-wrap">
-        <div class="hero"><h1>HIPAA SECURITY AUDIT: $ComputerName</h1><p>Client: <input value="Enter Client Name"> | Date: $((Get-Date).ToString('F'))</p></div>
+        <div class="hero"><h1>HIPAA SECURITY AUDIT: $ComputerName</h1><p>Client: <input value="Enter Client Name"> | OS: $($OS.Caption)</p></div>
         
-        <div class="section-head">Identity & Keys</div>
+        <div class="section-head">Identity & License</div>
         <table>
-            <tr><th>OS Version</th><td>$($OS.Caption)</td></tr>
             <tr><th>Serial Number</th><td>$($BIOS.SerialNumber)</td></tr>
             <tr><th>Windows Product Key</th><td><input value="$WinKey"></td></tr>
             <tr><th>Remote Access Tools</th><td style="color:#e74c3c; font-weight:bold;">$RATText</td></tr>
         </table>
 
-        <div class="section-head">Network & Shares</div>
-        <table><tr style="background:#fafafa; font-weight:bold;"><td>Share Name</td><td>Local Path</td></tr>$ShareRows</table>
-        $(if(-not $ShareRows){"<p style='padding:10px; color:#999;'>No public network shares found.</p>"})
-        
-        <div class="section-head">Shared Printers</div>
-        <table><tr style="background:#fafafa; font-weight:bold;"><td>Printer Name</td><td>Share Name</td></tr>$PrinterRows</table>
-        $(if(-not $PrinterRows){"<p style='padding:10px; color:#999;'>No shared printers found.</p>"})
-
-        <div class="section-head">Resource Stats</div>
+        <div class="section-head">Resource Stats & Disks</div>
         <table>
-            <tr><th>RAM Capacity</th><td>$([math]::Round($CS.TotalPhysicalMemory/1GB,1)) GB</td></tr>
+            <tr><th>RAM Capacity</th><td>$RAM GB</td></tr>
             <tr style="background:#fafafa; font-weight:bold;"><td>Volume</td><td>Capacity</td><td>Free Space</td></tr>
             $DiskRows
         </table>
 
-        <div class="section-head">1. Backup (§164.308)</div>
+        <div class="section-head">Network Shares & Printers</div>
+        <table><tr style="background:#fafafa; font-weight:bold;"><td>Resource</td><td>Path / Name</td></tr>$ShareRows $PrinterRows</table>
+        $(if(!$ShareRows -and !$PrinterRows){"<p style='padding:10px; color:#999;'>No shared resources detected.</p>"})
+
+        <div class="section-head">1. Backup & Data Retention (§164.308)</div>
         <table><tr><th>Solution</th><td><input value="$BText"></td></tr><tr><th>Status</th><td><input value="Healthy"></td></tr></table>
 
-        <div class="section-head">2. Policies & Users (§164.308)</div>
+        <div class="section-head">2. Security & User Audit (§164.308)</div>
         <table>
-            <tr><th>Min PW Length</th><td>$MinLen Characters</td></tr>
-            <tr><th>Max PW Age</th><td>$MaxAge Days</td></tr>
-            <tr><th>Administrators</th><td><input value="$Admins"></td></tr>
+            <tr><th>Expired Passwords</th><td style="color:#e74c3c;">$ExpiredText</td></tr>
+            <tr><th>Local Administrators</th><td><input value="$Admins"></td></tr>
         </table>
         <table><tr style="background:#fafafa; font-weight:bold;"><td>User</td><td>Status</td><td>Last PW Change</td></tr>$UserRows</table>
     </div>
