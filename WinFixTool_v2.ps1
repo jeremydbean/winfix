@@ -1,10 +1,10 @@
 <#
 .SYNOPSIS
-    WinFix Tool v2.4 - Freshdesk Audit Pro (Stability Fix)
-    BUILD: 2026-04-30-STABLE-AUDIT
+    WinFix Tool v2.5 - Freshdesk Audit Pro (Legacy PowerShell Fix)
+    BUILD: 2026-04-30-PS5-COMPATIBLE
 .DESCRIPTION
     Advanced Windows Maintenance & Audit tool. 
-    Fixes the "Hanging" issue by utilizing background jobs for intensive data collection.
+    Rewritten for compatibility with Windows PowerShell 5.1 (standard Windows version).
 .NOTES
     Requires Administrator privileges.
 #>
@@ -89,7 +89,7 @@ $script:JobTimer.Add_Tick({
 
 # --- Main Form ---
 $form = New-Object System.Windows.Forms.Form
-$form.Text = "WinFix Tool v2.4 - Freshdesk Audit Pro (Stable)"
+$form.Text = "WinFix Tool v2.5 - Freshdesk Audit Pro"
 $form.Size = New-Object System.Drawing.Size(900, 650)
 $form.BackColor = $script:Theme.Bg
 $form.ForeColor = $script:Theme.Text
@@ -113,7 +113,7 @@ $script:txtLog = New-Object System.Windows.Forms.TextBox
 $script:txtLog.Multiline=$true; $script:txtLog.ReadOnly=$true; $script:txtLog.Dock="Fill"; $script:txtLog.BackColor=[System.Drawing.Color]::Black; $script:txtLog.ForeColor=$script:Theme.Green; $script:txtLog.Font="Consolas, 8"; $script:txtLog.ScrollBars = "Vertical"
 $panelLog.Controls.Add($script:txtLog)
 
-# --- Audit Logic (Extracted for Background Job) ---
+# --- Audit Logic ---
 $script:AuditScript = {
     param($ComputerName, $UserName, $TempPath)
     
@@ -156,10 +156,15 @@ $script:AuditScript = {
     } catch {}
     $TopPorts = ($Ports | Select-Object -Unique | Select-Object -First 15) -join ", "
 
+    # PRE-CALCULATE HTML COLORS (PowerShell 5.1 compatible logic)
+    $vbsClass = if ($VBS -eq 'Enabled') { 'status-good' } else { 'status-alert' }
+    $blClass = if ($BitLocker -eq 'On') { 'status-good' } else { 'status-alert' }
+    $smbClass = if ($SMB1 -eq $true) { 'status-alert' } else { 'status-good' }
+    $smbText = if ($SMB1 -eq $true) { 'ENABLED (Vulnerable)' } else { 'Disabled' }
+
     Log-Worker "Building HTML Report..."
     $ReportPath = Join-Path $TempPath "WinFix_Audit_$($ComputerName)_$(Get-Date -Format 'yyyyMMdd_HHmm').html"
     
-    # HTML content identical to v2.3 but with worker-friendly variables
     $HTML = @"
 <!DOCTYPE html>
 <html>
@@ -248,14 +253,14 @@ $script:AuditScript = {
             <table>
                 <tr><th>Operating System</th><td>$($OS.Caption) (Build $($OS.BuildNumber))</td></tr>
                 <tr><th>Serial Number</th><td>$($BIOS.SerialNumber)</td></tr>
-                <tr><th>VBS / Credential Guard</th><td class="$($VBS -eq 'Enabled' ? 'status-good' : 'status-alert')">$VBS</td></tr>
-                <tr><th>BitLocker Status (C:)</th><td class="$($BitLocker -eq 'On' ? 'status-good' : 'status-alert')">$BitLocker</td></tr>
+                <tr><th>VBS / Credential Guard</th><td class="$vbsClass">$VBS</td></tr>
+                <tr><th>BitLocker Status (C:)</th><td class="$blClass">$BitLocker</td></tr>
             </table>
         </div>
         <div class="section-title">Network Attack Surface</div>
         <div class="section">
             <table>
-                <tr><th>SMBv1 Status</th><td class="$($SMB1 -eq $true ? 'status-alert' : 'status-good')">$($SMB1 -eq $true ? 'ENABLED (Vulnerable)' : 'Disabled')</td></tr>
+                <tr><th>SMBv1 Status</th><td class="$smbClass">$smbText</td></tr>
                 <tr><th>Listening Ports (Top 15)</th><td style="font-size: 11px;">$TopPorts</td></tr>
             </table>
         </div>
