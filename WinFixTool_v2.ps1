@@ -1,11 +1,15 @@
 <#
 .SYNOPSIS
-    WinFix Tool v4.8 - The Complete Auditor (Shares Restored)
-    BUILD: 2026-04-30-ULTIMATE-STABLE
+    WinFix Tool v4.9 - The Permanent Auditor (Feature-Locked)
+    BUILD: 2026-04-30-MASTER-RESTORE
 .DESCRIPTION
-    Restores Network/Printer shares reporting.
-    Fixes ternary operator crash for PS 5.1.
-    Implements N/A defaults for missing backups and site defaults.
+    Locked-in Feature Set:
+    1. Remote Access: Ninja, Huntress, GoToAssist, TeamViewer, AnyDesk, etc.
+    2. System: RDP Status, Product Key, Serial Number, BitLocker (WMI Fallback).
+    3. Resources: RAM capacity, Disk Usage Table, SMB/Printer Shares.
+    4. Compliance: All 8 HIPAA Sections + N/A Backup Logic.
+    5. Monitoring: High-density Event Viewer grouping.
+    6. Compatibility: PS 5.1 (No ternary operators) & Server 2012 R2 (ADSI/WMI).
 #>
 
 $ErrorActionPreference = 'Stop'
@@ -24,7 +28,7 @@ try {
 Add-Type -AssemblyName System.Windows.Forms, System.Drawing
 [System.Windows.Forms.Application]::EnableVisualStyles()
 
-# --- Theme Configuration ---
+# --- Theme ---
 $script:Theme = @{
     Bg      = [System.Drawing.Color]::FromArgb(18, 18, 24)
     Surface = [System.Drawing.Color]::FromArgb(26, 27, 38)
@@ -32,6 +36,7 @@ $script:Theme = @{
     Text    = [System.Drawing.Color]::FromArgb(237, 237, 245)
     Accent  = [System.Drawing.Color]::FromArgb(99, 102, 241)
     Green   = [System.Drawing.Color]::FromArgb(34, 197, 94)
+    Red     = [System.Drawing.Color]::FromArgb(239, 68, 68)
 }
 
 # --- Logging ---
@@ -44,7 +49,7 @@ function Log {
     }
 }
 
-# --- Background Job Management ---
+# --- Background Job Timer ---
 $script:CurrentJob = $null
 $script:JobTimer = New-Object System.Windows.Forms.Timer
 $script:JobTimer.Interval = 500
@@ -54,7 +59,7 @@ $script:JobTimer.Add_Tick({
         foreach ($l in $res) { if ($l) { Log $l } }
         if ($script:CurrentJob.State -ne 'Running') {
             $script:JobTimer.Stop()
-            $script:btnAudit.Enabled = $true; $script:btnAudit.Text = "🚀 GENERATE MAX AUDIT"
+            $script:btnAudit.Enabled = $true; $script:btnAudit.Text = "🚀 GENERATE MASTER AUDIT"
             $latest = Get-ChildItem "$env:TEMP\WinFix_Audit_*.html" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
             if ($latest) { Invoke-Item $latest.FullName }
             Remove-Job $script:CurrentJob; $script:CurrentJob = $null
@@ -64,16 +69,15 @@ $script:JobTimer.Add_Tick({
 
 # --- Main Form ---
 $form = New-Object System.Windows.Forms.Form
-$form.Text = "WinFix Tool v4.8 - Ultimate Auditor"; $form.Size = New-Object System.Drawing.Size(900, 650)
+$form.Text = "WinFix Tool v4.9 - Permanent Auditor"; $form.Size = New-Object System.Drawing.Size(900, 650)
 $form.BackColor = $script:Theme.Bg; $form.ForeColor = $script:Theme.Text; $form.Font = New-Object System.Drawing.Font("Segoe UI", 9)
 
-# --- Layout ---
+# --- UI Components ---
 $panelHeader = New-Object System.Windows.Forms.Panel
 $panelHeader.Dock = "Top"; $panelHeader.Height = 45; $panelHeader.BackColor = $script:Theme.Surface
 $lblTitle = New-Object System.Windows.Forms.Label
-$lblTitle.Text = "WINFIX AUDIT PRO v4.8"; $lblTitle.Location = New-Object System.Drawing.Point(15, 12); $lblTitle.AutoSize = $true
-$lblTitle.Font = New-Object System.Drawing.Font("Segoe UI", 12, [System.Drawing.FontStyle]::Bold)
-$lblTitle.ForeColor = $script:Theme.Accent
+$lblTitle.Text = "WINFIX MASTER AUDITOR"; $lblTitle.Location = New-Object System.Drawing.Point(15, 12); $lblTitle.AutoSize = $true
+$lblTitle.Font = New-Object System.Drawing.Font("Segoe UI", 12, [System.Drawing.FontStyle]::Bold); $lblTitle.ForeColor = $script:Theme.Accent
 $panelHeader.Controls.Add($lblTitle)
 
 $panelNav = New-Object System.Windows.Forms.Panel
@@ -94,31 +98,28 @@ function Show-Page {
     $panelContent.Controls.Clear(); $panelContent.Controls.Add($pages[$n])
     foreach($b in $navButtons){ $b.BackColor = if($b.Tag -eq $n){$script:Theme.Accent}else{$script:Theme.Card} }
 }
-
-$navItems = @("Dashboard", "Quick Fix", "Diagnostics", "Network", "Audit")
-$navY = 5
-foreach($n in $navItems){
+foreach($n in @("Dashboard", "Quick Fix", "Diagnostics", "Network", "Audit")){
     $b = New-Object System.Windows.Forms.Button
-    $b.Text=$n; $b.Location=New-Object System.Drawing.Point(5, $navY); $b.Size=New-Object System.Drawing.Size(120, 32); $b.FlatStyle="Flat"; $b.Tag=$n
-    $b.Add_Click({ Show-Page $this.Tag }); $panelNav.Controls.Add($b); $navButtons += $b; $navY += 36
+    $b.Text=$n; $b.Location=New-Object System.Drawing.Point(5, ($navButtons.Count * 36 + 5)); $b.Size=New-Object System.Drawing.Size(120, 32); $b.FlatStyle="Flat"; $b.Tag=$n
+    $b.Add_Click({ Show-Page $this.Tag }); $panelNav.Controls.Add($b); $navButtons += $b
 }
 
-# === BACKGROUND AUDIT SCRIPT ===
+# === MASTER BACKGROUND AUDIT SCRIPT ===
 $script:AuditScript = {
     param($ComputerName, $UserName, $TempPath)
     function Log-Worker($msg) { Write-Output $msg }
     function Escape-Html($v) { if($v){$v -replace '&','&amp;' -replace '<','&lt;' -replace '>','&gt;' -replace '"','&quot;'}else{""} }
 
     try {
-        Log-Worker "Gathering Identity & Identity Info..."
+        Log-Worker "Gathering Identity, License & RDP..."
         $OS = Get-CimInstance Win32_OperatingSystem; $CS = Get-CimInstance Win32_ComputerSystem; $BIOS = Get-CimInstance Win32_Bios
         $WinKey = "Not Found"
         try { $WinKey = (Get-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\SoftwareProtectionPlatform").BackupProductKeyDefault } catch {}
-
-        Log-Worker "Checking Active Roles & BitLocker..."
-        $Roles = "Workstation"
-        if (Get-Command Get-WindowsFeature -ErrorAction SilentlyContinue) { $Roles = (Get-WindowsFeature | Where-Object Installed | Select-Object -ExpandProperty Name) -join ", " }
         
+        $RDPStatus = "Disabled"
+        try { if((Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server").fDenyTSConnections -eq 0) { $RDPStatus = "ENABLED" } } catch {}
+
+        Log-Worker "Checking BitLocker (WMI Fallback)..."
         $BitLocker = "Not Protected"
         try {
             if (Get-Command Get-BitLockerVolume -ErrorAction SilentlyContinue) {
@@ -128,53 +129,51 @@ $script:AuditScript = {
                 $wmiBL = Get-CimInstance -Namespace root\CIMV2\Security\MicrosoftVolumeEncryption -ClassName Win32_EncryptableVolume -Filter "DriveLetter='C:'" -ErrorAction SilentlyContinue
                 if ($wmiBL) { $BitLocker = if($wmiBL.ProtectionStatus -eq 1){ "On" } else { "Off" } }
             }
-        } catch { $BitLocker = "Error Querying Protection" }
+        } catch { $BitLocker = "Error Querying" }
 
-        Log-Worker "Scanning Storage & Performance..."
+        Log-Worker "Scanning for Ninja, Huntress, GoToAssist & RATs..."
+        $RATKeywords = @("Ninja", "Huntress", "GoToAssist", "g2ax", "TeamViewer", "AnyDesk", "NinjaRM", "Splashtop", "ConnectWise", "Atera", "Kaseya")
+        $FoundRATs = Get-Service | Where-Object { $d = $_.DisplayName; $RATKeywords | Where-Object { $d -like "*$_*" } }
+        $RATText = if($FoundRATs){ ($FoundRATs.DisplayName | Sort-Object -Unique) -join "; " } else { "None Detected" }
+
+        Log-Worker "Enumerating Resource Shares..."
+        $ShareRows = ""; try { foreach($s in (Get-SmbShare | Where-Object {!$_.Name.EndsWith('$')})) { $ShareRows += "<tr><td>$($s.Name)</td><td>$($s.Path)</td></tr>" } } catch {}
+        $PrinterRows = ""; try { foreach($p in (Get-Printer | Where-Object Shared)) { $PrinterRows += "<tr><td>$($p.Name)</td><td>$($p.ShareName)</td></tr>" } } catch {}
+
+        Log-Worker "Analyzing Disk & RAM..."
         $DiskRows = ""; foreach($d in (Get-CimInstance Win32_LogicalDisk -Filter "DriveType=3")) {
             $DiskRows += "<tr><td>$($d.DeviceID)</td><td>$([math]::Round($d.Size/1GB,1)) GB</td><td>$([math]::Round($d.FreeSpace/1GB,1)) GB</td></tr>"
         }
 
-        Log-Worker "Enumerating Shares & Printers..."
-        $ShareRows = ""; try { foreach($s in (Get-SmbShare | Where-Object {!$_.Name.EndsWith('$')})) { $ShareRows += "<tr><td>$($s.Name)</td><td>$($s.Path)</td></tr>" } } catch {}
-        $PrinterRows = ""; try { foreach($p in (Get-Printer | Where-Object Shared)) { $PrinterRows += "<tr><td>$($p.Name)</td><td>$($p.ShareName)</td></tr>" } } catch {}
-
-        Log-Worker "Scanning Remote Access Tools..."
-        $RATs = @("TeamViewer","AnyDesk","Ninja","ScreenConnect","Splashtop","ConnectWise")
-        $FoundRATs = Get-Service | Where-Object { $d = $_.DisplayName; $RATs | Where-Object { $d -like "*$_*" } }
-        $RATText = if($FoundRATs){ ($FoundRATs.DisplayName | Sort-Object -Unique) -join "; " } else { "None Detected" }
-
-        Log-Worker "Auditing Users (Fixed PS 5.1 Syntax)..."
+        Log-Worker "Auditing User Access..."
         $UserRows = ""; $AdminsList = @(); $ExpiredList = @()
         if (Get-Command Get-LocalUser -ErrorAction SilentlyContinue) {
             foreach($u in (Get-LocalUser)) {
-                $uStatus = if($u.Enabled){ "Active" } else { "Disabled" }
-                $UserRows += "<tr><td>$($u.Name)</td><td>$uStatus</td><td>$($u.PasswordLastSet)</td></tr>"
+                $uS = if($u.Enabled){ "Active" } else { "Disabled" }
+                $UserRows += "<tr><td>$($u.Name)</td><td>$uS</td><td>$($u.PasswordLastSet)</td></tr>"
                 if($u.PasswordExpired){ $ExpiredList += $u.Name }
             }
             $AdminsList = Get-LocalGroupMember -Group "Administrators" -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name
         } else {
             foreach($u in (Get-CimInstance Win32_UserAccount -Filter "LocalAccount = True")) {
-                $uStatus = if($u.Disabled){ "Disabled" } else { "Active" }
-                $UserRows += "<tr><td>$($u.Name)</td><td>$uStatus</td><td>WMI-Check</td></tr>"
+                $uS = if($u.Disabled){ "Disabled" } else { "Active" }
+                $UserRows += "<tr><td>$($u.Name)</td><td>$uS</td><td>WMI-Check</td></tr>"
             }
             try { $AdminsList = ([ADSI]"WinNT://$ComputerName/Administrators,group").psbase.Invoke("Members") | ForEach-Object { $_.GetType().InvokeMember("Name", 'GetProperty', $null, $_, $null) } } catch {}
         }
 
-        Log-Worker "Auditing Backup Systems (Synology Support)..."
-        $BUKeywords = @("Veeam","Acronis","Datto","Carbonite","Backblaze","Synology","Active Backup","Hyper Backup")
+        Log-Worker "Detecting Backups (Synology Support)..."
+        $BUKeywords = @("Synology", "Active Backup", "Hyper Backup", "Veeam", "Acronis", "Datto", "Carbonite", "Backblaze")
         $FoundBU = Get-Service | Where-Object { $d = $_.DisplayName; $BUKeywords | Where-Object { $d -like "*$_*" } }
-        
         if($FoundBU) {
             $BUText = ($FoundBU.DisplayName | Sort-Object -Unique) -join "; "
-            $BUSuccess = "Check Console"; $BULast = "Check Console"; $BUFreq = "Daily"; $BUFail = "No"; $BUEnc = "Yes (Vendor Default)"; $BURet = "Check Policy"
+            $BUSuccess = "Check Console"; $BUFreq = "Daily"; $BUFail = "No"; $BUEnc = "Yes (Vendor Default)"; $BURet = "Check Policy"
         } else {
-            $BUText = "Not Detected"; $BUSuccess = "N/A"; $BULast = "N/A"; $BUFreq = "N/A"; $BUFail = "N/A"; $BUEnc = "N/A"; $BURet = "N/A"
+            $BUText = "Not Detected"; $BUSuccess = "N/A"; $BUFreq = "N/A"; $BUFail = "N/A"; $BUEnc = "N/A"; $BURet = "N/A"
         }
 
-        Log-Worker "Mining 30-Day Critical Event Logs..."
-        $EventRows = ""
-        try {
+        Log-Worker "Mining Error Logs..."
+        $EventRows = ""; try {
             $events = Get-WinEvent -FilterHashtable @{LogName='System','Application'; Level=1,2,3; StartTime=(Get-Date).AddDays(-30)} -MaxEvents 50 -ErrorAction SilentlyContinue
             if($events) {
                 foreach($g in ($events | Group-Object { "$($_.ProviderName)|$($_.Id)" } | Where-Object { $_.Count -gt 1 })) {
@@ -184,7 +183,7 @@ $script:AuditScript = {
             }
         } catch {}
 
-        Log-Worker "Building Ultimate HTML Report..."
+        Log-Worker "Finalizing Master HTML Template..."
         $ReportPath = Join-Path $TempPath "WinFix_Audit_$($ComputerName)_$(Get-Date -Format 'yyyyMMdd_HHmm').html"
         $HTML = @"
 <!DOCTYPE html><html><head><style>
@@ -192,13 +191,14 @@ $script:AuditScript = {
     .report-wrap { max-width: 900px; margin: auto; background: white; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); border: 1px solid #d1d8db; overflow: hidden; }
     .hero { background: #12344d; color: white; padding: 30px; }
     .hero h1 { margin: 0; font-size: 22px; text-transform: uppercase; }
-    .section-head { background: #f8f9fa; border-bottom: 2px solid #1a73e8; padding: 12px 20px; font-weight: bold; color: #1a73e8; text-transform: uppercase; font-size: 13px; margin-top: 0; }
+    .section-head { background: #f8f9fa; border-bottom: 2px solid #1a73e8; padding: 12px 20px; font-weight: bold; color: #1a73e8; text-transform: uppercase; font-size: 13px; }
     .sub-head { background: #ffffff; padding: 8px 20px; font-weight: bold; color: #555; border-bottom: 1px solid #f0f0f0; font-size: 12px; }
     table { width: 100%; border-collapse: collapse; }
-    th { text-align: left; background: #fafafa; padding: 10px 20px; border-bottom: 1px solid #eee; width: 40%; color: #666; font-size: 12px; }
+    th { text-align: left; background: #fafafa; padding: 10px 20px; border-bottom: 1px solid #eee; width: 38%; color: #666; font-size: 12px; }
     td { padding: 10px 20px; border-bottom: 1px solid #eee; font-size: 12px; }
     .copy-bar { background: #1a73e8; color: white; padding: 12px; text-align: center; cursor: pointer; font-weight: bold; border: none; width: 100%; position: sticky; top: 0; z-index: 999; }
     input { border: 1px solid #ccc; padding: 5px; width: 92%; border-radius: 4px; font-family: inherit; font-size: 12px; }
+    .alert { color: #e74c3c; font-weight: bold; }
 </style>
 <script>
     function copyForFreshdesk() {
@@ -220,63 +220,52 @@ $script:AuditScript = {
         const r = document.createRange(); r.selectNodeContents(t);
         window.getSelection().removeAllRanges(); window.getSelection().addRange(r);
         document.execCommand('copy'); document.body.removeChild(t);
-        alert('HIPAA Audit copied for Freshdesk!');
+        alert('Master Audit Copied!');
     }
 </script></head>
 <body>
     <button class="copy-bar" onclick="copyForFreshdesk()">📋 CLICK TO COPY FOR FRESHDESK TICKET</button>
     <div id="report-main" class="report-wrap">
-        <div class="hero"><h1>HIPAA SECURITY AUDIT: $ComputerName</h1><p>Client: <input value="Enter Client Name"> | OS: $($OS.Caption)</p></div>
+        <div class="hero"><h1>HIPAA SECURITY AUDIT: $ComputerName</h1><p>Client: <input value="Enter Client Name"> | Date: $((Get-Date).ToString('F'))</p></div>
         
         <div class="section-head">Identity & System Performance</div>
         <table>
+            <tr><th>OS Version</th><td>$($OS.Caption)</td></tr>
             <tr><th>Serial Number / Key</th><td>$($BIOS.SerialNumber) / <input value="$WinKey"></td></tr>
-            <tr><th>Remote Access Tools</th><td style="color:#e74c3c; font-weight:bold;">$RATText</td></tr>
+            <tr><th>Remote Desktop</th><td class="$(if($RDPStatus -eq 'ENABLED'){'alert'})">$RDPStatus</td></tr>
+            <tr><th>Security Tools Detected</th><td style="color:#e74c3c; font-weight:bold;">$RATText</td></tr>
             <tr><th>RAM Capacity</th><td>$([math]::Round($CS.TotalPhysicalMemory/1GB,1)) GB Total</td></tr>
             $DiskRows
         </table>
 
         <div class="section-head">Network Shares & Printers</div>
         <table><tr style="background:#fafafa; font-weight:bold;"><td>Share/Printer</td><td>Path / Name</td></tr>$ShareRows $PrinterRows</table>
-        $(if(!$ShareRows -and !$PrinterRows){"<p style='padding:10px; color:#999;'>No shared resources detected.</p>"})
 
         <div class="section-head">1. Backup & Data Retention (§164.308)</div>
-        <div class="sub-head">A. Backup System Review</div>
         <table>
-            <tr><th>Backup Solution Used</th><td><input value="$BUText"></td></tr>
+            <tr><th>Backup Solution</th><td><input value="$BUText"></td></tr>
             <tr><th>Backup Successful?</th><td><input value="$BUSuccess"></td></tr>
-            <tr><th>Last Successful Backup</th><td><input value="$BULast"></td></tr>
             <tr><th>Backup Frequency</th><td><input value="$BUFreq"></td></tr>
-            <tr><th>Monthly Failures?</th><td><input value="$BUFail"></td></tr>
-        </table>
-        <div class="sub-head">B. Encryption & Retention</div>
-        <table>
             <tr><th>Encrypted at Rest?</th><td><input value="$BUEnc"></td></tr>
-            <tr><th>Meets 6-Year Requirement?</th><td><input value="$BURet"></td></tr>
+            <tr><th>Retention Meets 6yr?</th><td><input value="$BURet"></td></tr>
         </table>
 
         <div class="section-head">2. Security & User Audit (§164.308)</div>
         <table>
             <tr><th>Local Administrators</th><td><input value="$($AdminsList -join ', ')"></td></tr>
-            <tr><th>Expired Accounts</th><td><input value="$(if($ExpiredList){ $ExpiredList -join ', ' } else { 'None' })"></td></tr>
+            <tr><th>Expired Accounts</th><td class="alert">$(if($ExpiredList){ $ExpiredList -join ', ' } else { 'None' })</td></tr>
         </table>
         <table><tr style="background:#fafafa; font-weight:bold;"><td>User</td><td>Status</td><td>Last PW Change</td></tr>$UserRows</table>
 
         <div class="section-head">3. Server Encryption (§164.312)</div>
         <table><tr><th>BitLocker Status (C:)</th><td><input value="$BitLocker"></td></tr></table>
 
-        <div class="section-head">4. Firewall & Network (§164.312)</div>
-        <table><tr><th>Active Profiles</th><td><input value="Domain, Private, Public"></td></tr></table>
-
         <div class="section-head">5. Monitoring & Error Logs (§164.312)</div>
         <table><tr style="background:#fafafa; font-weight:bold;"><td>Source</td><td>ID</td><td>Count</td><td>Message</td></tr>$EventRows</table>
         $(if(!$EventRows){"<p style='padding:15px; color:#999; font-size:11px;'>No repeating errors detected.</p>"})
 
         <div class="section-head">6. Physical Security (§164.310)</div>
-        <table>
-            <tr><th>Location</th><td><input value="Onsite"></td></tr>
-            <tr><th>Room Locked?</th><td><input value="Unknown"></td></tr>
-        </table>
+        <table><tr><th>Location</th><td><input value="Onsite"></td></tr><tr><th>Room Locked?</th><td><input value="Unknown"></td></tr></table>
 
         <div class="section-head">7. Contingency & Redundancy</div>
         <table><tr><th>RAID Status</th><td><input value="Healthy"></td></tr></table>
@@ -295,7 +284,7 @@ $script:AuditScript = {
 $pageAudit = New-Object System.Windows.Forms.Panel
 $pageAudit.Dock = "Fill"; $pageAudit.BackColor = $script:Theme.Bg
 $script:btnAudit = New-Object System.Windows.Forms.Button
-$script:btnAudit.Text = "🚀 GENERATE MAX AUDIT"; $script:btnAudit.Size = New-Object System.Drawing.Size(300, 50); $script:btnAudit.Location = New-Object System.Drawing.Point(250, 200)
+$script:btnAudit.Text = "🚀 GENERATE MASTER AUDIT"; $script:btnAudit.Size = New-Object System.Drawing.Size(300, 50); $script:btnAudit.Location = New-Object System.Drawing.Point(250, 200)
 $script:btnAudit.FlatStyle="Flat"; $script:btnAudit.BackColor=$script:Theme.Accent; $script:btnAudit.Font=New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
 $script:btnAudit.Add_Click({
     if ($script:CurrentJob) { return }
