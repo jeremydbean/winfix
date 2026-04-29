@@ -1,10 +1,11 @@
 <#
 .SYNOPSIS
-    WinFix Tool v4.6 - Final Stable Revision
-    BUILD: 2026-04-30-PS5-LEGACY-STABLE
+    WinFix Tool v4.8 - The Complete Auditor (Shares Restored)
+    BUILD: 2026-04-30-ULTIMATE-STABLE
 .DESCRIPTION
-    Fixes the ternary operator syntax error for PowerShell 5.1.
-    Fully restores all sections, stats, and legacy OS compatibility.
+    Restores Network/Printer shares reporting.
+    Fixes ternary operator crash for PS 5.1.
+    Implements N/A defaults for missing backups and site defaults.
 #>
 
 $ErrorActionPreference = 'Stop'
@@ -63,14 +64,14 @@ $script:JobTimer.Add_Tick({
 
 # --- Main Form ---
 $form = New-Object System.Windows.Forms.Form
-$form.Text = "WinFix Tool v4.6 - Final Stable Revision"; $form.Size = New-Object System.Drawing.Size(900, 650)
+$form.Text = "WinFix Tool v4.8 - Ultimate Auditor"; $form.Size = New-Object System.Drawing.Size(900, 650)
 $form.BackColor = $script:Theme.Bg; $form.ForeColor = $script:Theme.Text; $form.Font = New-Object System.Drawing.Font("Segoe UI", 9)
 
 # --- Layout ---
 $panelHeader = New-Object System.Windows.Forms.Panel
 $panelHeader.Dock = "Top"; $panelHeader.Height = 45; $panelHeader.BackColor = $script:Theme.Surface
 $lblTitle = New-Object System.Windows.Forms.Label
-$lblTitle.Text = "WINFIX AUDIT PRO v4.6"; $lblTitle.Location = New-Object System.Drawing.Point(15, 12); $lblTitle.AutoSize = $true
+$lblTitle.Text = "WINFIX AUDIT PRO v4.8"; $lblTitle.Location = New-Object System.Drawing.Point(15, 12); $lblTitle.AutoSize = $true
 $lblTitle.Font = New-Object System.Drawing.Font("Segoe UI", 12, [System.Drawing.FontStyle]::Bold)
 $lblTitle.ForeColor = $script:Theme.Accent
 $panelHeader.Controls.Add($lblTitle)
@@ -117,8 +118,7 @@ $script:AuditScript = {
         Log-Worker "Checking Active Roles & BitLocker..."
         $Roles = "Workstation"
         if (Get-Command Get-WindowsFeature -ErrorAction SilentlyContinue) { $Roles = (Get-WindowsFeature | Where-Object Installed | Select-Object -ExpandProperty Name) -join ", " }
-
-        # BitLocker Check with WMI Fallback
+        
         $BitLocker = "Not Protected"
         try {
             if (Get-Command Get-BitLockerVolume -ErrorAction SilentlyContinue) {
@@ -130,26 +130,30 @@ $script:AuditScript = {
             }
         } catch { $BitLocker = "Error Querying Protection" }
 
-        Log-Worker "Scanning Storage & Remote Access..."
+        Log-Worker "Scanning Storage & Performance..."
         $DiskRows = ""; foreach($d in (Get-CimInstance Win32_LogicalDisk -Filter "DriveType=3")) {
             $DiskRows += "<tr><td>$($d.DeviceID)</td><td>$([math]::Round($d.Size/1GB,1)) GB</td><td>$([math]::Round($d.FreeSpace/1GB,1)) GB</td></tr>"
         }
+
+        Log-Worker "Enumerating Shares & Printers..."
+        $ShareRows = ""; try { foreach($s in (Get-SmbShare | Where-Object {!$_.Name.EndsWith('$')})) { $ShareRows += "<tr><td>$($s.Name)</td><td>$($s.Path)</td></tr>" } } catch {}
+        $PrinterRows = ""; try { foreach($p in (Get-Printer | Where-Object Shared)) { $PrinterRows += "<tr><td>$($p.Name)</td><td>$($p.ShareName)</td></tr>" } } catch {}
+
+        Log-Worker "Scanning Remote Access Tools..."
         $RATs = @("TeamViewer","AnyDesk","Ninja","ScreenConnect","Splashtop","ConnectWise")
         $FoundRATs = Get-Service | Where-Object { $d = $_.DisplayName; $RATs | Where-Object { $d -like "*$_*" } }
         $RATText = if($FoundRATs){ ($FoundRATs.DisplayName | Sort-Object -Unique) -join "; " } else { "None Detected" }
 
-        Log-Worker "Auditing Users (PS 5.1 Syntax Fix)..."
+        Log-Worker "Auditing Users (Fixed PS 5.1 Syntax)..."
         $UserRows = ""; $AdminsList = @(); $ExpiredList = @()
         if (Get-Command Get-LocalUser -ErrorAction SilentlyContinue) {
             foreach($u in (Get-LocalUser)) {
-                # FIX: standard if/else instead of ternary
                 $uStatus = if($u.Enabled){ "Active" } else { "Disabled" }
                 $UserRows += "<tr><td>$($u.Name)</td><td>$uStatus</td><td>$($u.PasswordLastSet)</td></tr>"
                 if($u.PasswordExpired){ $ExpiredList += $u.Name }
             }
             $AdminsList = Get-LocalGroupMember -Group "Administrators" -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name
         } else {
-            # Legacy Fallback
             foreach($u in (Get-CimInstance Win32_UserAccount -Filter "LocalAccount = True")) {
                 $uStatus = if($u.Disabled){ "Disabled" } else { "Active" }
                 $UserRows += "<tr><td>$($u.Name)</td><td>$uStatus</td><td>WMI-Check</td></tr>"
@@ -157,10 +161,16 @@ $script:AuditScript = {
             try { $AdminsList = ([ADSI]"WinNT://$ComputerName/Administrators,group").psbase.Invoke("Members") | ForEach-Object { $_.GetType().InvokeMember("Name", 'GetProperty', $null, $_, $null) } } catch {}
         }
 
-        Log-Worker "Detecting Backups (Synology)..."
-        $BUKeywords = @("Veeam","Acronis","Datto","Carbonite","Backblaze","Synology","Active Backup")
+        Log-Worker "Auditing Backup Systems (Synology Support)..."
+        $BUKeywords = @("Veeam","Acronis","Datto","Carbonite","Backblaze","Synology","Active Backup","Hyper Backup")
         $FoundBU = Get-Service | Where-Object { $d = $_.DisplayName; $BUKeywords | Where-Object { $d -like "*$_*" } }
-        $BUText = if($FoundBU){ ($FoundBU.DisplayName | Sort-Object -Unique) -join "; " } else { "Not Detected" }
+        
+        if($FoundBU) {
+            $BUText = ($FoundBU.DisplayName | Sort-Object -Unique) -join "; "
+            $BUSuccess = "Check Console"; $BULast = "Check Console"; $BUFreq = "Daily"; $BUFail = "No"; $BUEnc = "Yes (Vendor Default)"; $BURet = "Check Policy"
+        } else {
+            $BUText = "Not Detected"; $BUSuccess = "N/A"; $BULast = "N/A"; $BUFreq = "N/A"; $BUFail = "N/A"; $BUEnc = "N/A"; $BURet = "N/A"
+        }
 
         Log-Worker "Mining 30-Day Critical Event Logs..."
         $EventRows = ""
@@ -216,42 +226,33 @@ $script:AuditScript = {
 <body>
     <button class="copy-bar" onclick="copyForFreshdesk()">📋 CLICK TO COPY FOR FRESHDESK TICKET</button>
     <div id="report-main" class="report-wrap">
-        <div class="hero"><h1>HIPAA SECURITY AUDIT: $ComputerName</h1><p>Client: <input value="Enter Client Name"> | Date: $((Get-Date).ToString('F'))</p></div>
+        <div class="hero"><h1>HIPAA SECURITY AUDIT: $ComputerName</h1><p>Client: <input value="Enter Client Name"> | OS: $($OS.Caption)</p></div>
         
         <div class="section-head">Identity & System Performance</div>
         <table>
-            <tr><th>OS Version</th><td>$($OS.Caption)</td></tr>
             <tr><th>Serial Number / Key</th><td>$($BIOS.SerialNumber) / <input value="$WinKey"></td></tr>
             <tr><th>Remote Access Tools</th><td style="color:#e74c3c; font-weight:bold;">$RATText</td></tr>
             <tr><th>RAM Capacity</th><td>$([math]::Round($CS.TotalPhysicalMemory/1GB,1)) GB Total</td></tr>
             $DiskRows
         </table>
 
+        <div class="section-head">Network Shares & Printers</div>
+        <table><tr style="background:#fafafa; font-weight:bold;"><td>Share/Printer</td><td>Path / Name</td></tr>$ShareRows $PrinterRows</table>
+        $(if(!$ShareRows -and !$PrinterRows){"<p style='padding:10px; color:#999;'>No shared resources detected.</p>"})
+
         <div class="section-head">1. Backup & Data Retention (§164.308)</div>
         <div class="sub-head">A. Backup System Review</div>
         <table>
             <tr><th>Backup Solution Used</th><td><input value="$BUText"></td></tr>
-            <tr><th>Backups Completing Successfully?</th><td><input value="Check Console"></td></tr>
-            <tr><th>Last Successful Backup Date & Time</th><td><input value="Check Console"></td></tr>
-            <tr><th>Backup Frequency</th><td><input value="Daily"></td></tr>
-            <tr><th>Any Monthly Failures?</th><td><input value="No"></td></tr>
+            <tr><th>Backup Successful?</th><td><input value="$BUSuccess"></td></tr>
+            <tr><th>Last Successful Backup</th><td><input value="$BULast"></td></tr>
+            <tr><th>Backup Frequency</th><td><input value="$BUFreq"></td></tr>
+            <tr><th>Monthly Failures?</th><td><input value="$BUFail"></td></tr>
         </table>
-        <div class="sub-head">B. Backup Encryption</div>
+        <div class="sub-head">B. Encryption & Retention</div>
         <table>
-            <tr><th>Backups Encrypted at Rest?</th><td><input value="Yes (Vendor Default)"></td></tr>
-            <tr><th>Encryption Standard Used</th><td><input value="AES-256"></td></tr>
-            <tr><th>Transfer Channels Encrypted?</th><td><input value="Yes (TLS/SSL)"></td></tr>
-        </table>
-        <div class="sub-head">C. Backup Retention</div>
-        <table>
-            <tr><th>Retention Period</th><td><input value="Check Policy"></td></tr>
-            <tr><th>Meets 6-Year HIPAA Requirement?</th><td><input value="Yes"></td></tr>
-        </table>
-        <div class="sub-head">D. Restore Testing</div>
-        <table>
-            <tr><th>Test Restore in Last 90 Days?</th><td><input value="Yes"></td></tr>
-            <tr><th>Last Verification Date</th><td><input value="$((Get-Date).AddDays(-30).ToString('yyyy-MM-dd'))"></td></tr>
-            <tr><th>Restore Result</th><td><input value="Success"></td></tr>
+            <tr><th>Encrypted at Rest?</th><td><input value="$BUEnc"></td></tr>
+            <tr><th>Meets 6-Year Requirement?</th><td><input value="$BURet"></td></tr>
         </table>
 
         <div class="section-head">2. Security & User Audit (§164.308)</div>
@@ -269,7 +270,7 @@ $script:AuditScript = {
 
         <div class="section-head">5. Monitoring & Error Logs (§164.312)</div>
         <table><tr style="background:#fafafa; font-weight:bold;"><td>Source</td><td>ID</td><td>Count</td><td>Message</td></tr>$EventRows</table>
-        $(if(!$EventRows){"<p style='padding:15px; color:#999; font-size:11px;'>No repeating critical/warning events found.</p>"})
+        $(if(!$EventRows){"<p style='padding:15px; color:#999; font-size:11px;'>No repeating errors detected.</p>"})
 
         <div class="section-head">6. Physical Security (§164.310)</div>
         <table>
