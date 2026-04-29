@@ -39,8 +39,10 @@ irm https://raw.githubusercontent.com/jeremydbean/winfix/main/install.ps1 | iex
     *   Show IP Configuration.
     *   Quick Network Scan (ARP table).
     *   Test Internet Connection (Ping).
-*   **Security Audit**:
-    *   Generates the interactive HTML report for the Monthly Security Audit.
+*   **Security Audit / Max Audit**:
+    *   Generates a professional HIPAA-oriented HTML report for monthly MSP auditing.
+    *   Detects NinjaRMM, Huntress, GoToAssist, common remote access tools, backup products, BitLocker, drive usage, Windows Update status, event-log issues, shares, printers, RDP posture, scheduled tasks, Windows/PowerShell versions, and support lifecycle risk.
+    *   Includes a formatted copy button designed for pasting report content into Freshdesk or Ninja ticket notes over a remote session.
 
 ## Troubleshooting
 
@@ -113,6 +115,6 @@ Invoke-PS2EXE -InputFile ".\WinFixTool.ps1" -OutputFile ".\WinFixTool.exe" -Icon
 You can now upload `WinFixTool.exe` to Google Drive or a USB drive. It will run on any modern Windows machine without needing to install scripts or modules.
 
 ## Requirements
-*   Windows 10, Windows 11, or Windows Server 2016+.
-*   PowerShell 5.1 (Default on Windows).
+*   Windows 10, Windows 11, or Windows Server 2012+.
+*   Windows PowerShell 5.1 preferred; the audit engine keeps compatibility fallbacks for older Server builds.
 *   **Administrator Privileges** are required for most fixes.

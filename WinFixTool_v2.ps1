@@ -1,13 +1,13 @@
 <#
 .SYNOPSIS
-    WinFix Tool v5.1 - Master Auditor (Copy Engine Fix)
-    BUILD: 2026-04-30-STABLE-V5-1
+    WinFix Tool v5.2 - Max Audit Engine
+    BUILD: 2026-04-30-MAX-AUDIT-V5-2
 .DESCRIPTION
-    - Robust Copy-to-Clipboard Engine (Freshdesk Optimized).
-    - Checks for Ninja, Huntress, and GoToAssist with ✅/❌ indicators.
-    - Expanded search: Registry, Services, and File Paths.
-    - Full 8-section HIPAA Audit with Site Defaults (Onsite/Unknown).
-    - PS 5.1 & Server 2012 R2 Compatible (No ternary operators).
+    - HIPAA-oriented Max Audit HTML report for MSP monthly reviews.
+    - Robust Copy-to-Clipboard Engine (Freshdesk/Ninja ticket optimized).
+    - Expanded detection for agents, remote access tools, and backup products using Registry, Services, Processes, and common paths.
+    - Captures BitLocker, drives, updates, event logs, shares, printers, RDP, scheduled tasks, support lifecycle, and system specs.
+    - PS 5.1 & Server 2012+ compatible syntax (no ternary operators).
 #>
 
 $ErrorActionPreference = 'Stop'
@@ -67,7 +67,7 @@ $script:JobTimer.Add_Tick({
 
 # --- Main Form ---
 $form = New-Object System.Windows.Forms.Form
-$form.Text = "WinFix Master Auditor v5.1"; $form.Size = New-Object System.Drawing.Size(900, 650)
+$form.Text = "WinFix Master Auditor v5.2"; $form.Size = New-Object System.Drawing.Size(900, 650)
 $form.BackColor = $script:Theme.Bg; $form.ForeColor = $script:Theme.Text
 $form.Font = New-Object System.Drawing.Font("Segoe UI", 9)
 
@@ -75,7 +75,7 @@ $form.Font = New-Object System.Drawing.Font("Segoe UI", 9)
 $panelHeader = New-Object System.Windows.Forms.Panel
 $panelHeader.Dock = "Top"; $panelHeader.Height = 45; $panelHeader.BackColor = $script:Theme.Surface
 $lblTitle = New-Object System.Windows.Forms.Label
-$lblTitle.Text = "WINFIX MASTER AUDITOR v5.1"; $lblTitle.Location = New-Object System.Drawing.Point(15, 12); $lblTitle.AutoSize = $true
+$lblTitle.Text = "WINFIX MASTER AUDITOR v5.2"; $lblTitle.Location = New-Object System.Drawing.Point(15, 12); $lblTitle.AutoSize = $true
 $lblTitle.Font = New-Object System.Drawing.Font("Segoe UI", 12, [System.Drawing.FontStyle]::Bold); $lblTitle.ForeColor = $script:Theme.Accent
 $panelHeader.Controls.Add($lblTitle)
 
@@ -106,208 +106,658 @@ foreach($n in @("Dashboard", "Quick Fix", "Diagnostics", "Network", "Audit")){
 # === BACKGROUND AUDIT SCRIPT ===
 $script:AuditScript = {
     param($ComputerName, $UserName, $TempPath)
-    function Log-Worker($msg) { Write-Output $msg }
-    function Escape-Html($v) { if($v){$v -replace '&','&amp;' -replace '<','&lt;' -replace '>','&gt;' -replace '"','&quot;'}else{""} }
+
+    function Log-Worker { param([string]$Message) Write-Output $Message }
+    function Escape-Html {
+        param($Value)
+        if ($null -eq $Value) { return "" }
+        return ([string]$Value) -replace '&','&amp;' -replace '<','&lt;' -replace '>','&gt;' -replace '"','&quot;' -replace "'",'&#39;'
+    }
+    function Get-SafeCim {
+        param([string]$ClassName, [string]$Namespace = "root\cimv2", [string]$Filter = "")
+        try {
+            if (Get-Command Get-CimInstance -ErrorAction SilentlyContinue) {
+                if ($Filter) { return Get-CimInstance -Namespace $Namespace -ClassName $ClassName -Filter $Filter -ErrorAction Stop }
+                return Get-CimInstance -Namespace $Namespace -ClassName $ClassName -ErrorAction Stop
+            }
+            if ($Filter) { return Get-WmiObject -Namespace $Namespace -Class $ClassName -Filter $Filter -ErrorAction Stop }
+            return Get-WmiObject -Namespace $Namespace -Class $ClassName -ErrorAction Stop
+        } catch { return $null }
+    }
+    function New-Badge {
+        param([string]$Text, [string]$State)
+        $class = "badge-info"
+        if ($State -eq "Good") { $class = "badge-good" }
+        if ($State -eq "Bad") { $class = "badge-bad" }
+        if ($State -eq "Warn") { $class = "badge-warn" }
+        return "<span class='badge $class'>$(Escape-Html $Text)</span>"
+    }
+    function New-Input {
+        param([string]$Value = "", [string]$Placeholder = "Enter details")
+        return "<input class='field' type='text' value='$(Escape-Html $Value)' placeholder='$(Escape-Html $Placeholder)'>"
+    }
+    function New-TextArea {
+        param([string]$Value = "", [string]$Placeholder = "Enter notes")
+        return "<textarea class='field area' placeholder='$(Escape-Html $Placeholder)'>$(Escape-Html $Value)</textarea>"
+    }
+    function New-Select {
+        param([string[]]$Options = @("Select...", "Yes", "No", "N/A"), [string]$Selected = "")
+        $html = "<select class='field select'>"
+        foreach ($opt in $Options) {
+            $sel = ""
+            if ($opt -eq $Selected) { $sel = " selected" }
+            $html += "<option$sel>$(Escape-Html $opt)</option>"
+        }
+        return $html + "</select>"
+    }
+    function Get-TableOrEmpty {
+        param([string]$Rows, [string]$Empty = "No items detected.")
+        if ([string]::IsNullOrWhiteSpace($Rows)) { return "<tr><td colspan='8' class='empty'>$(Escape-Html $Empty)</td></tr>" }
+        return $Rows
+    }
+    function Get-RegistryEvidence {
+        param([string[]]$Patterns)
+        $hits = @()
+        $paths = @(
+            "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*",
+            "HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*",
+            "HKLM:\SYSTEM\CurrentControlSet\Services\*",
+            "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*"
+        )
+        foreach ($path in $paths) {
+            try {
+                foreach ($item in (Get-ItemProperty -Path $path -ErrorAction SilentlyContinue)) {
+                    $hay = "$($item.DisplayName) $($item.PSChildName) $($item.Publisher) $($item.InstallLocation)"
+                    foreach ($pattern in $Patterns) {
+                        if ($hay -match [regex]::Escape($pattern)) {
+                            $label = $item.DisplayName
+                            if (-not $label) { $label = $item.PSChildName }
+                            if ($label) { $hits += "Registry: $label" }
+                        }
+                    }
+                }
+            } catch {}
+        }
+        return $hits
+    }
+    function Find-Tool {
+        param([string]$Name, [string[]]$Patterns, [string[]]$Paths = @())
+        $evidence = @()
+        try {
+            $services = Get-Service -ErrorAction SilentlyContinue | Where-Object {
+                $svcText = "$($_.Name) $($_.DisplayName)"
+                $matched = $false
+                foreach ($pattern in $Patterns) { if ($svcText -match [regex]::Escape($pattern)) { $matched = $true } }
+                $matched
+            }
+            foreach ($svc in $services) { $evidence += "Service: $($svc.DisplayName) [$($svc.Status)]" }
+        } catch {}
+        try {
+            $processes = Get-Process -ErrorAction SilentlyContinue | Where-Object {
+                $procText = "$($_.ProcessName) $($_.Path)"
+                $matched = $false
+                foreach ($pattern in $Patterns) { if ($procText -match [regex]::Escape($pattern)) { $matched = $true } }
+                $matched
+            }
+            foreach ($proc in $processes) { $evidence += "Process: $($proc.ProcessName)" }
+        } catch {}
+        $evidence += Get-RegistryEvidence -Patterns $Patterns
+        foreach ($path in $Paths) {
+            try { if (Test-Path $path) { $evidence += "Path: $path" } } catch {}
+        }
+        $evidence = @($evidence | Where-Object { $_ } | Sort-Object -Unique)
+        return New-Object PSObject -Property @{
+            Name = $Name
+            Detected = ($evidence.Count -gt 0)
+            Evidence = $evidence
+        }
+    }
+    function Get-OsSupportStatus {
+        param($OSInfo)
+        $caption = [string]$OSInfo.Caption
+        $build = 0
+        [int]::TryParse([string]$OSInfo.BuildNumber, [ref]$build) | Out-Null
+        $today = Get-Date
+        $end = $null
+        $label = "Unknown - verify Microsoft Lifecycle"
+        if ($caption -match "Windows 10") { $end = Get-Date "2025-10-14"; $label = "Windows 10 general support ended 2025-10-14 unless ESU/LTSC applies" }
+        elseif ($caption -match "Windows 11") {
+            if ($build -ge 26100) { $end = Get-Date "2026-10-13"; $label = "Windows 11 24H2 consumer/business lifecycle estimate" }
+            elseif ($build -ge 22631) { $end = Get-Date "2025-11-11"; $label = "Windows 11 23H2 consumer lifecycle estimate" }
+            else { $end = Get-Date "2024-10-08"; $label = "Older Windows 11 release likely unsupported" }
+        }
+        elseif ($caption -match "Server 2012") { $end = Get-Date "2023-10-10"; $label = "Windows Server 2012/2012 R2 standard support ended 2023-10-10; ESU may apply" }
+        elseif ($caption -match "Server 2016") { $end = Get-Date "2027-01-12"; $label = "Windows Server 2016 extended support ends 2027-01-12" }
+        elseif ($caption -match "Server 2019") { $end = Get-Date "2029-01-09"; $label = "Windows Server 2019 extended support ends 2029-01-09" }
+        elseif ($caption -match "Server 2022") { $end = Get-Date "2031-10-14"; $label = "Windows Server 2022 extended support ends 2031-10-14" }
+        elseif ($caption -match "Server 2025") { $end = Get-Date "2034-10-10"; $label = "Windows Server 2025 extended support estimate" }
+        $state = "Warn"
+        if ($end -and $today -le $end) { $state = "Good" }
+        if ($end -and $today -gt $end) { $state = "Bad" }
+        return New-Object PSObject -Property @{ Text = $label; EndDate = $end; State = $state }
+    }
 
     try {
-        Log-Worker "Identity & RDP Checks..."
-        $OS = Get-CimInstance Win32_OperatingSystem; $CS = Get-CimInstance Win32_ComputerSystem; $BIOS = Get-CimInstance Win32_Bios
+        Log-Worker "Max Audit: collecting operating system, hardware, and PowerShell details..."
+        $OS = Get-SafeCim Win32_OperatingSystem
+        $CS = Get-SafeCim Win32_ComputerSystem
+        $BIOS = Get-SafeCim Win32_BIOS
+        $CPU = Get-SafeCim Win32_Processor | Select-Object -First 1
+        $OSSupport = Get-OsSupportStatus -OSInfo $OS
+        $PSVer = $PSVersionTable.PSVersion.ToString()
+        $Uptime = $null
+        if ($OS -and $OS.LastBootUpTime) { $Uptime = (Get-Date) - $OS.LastBootUpTime }
+        $UptimeText = "Unknown"
+        if ($Uptime) { $UptimeText = "{0} days, {1} hours" -f $Uptime.Days, $Uptime.Hours }
+        $IsServer = ([string]$OS.Caption -match "Server")
+        $IsVM = ($CS.Model -match "Virtual|VMware|KVM|VirtualBox|HVM" -or $CS.Manufacturer -match "VMware|Xen|QEMU|Microsoft Corporation")
+
         $WinKey = "Not Found"
-        try { $WinKey = (Get-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\SoftwareProtectionPlatform").BackupProductKeyDefault } catch {}
-        $RDP = "Disabled"
-        try { if((Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server").fDenyTSConnections -eq 0) { $RDP = "ENABLED" } } catch {}
+        try { $WinKey = (Get-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\SoftwareProtectionPlatform" -ErrorAction Stop).BackupProductKeyDefault } catch {}
 
-        Log-Worker "Deep Agent Scan: Ninja, Huntress, GoTo..."
-        function Test-Agent($keys) {
-            $f = $false
-            if (Get-Service | Where-Object { $d = $_.DisplayName; $keys | Where-Object { $d -like "*$_*" } }) { $f = $true }
-            if (!$f) { if (Get-Process | Where-Object { $n = $_.ProcessName; $keys | Where-Object { $n -like "*$_*" } }) { $f = $true } }
-            return $f
+        Log-Worker "Max Audit: scanning RMM, EDR, remote access, and backup products..."
+        $AgentTools = @(
+            (Find-Tool "NinjaRMM" @("NinjaRMM", "NinjaRM", "NinjaOne", "NinjaRemote") @("$env:ProgramFiles\NinjaRMMAgent", "${env:ProgramFiles(x86)}\NinjaRMMAgent")),
+            (Find-Tool "Huntress" @("Huntress", "HuntressAgent") @("$env:ProgramFiles\Huntress", "${env:ProgramFiles(x86)}\Huntress")),
+            (Find-Tool "GoToAssist" @("GoToAssist", "GoTo Resolve", "g2ax", "GoTo Opener") @("$env:ProgramFiles\GoToAssist", "${env:ProgramFiles(x86)}\GoToAssist"))
+        )
+        $RemoteTools = @(
+            (Find-Tool "TeamViewer" @("TeamViewer") @("$env:ProgramFiles\TeamViewer", "${env:ProgramFiles(x86)}\TeamViewer")),
+            (Find-Tool "AnyDesk" @("AnyDesk") @("$env:ProgramFiles\AnyDesk", "${env:ProgramFiles(x86)}\AnyDesk")),
+            (Find-Tool "Splashtop" @("Splashtop", "SRService") @("$env:ProgramFiles\Splashtop", "${env:ProgramFiles(x86)}\Splashtop")),
+            (Find-Tool "ConnectWise Control" @("ScreenConnect", "ConnectWise Control") @("$env:ProgramFiles(x86)\ScreenConnect Client")),
+            (Find-Tool "RustDesk" @("RustDesk") @("$env:ProgramFiles\RustDesk", "${env:ProgramFiles(x86)}\RustDesk")),
+            (Find-Tool "LogMeIn" @("LogMeIn", "LogMeInRemoteUser") @("$env:ProgramFiles\LogMeIn", "${env:ProgramFiles(x86)}\LogMeIn")),
+            (Find-Tool "Chrome Remote Desktop" @("chromoting", "Chrome Remote Desktop") @("$env:ProgramFiles(x86)\Google\Chrome Remote Desktop"))
+        )
+        $BackupTools = @(
+            (Find-Tool "Synology Active Backup / Hyper Backup" @("Synology", "Active Backup", "Hyper Backup", "Synology Drive") @("$env:ProgramFiles\Synology", "${env:ProgramFiles(x86)}\Synology")),
+            (Find-Tool "Veeam" @("Veeam") @("$env:ProgramFiles\Veeam", "${env:ProgramFiles(x86)}\Veeam")),
+            (Find-Tool "Datto" @("Datto", "Datto Windows Agent", "ShadowSnap") @("$env:ProgramFiles\Datto", "${env:ProgramFiles(x86)}\Datto")),
+            (Find-Tool "Acronis" @("Acronis") @("$env:ProgramFiles\Acronis", "${env:ProgramFiles(x86)}\Acronis")),
+            (Find-Tool "Carbonite" @("Carbonite") @("$env:ProgramFiles\Carbonite", "${env:ProgramFiles(x86)}\Carbonite")),
+            (Find-Tool "Windows Server Backup" @("wbengine", "Windows Server Backup") @())
+        )
+
+        $AgentRows = ""
+        foreach ($tool in $AgentTools) {
+            $badge = if ($tool.Detected) { New-Badge "✅ Installed" "Good" } else { New-Badge "❌ Not detected" "Bad" }
+            $evidence = if ($tool.Detected) { Escape-Html (($tool.Evidence | Select-Object -First 4) -join "; ") } else { "No service, process, registry, or common path match." }
+            $AgentRows += "<tr><th>$(Escape-Html $tool.Name)</th><td>$badge<div class='evidence'>$evidence</div></td></tr>"
         }
-        $HasNinja = Test-Agent @("Ninja", "NinjaRM")
-        $HasHuntress = Test-Agent @("Huntress")
-        $HasGoTo = Test-Agent @("GoToAssist", "g2ax")
-
-        Log-Worker "BitLocker WMI Fallback..."
-        $BitLocker = "Not Protected"
+        $RemoteRows = ""
+        foreach ($tool in $RemoteTools) {
+            $badge = if ($tool.Detected) { New-Badge "Detected" "Warn" } else { New-Badge "Not detected" "Good" }
+            $evidence = if ($tool.Detected) { Escape-Html (($tool.Evidence | Select-Object -First 4) -join "; ") } else { "No local signal found." }
+            $RemoteRows += "<tr><th>$(Escape-Html $tool.Name)</th><td>$badge<div class='evidence'>$evidence</div></td></tr>"
+        }
+        $DetectedBackupTools = @($BackupTools | Where-Object { $_.Detected })
+        $BackupRows = ""
+        foreach ($tool in $BackupTools) {
+            $badge = if ($tool.Detected) { New-Badge "Detected" "Good" } else { New-Badge "Not detected" "Info" }
+            $evidence = if ($tool.Detected) { Escape-Html (($tool.Evidence | Select-Object -First 4) -join "; ") } else { "No local signal found." }
+            $BackupRows += "<tr><th>$(Escape-Html $tool.Name)</th><td>$badge<div class='evidence'>$evidence</div></td></tr>"
+        }
+        $BackupSolution = "Not detected"
+        $BackupSuccess = "N/A"
+        $BackupFailed = "N/A"
+        $BackupLast = "N/A"
+        $BackupFrequency = "N/A"
+        $BackupEncryption = "N/A"
+        $BackupTransit = "N/A"
+        $BackupRetention = "N/A"
+        if ($DetectedBackupTools.Count -gt 0) {
+            $BackupSolution = ($DetectedBackupTools | ForEach-Object { $_.Name }) -join "; "
+            $BackupSuccess = "Review vendor console"
+            $BackupFailed = "Review vendor console"
+            $BackupLast = "Review vendor console"
+            $BackupFrequency = "Review vendor console"
+            $BackupEncryption = "Review vendor console / expected AES-256 where supported"
+            $BackupTransit = "Review vendor console / expected TLS"
+            $BackupRetention = "Review policy"
+        }
         try {
-            if (Get-Command Get-BitLockerVolume -ErrorAction SilentlyContinue) {
-                $bl = Get-BitLockerVolume -MountPoint "C:" -ErrorAction SilentlyContinue
-                if ($bl) { $BitLocker = $bl.ProtectionStatus }
-            } else {
-                $wmiBL = Get-CimInstance -Namespace root\CIMV2\Security\MicrosoftVolumeEncryption -ClassName Win32_EncryptableVolume -Filter "DriveLetter='C:'" -ErrorAction SilentlyContinue
-                if ($wmiBL) { $BitLocker = if($wmiBL.ProtectionStatus -eq 1){ "On" } else { "Off" } }
-            }
-        } catch { $BitLocker = "Error Querying" }
-
-        Log-Worker "Shares & Printers..."
-        $ShareRows = ""; try { foreach($s in (Get-SmbShare | Where-Object {!$_.Name.EndsWith('$')})) { $ShareRows += "<tr><td>$($s.Name)</td><td>$($s.Path)</td></tr>" } } catch {}
-        $PrinterRows = ""; try { foreach($p in (Get-Printer | Where-Object Shared)) { $PrinterRows += "<tr><td>$($p.Name)</td><td>$($p.ShareName)</td></tr>" } } catch {}
-
-        Log-Worker "Storage & Performance..."
-        $DiskRows = ""; foreach($d in (Get-CimInstance Win32_LogicalDisk -Filter "DriveType=3")) {
-            $DiskRows += "<tr><td>$($d.DeviceID)</td><td>$([math]::Round($d.Size/1GB,1)) GB</td><td>$([math]::Round($d.FreeSpace/1GB,1)) GB</td></tr>"
-        }
-
-        Log-Worker "Users & Admins (2012 R2 Fix)..."
-        $UserRows = ""; $AdminsList = @(); $ExpiredList = @()
-        if (Get-Command Get-LocalUser -ErrorAction SilentlyContinue) {
-            foreach($u in (Get-LocalUser)) {
-                $uStatus = if($u.Enabled){ "Active" } else { "Disabled" }
-                $UserRows += "<tr><td>$($u.Name)</td><td>$uStatus</td><td>$($u.PasswordLastSet)</td></tr>"
-                if($u.PasswordExpired){ $ExpiredList += $u.Name }
-            }
-            $AdminsList = Get-LocalGroupMember -Group "Administrators" -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name
-        } else {
-            foreach($u in (Get-CimInstance Win32_UserAccount -Filter "LocalAccount = True")) {
-                $uStatus = if($u.Disabled){ "Disabled" } else { "Active" }
-                $UserRows += "<tr><td>$($u.Name)</td><td>$uStatus</td><td>WMI-NoDate</td></tr>"
-            }
-            try { $AdminsList = ([ADSI]"WinNT://$ComputerName/Administrators,group").psbase.Invoke("Members") | ForEach-Object { $_.GetType().InvokeMember("Name", 'GetProperty', $null, $_, $null) } } catch {}
-        }
-
-        Log-Worker "Backups (Synology)..."
-        $BUK = @("Synology", "Active Backup", "Hyper Backup", "Veeam", "Acronis", "Datto", "Carbonite")
-        $FoundBU = Get-Service | Where-Object { $d = $_.DisplayName; $BUK | Where-Object { $d -like "*$_*" } }
-        if($FoundBU) {
-            $BUText = ($FoundBU.DisplayName | Sort-Object -Unique) -join "; "
-            $BUSuccess = "Check Console"; $BUFreq = "Daily"; $BUFail = "No"; $BUEnc = "Yes (AES-256)"; $BURet = "Yes"
-        } else {
-            $BUText = "Not Detected"; $BUSuccess = "N/A"; $BUFreq = "N/A"; $BUFail = "N/A"; $BUEnc = "N/A"; $BURet = "N/A"
-        }
-
-        Log-Worker "Event Logs..."
-        $EventRows = ""; try {
-            $events = Get-WinEvent -FilterHashtable @{LogName='System','Application'; Level=1,2,3; StartTime=(Get-Date).AddDays(-30)} -MaxEvents 50 -ErrorAction SilentlyContinue
-            if($events) {
-                foreach($g in ($events | Group-Object { "$($_.ProviderName)|$($_.Id)" } | Where-Object { $_.Count -gt 1 })) {
-                    $s = $g.Group[0]; $msg = Escape-Html($s.Message.Substring(0, [math]::Min($s.Message.Length, 100)))
-                    $EventRows += "<tr><td>$($s.ProviderName)</td><td>$($s.Id)</td><td>$($g.Count)x</td><td>$msg...</td></tr>"
-                }
+            $WinBackupEvents = Get-WinEvent -LogName "Microsoft-Windows-Backup" -MaxEvents 10 -ErrorAction SilentlyContinue
+            $LatestBackupEvent = $WinBackupEvents | Select-Object -First 1
+            if ($LatestBackupEvent) {
+                if ($DetectedBackupTools.Count -eq 0) { $BackupSolution = "Windows Server Backup event log present" }
+                if ($LatestBackupEvent.Id -eq 4) { $BackupSuccess = "Yes"; $BackupFailed = "No" } else { $BackupSuccess = "No"; $BackupFailed = "Yes" }
+                $BackupLast = $LatestBackupEvent.TimeCreated.ToString("yyyy-MM-dd HH:mm")
             }
         } catch {}
 
-        Log-Worker "Building Report..."
-        $ReportPath = Join-Path $TempPath "WinFix_Audit_$($ComputerName)_$(Get-Date -Format 'yyyyMMdd_HHmm').html"
-        $HTML = @"
-<!DOCTYPE html><html><head><style>
-    body { font-family: 'Segoe UI', sans-serif; background-color: #f4f7f9; padding: 40px; color: #333; line-height: 1.4; }
-    .report-wrap { max-width: 900px; margin: auto; background: white; border-radius: 8px; border: 1px solid #d1d8db; overflow: hidden; }
-    .hero { background: #12344d; color: white; padding: 30px; }
-    .hero h1 { margin: 0; font-size: 22px; text-transform: uppercase; }
-    .section-head { background: #f8f9fa; border-bottom: 2px solid #1a73e8; padding: 12px 20px; font-weight: bold; color: #1a73e8; text-transform: uppercase; font-size: 13px; }
-    .sub-head { background: #ffffff; padding: 8px 20px; font-weight: bold; color: #555; border-bottom: 1px solid #f0f0f0; font-size: 12px; }
-    table { width: 100%; border-collapse: collapse; }
-    th { text-align: left; background: #fafafa; padding: 10px 20px; border-bottom: 1px solid #eee; width: 40%; color: #666; font-size: 12px; }
-    td { padding: 10px 20px; border-bottom: 1px solid #eee; font-size: 12px; }
-    .badge { font-weight: bold; padding: 4px 8px; border-radius: 4px; font-size: 11px; }
-    .badge-good { background: #e6f4ea; color: #1e7e34; }
-    .badge-bad { background: #fce8e6; color: #c5221f; }
-    .copy-bar { background: #1a73e8; color: white; padding: 12px; text-align: center; cursor: pointer; font-weight: bold; border: none; width: 100%; position: sticky; top: 0; z-index: 999; }
-    input { border: 1px solid #ccc; padding: 5px; width: 92%; border-radius: 4px; font-family: inherit; font-size: 12px; }
-</style>
-<script>
-    function copyForFreshdesk() {
-        const report = document.getElementById('report-main');
-        const clone = report.cloneNode(true);
-        
-        // 1. Process Inputs
-        clone.querySelectorAll('input').forEach(i => {
-            const s = document.createElement('span'); s.innerText = i.value || 'N/A';
-            s.style.fontWeight = 'bold'; i.parentNode.replaceChild(s, i);
-        });
+        Log-Worker "Max Audit: collecting patching, update history, Defender, firewall, and RDP posture..."
+        $PendingReboot = $false
+        foreach ($rebootKey in @(
+            "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending",
+            "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\RebootRequired",
+            "HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\PendingFileRenameOperations"
+        )) { try { if (Test-Path $rebootKey) { $PendingReboot = $true } } catch {} }
 
-        // 2. Absolute Style Inlining for Freshdesk
-        clone.style.border = '1px solid #d1d8db';
-        clone.style.fontFamily = 'Segoe UI, Arial, sans-serif';
-        clone.querySelectorAll('.hero').forEach(e => { e.style.backgroundColor='#12344d'; e.style.color='white'; e.style.padding='30px'; });
-        clone.querySelectorAll('.section-head').forEach(e => { e.style.backgroundColor='#f8f9fa'; e.style.borderBottom='2px solid #1a73e8'; e.style.padding='12px 20px'; e.style.fontWeight='bold'; e.style.color='#1a73e8'; });
-        clone.querySelectorAll('table').forEach(e => { e.style.width='100%'; e.style.borderCollapse='collapse'; });
-        clone.querySelectorAll('th').forEach(e => { e.style.background='#fafafa'; e.style.padding='10px'; e.style.borderBottom='1px solid #eee'; e.style.textAlign='left'; });
-        clone.querySelectorAll('td').forEach(e => { e.style.padding='10px'; e.style.borderBottom='1px solid #eee'; });
-        clone.querySelectorAll('.badge-good').forEach(e => { e.style.backgroundColor='#e6f4ea'; e.style.color='#1e7e34'; e.style.padding='4px'; e.style.borderRadius='4px'; });
-        clone.querySelectorAll('.badge-bad').forEach(e => { e.style.backgroundColor='#fce8e6'; e.style.color='#c5221f'; e.style.padding='4px'; e.style.borderRadius='4px'; });
-
-        // 3. Selection & Copy
-        const container = document.createElement('div');
-        container.style.position = 'fixed'; container.style.left = '-9999px'; container.style.top = '0';
-        container.appendChild(clone);
-        document.body.appendChild(container);
-
-        const range = document.createRange();
-        range.selectNode(clone);
-        window.getSelection().removeAllRanges();
-        window.getSelection().addRange(range);
-
+        $PendingUpdates = @()
         try {
-            const success = document.execCommand('copy');
-            if (success) { alert('Report copied! Now paste (Ctrl+V) into Freshdesk.'); }
-            else { throw new Error(); }
-        } catch (err) {
-            alert('Selection failed. Please manual copy the report.');
+            $UpdateSession = New-Object -ComObject Microsoft.Update.Session
+            $UpdateSearcher = $UpdateSession.CreateUpdateSearcher()
+            $SearchResult = $UpdateSearcher.Search("IsInstalled=0 and Type='Software' and IsHidden=0")
+            for ($i = 0; $i -lt $SearchResult.Updates.Count; $i++) { $PendingUpdates += $SearchResult.Updates.Item($i).Title }
+        } catch { $PendingUpdates += "Unable to query Windows Update COM API: $($_.Exception.Message)" }
+        $RecentUpdateRows = ""
+        try {
+            $HotFixes = Get-HotFix -ErrorAction SilentlyContinue | Sort-Object InstalledOn -Descending | Select-Object -First 12
+            foreach ($hf in $HotFixes) { $RecentUpdateRows += "<tr><td>$(Escape-Html $hf.HotFixID)</td><td>$(Escape-Html $hf.Description)</td><td>$(Escape-Html $hf.InstalledOn)</td></tr>" }
+        } catch {}
+        $LastPatchDate = "Unknown"
+        try {
+            $LastHotFix = Get-HotFix -ErrorAction SilentlyContinue | Sort-Object InstalledOn -Descending | Select-Object -First 1
+            if ($LastHotFix -and $LastHotFix.InstalledOn) { $LastPatchDate = $LastHotFix.InstalledOn.ToString("yyyy-MM-dd") }
+        } catch {}
+
+        $AVText = "Not detected"
+        try {
+            $AV = Get-SafeCim -Namespace "root\SecurityCenter2" -ClassName "AntivirusProduct"
+            if ($AV) { $AVText = (($AV | ForEach-Object { $_.displayName }) -join "; ") }
+        } catch {}
+        $DefenderText = "Not available"
+        if (Get-Command Get-MpComputerStatus -ErrorAction SilentlyContinue) {
+            try {
+                $Defender = Get-MpComputerStatus -ErrorAction Stop
+                $DefenderText = "Realtime: $($Defender.RealTimeProtectionEnabled); Signatures: $($Defender.AntivirusSignatureLastUpdated); Last quick scan: $($Defender.QuickScanEndTime)"
+                if ($AVText -eq "Not detected") { $AVText = "Microsoft Defender" }
+            } catch { $DefenderText = "Unable to query Defender: $($_.Exception.Message)" }
         }
 
-        window.getSelection().removeAllRanges();
-        document.body.removeChild(container);
+        $FirewallText = "Unknown"
+        try {
+            if (Get-Command Get-NetFirewallProfile -ErrorAction SilentlyContinue) {
+                $profiles = Get-NetFirewallProfile -ErrorAction SilentlyContinue
+                $FirewallText = (($profiles | ForEach-Object { "$($_.Name): $($_.Enabled)" }) -join "; ")
+            } else {
+                $FirewallText = ((netsh advfirewall show allprofiles state) -join " ")
+            }
+        } catch {}
+        $RDPEnabled = $false
+        $RDPText = "Unknown"
+        $NlaText = "Unknown"
+        try {
+            $rdpReg = Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server" -ErrorAction Stop
+            if ($rdpReg.fDenyTSConnections -eq 0) { $RDPEnabled = $true; $RDPText = "Enabled" } else { $RDPText = "Disabled" }
+            $nla = Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" -ErrorAction SilentlyContinue
+            if ($nla.UserAuthentication -eq 1) { $NlaText = "Enabled" } else { $NlaText = "Disabled or unknown" }
+        } catch {}
+        $RDPFailures = 0
+        try {
+            $failEvents = Get-WinEvent -FilterHashtable @{LogName='Security'; Id=4625; StartTime=(Get-Date).AddDays(-30)} -MaxEvents 500 -ErrorAction SilentlyContinue
+            if ($failEvents) { $RDPFailures = @($failEvents).Count }
+        } catch {}
+
+        Log-Worker "Max Audit: collecting storage, BitLocker, shares, printers, users, and scheduled tasks..."
+        $BitLockerRows = ""
+        $BitLockerSummary = "Not available"
+        try {
+            if (Get-Command Get-BitLockerVolume -ErrorAction SilentlyContinue) {
+                $blVolumes = Get-BitLockerVolume -ErrorAction SilentlyContinue
+                foreach ($bl in $blVolumes) {
+                    $state = if ($bl.ProtectionStatus -eq "On") { "Good" } else { "Bad" }
+                    $BitLockerRows += "<tr><td>$(Escape-Html $bl.MountPoint)</td><td>$(New-Badge $bl.ProtectionStatus $state)</td><td>$(Escape-Html $bl.VolumeStatus)</td><td>$(Escape-Html $bl.EncryptionPercentage)%</td></tr>"
+                }
+                if ($blVolumes) { $BitLockerSummary = (($blVolumes | ForEach-Object { "$($_.MountPoint) $($_.ProtectionStatus)" }) -join "; ") }
+            } else {
+                $wmiVolumes = Get-SafeCim -Namespace "root\CIMV2\Security\MicrosoftVolumeEncryption" -ClassName "Win32_EncryptableVolume"
+                foreach ($vol in $wmiVolumes) {
+                    $prot = "Off"
+                    if ($vol.ProtectionStatus -eq 1) { $prot = "On" }
+                    $state = if ($prot -eq "On") { "Good" } else { "Bad" }
+                    $BitLockerRows += "<tr><td>$(Escape-Html $vol.DriveLetter)</td><td>$(New-Badge $prot $state)</td><td>WMI fallback</td><td>N/A</td></tr>"
+                }
+                if ($wmiVolumes) { $BitLockerSummary = "WMI fallback used" }
+            }
+        } catch { $BitLockerSummary = "Unable to query BitLocker: $($_.Exception.Message)" }
+        if ([string]::IsNullOrWhiteSpace($BitLockerRows)) { $BitLockerRows = "<tr><td colspan='4'>BitLocker details unavailable. On older Server builds this may require optional components or admin rights.</td></tr>" }
+
+        $DriveRows = ""
+        $StorageWarning = "None"
+        $logicalDisks = Get-SafeCim -ClassName Win32_LogicalDisk -Filter "DriveType=3"
+        foreach ($d in $logicalDisks) {
+            $sizeGb = 0; $freeGb = 0; $freePct = 0
+            if ($d.Size -gt 0) {
+                $sizeGb = [math]::Round($d.Size / 1GB, 1)
+                $freeGb = [math]::Round($d.FreeSpace / 1GB, 1)
+                $freePct = [math]::Round(($d.FreeSpace / $d.Size) * 100, 1)
+            }
+            $state = "Good"
+            if ($freePct -lt 15) { $state = "Bad"; $StorageWarning = "Low disk space detected" }
+            elseif ($freePct -lt 25) { $state = "Warn" }
+            $DriveRows += "<tr><td>$(Escape-Html $d.DeviceID)</td><td>$sizeGb GB</td><td>$freeGb GB</td><td>$(New-Badge "$freePct% free" $state)</td><td>$(Escape-Html $d.VolumeName)</td></tr>"
+        }
+        $PhysicalDiskRows = ""
+        try {
+            if (Get-Command Get-PhysicalDisk -ErrorAction SilentlyContinue) {
+                foreach ($pd in (Get-PhysicalDisk -ErrorAction SilentlyContinue)) { $PhysicalDiskRows += "<tr><td>$(Escape-Html $pd.FriendlyName)</td><td>$(Escape-Html $pd.MediaType)</td><td>$(Escape-Html $pd.HealthStatus)</td><td>$(Escape-Html $pd.OperationalStatus)</td></tr>" }
+            }
+        } catch {}
+
+        $ShareRows = ""
+        try {
+            if (Get-Command Get-SmbShare -ErrorAction SilentlyContinue) {
+                foreach ($s in (Get-SmbShare -ErrorAction SilentlyContinue | Where-Object { $_.Name -notmatch '\$$' })) { $ShareRows += "<tr><td>$(Escape-Html $s.Name)</td><td>$(Escape-Html $s.Path)</td><td>$(Escape-Html $s.Description)</td></tr>" }
+            } else {
+                foreach ($s in (Get-SafeCim Win32_Share | Where-Object { $_.Name -notmatch '\$$' })) { $ShareRows += "<tr><td>$(Escape-Html $s.Name)</td><td>$(Escape-Html $s.Path)</td><td>$(Escape-Html $s.Description)</td></tr>" }
+            }
+        } catch {}
+        $PrinterRows = ""
+        try {
+            if (Get-Command Get-Printer -ErrorAction SilentlyContinue) {
+                foreach ($p in (Get-Printer -ErrorAction SilentlyContinue | Where-Object { $_.Shared })) { $PrinterRows += "<tr><td>$(Escape-Html $p.Name)</td><td>$(Escape-Html $p.ShareName)</td><td>$(Escape-Html $p.DriverName)</td></tr>" }
+            } else {
+                foreach ($p in (Get-SafeCim Win32_Printer | Where-Object { $_.Shared })) { $PrinterRows += "<tr><td>$(Escape-Html $p.Name)</td><td>$(Escape-Html $p.ShareName)</td><td>$(Escape-Html $p.DriverName)</td></tr>" }
+            }
+        } catch {}
+
+        $UserRows = ""
+        $AdminsList = @()
+        try {
+            if (Get-Command Get-LocalUser -ErrorAction SilentlyContinue) {
+                foreach ($u in (Get-LocalUser -ErrorAction SilentlyContinue)) {
+                    $status = if ($u.Enabled) { "Enabled" } else { "Disabled" }
+                    $UserRows += "<tr><td>$(Escape-Html $u.Name)</td><td>$status</td><td>$(Escape-Html $u.PasswordLastSet)</td><td>$(Escape-Html $u.LastLogon)</td></tr>"
+                }
+                $AdminsList = Get-LocalGroupMember -Group "Administrators" -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name
+            } else {
+                foreach ($u in (Get-SafeCim Win32_UserAccount -Filter "LocalAccount = True")) {
+                    $status = if ($u.Disabled) { "Disabled" } else { "Enabled" }
+                    $UserRows += "<tr><td>$(Escape-Html $u.Name)</td><td>$status</td><td>WMI fallback</td><td>WMI fallback</td></tr>"
+                }
+                try { $AdminsList = ([ADSI]"WinNT://$ComputerName/Administrators,group").psbase.Invoke("Members") | ForEach-Object { $_.GetType().InvokeMember("Name", 'GetProperty', $null, $_, $null) } } catch {}
+            }
+        } catch {}
+        $TaskRows = ""
+        try {
+            if (Get-Command Get-ScheduledTask -ErrorAction SilentlyContinue) {
+                $tasks = Get-ScheduledTask -ErrorAction SilentlyContinue | Where-Object { $_.TaskPath -notlike "\Microsoft\*" } | Select-Object -First 30
+                foreach ($t in $tasks) { $TaskRows += "<tr><td>$(Escape-Html $t.TaskName)</td><td>$(Escape-Html $t.TaskPath)</td><td>$(Escape-Html $t.State)</td></tr>" }
+            } else {
+                $csv = schtasks /query /fo csv /v 2>$null | ConvertFrom-Csv
+                foreach ($t in ($csv | Where-Object { $_.TaskName -notlike "\Microsoft\*" } | Select-Object -First 30)) { $TaskRows += "<tr><td>$(Escape-Html $t.TaskName)</td><td>Legacy schtasks</td><td>$(Escape-Html $t.Status)</td></tr>" }
+            }
+        } catch {}
+
+        Log-Worker "Max Audit: collecting network configuration and event-log indicators..."
+        $NetworkRows = ""
+        try {
+            if (Get-Command Get-NetIPConfiguration -ErrorAction SilentlyContinue) {
+                foreach ($nic in (Get-NetIPConfiguration -ErrorAction SilentlyContinue | Where-Object { $_.IPv4Address })) {
+                    $ips = ($nic.IPv4Address | ForEach-Object { $_.IPAddress }) -join ", "
+                    $dns = ($nic.DNSServer.ServerAddresses | Where-Object { $_ }) -join ", "
+                    $gw = ($nic.IPv4DefaultGateway.NextHop | Where-Object { $_ }) -join ", "
+                    $NetworkRows += "<tr><td>$(Escape-Html $nic.InterfaceAlias)</td><td>$(Escape-Html $ips)</td><td>$(Escape-Html $gw)</td><td>$(Escape-Html $dns)</td></tr>"
+                }
+            } else {
+                foreach ($nic in (Get-SafeCim Win32_NetworkAdapterConfiguration -Filter "IPEnabled = True")) {
+                    $NetworkRows += "<tr><td>$(Escape-Html $nic.Description)</td><td>$(Escape-Html ($nic.IPAddress -join ', '))</td><td>$(Escape-Html ($nic.DefaultIPGateway -join ', '))</td><td>$(Escape-Html ($nic.DNSServerSearchOrder -join ', '))</td></tr>"
+                }
+            }
+        } catch {}
+        $OpenPortsRows = ""
+        try {
+            if (Get-Command Get-NetTCPConnection -ErrorAction SilentlyContinue) {
+                foreach ($port in (Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | Group-Object LocalPort | Sort-Object { [int]$_.Name } | Select-Object -First 40)) { $OpenPortsRows += "<tr><td>TCP/$($port.Name)</td><td>$($port.Count) listener(s)</td></tr>" }
+            } else {
+                $netstat = netstat -ano -p tcp | Select-String "LISTENING"
+                foreach ($line in ($netstat | Select-Object -First 40)) { $OpenPortsRows += "<tr><td colspan='2'>$(Escape-Html $line.Line)</td></tr>" }
+            }
+        } catch {}
+        $EventRows = ""
+        try {
+            $events = Get-WinEvent -FilterHashtable @{LogName='System','Application'; Level=1,2,3; StartTime=(Get-Date).AddDays(-30)} -MaxEvents 300 -ErrorAction SilentlyContinue
+            $groups = $events | Group-Object { "$($_.ProviderName)|$($_.Id)|$($_.LevelDisplayName)" } | Sort-Object Count -Descending | Select-Object -First 20
+            foreach ($g in $groups) {
+                $sample = $g.Group[0]
+                $msg = ""
+                if ($sample.Message) { $msg = $sample.Message.Substring(0, [math]::Min($sample.Message.Length, 180)) }
+                $EventRows += "<tr><td>$(Escape-Html $sample.LevelDisplayName)</td><td>$(Escape-Html $sample.ProviderName)</td><td>$(Escape-Html $sample.Id)</td><td>$($g.Count)x</td><td>$(Escape-Html $msg)</td></tr>"
+            }
+        } catch {}
+
+        $PendingUpdatesHtml = ""
+        if ($PendingUpdates.Count -gt 0) {
+            foreach ($u in ($PendingUpdates | Select-Object -First 20)) { $PendingUpdatesHtml += "<li>$(Escape-Html $u)</li>" }
+        } else { $PendingUpdatesHtml = "<li>No pending software updates detected by Windows Update search.</li>" }
+
+        $ReportPath = Join-Path $TempPath "WinFix_MaxAudit_$($ComputerName)_$(Get-Date -Format 'yyyyMMdd_HHmm').html"
+        Log-Worker "Max Audit: building professional HIPAA report..."
+        $HTML = @"
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>WinFix Max Audit - $(Escape-Html $ComputerName)</title>
+<style>
+    :root { --ink:#202733; --muted:#667085; --line:#d9e2ec; --panel:#ffffff; --soft:#f6f8fb; --brand:#145c9e; --brand2:#0f766e; --good:#157347; --bad:#b42318; --warn:#b45309; --info:#475467; }
+    body { margin:0; padding:24px; background:#edf2f7; color:var(--ink); font-family:"Segoe UI", Arial, sans-serif; font-size:13px; line-height:1.45; }
+    .copy-bar { position:sticky; top:0; z-index:999; width:100%; border:0; background:var(--brand); color:white; padding:12px 16px; font-weight:700; cursor:pointer; border-radius:6px; margin-bottom:14px; }
+    .wrap { max-width:1040px; margin:0 auto; background:var(--panel); border:1px solid var(--line); border-radius:8px; overflow:hidden; box-shadow:0 10px 24px rgba(32,39,51,.08); }
+    .hero { background:#12344d; color:#fff; padding:28px 32px; }
+    .hero h1 { margin:0 0 8px 0; font-size:24px; letter-spacing:0; }
+    .hero .meta { display:grid; grid-template-columns:repeat(4,1fr); gap:10px; margin-top:16px; }
+    .metric { background:rgba(255,255,255,.12); border:1px solid rgba(255,255,255,.18); border-radius:6px; padding:10px; }
+    .metric b { display:block; font-size:11px; color:#d7e9ff; text-transform:uppercase; margin-bottom:3px; }
+    .summary { display:grid; grid-template-columns:repeat(4,1fr); gap:12px; padding:16px 22px; background:#f8fafc; border-bottom:1px solid var(--line); }
+    .summary-card { border-left:4px solid var(--brand2); background:white; padding:10px 12px; border-radius:6px; border-top:1px solid var(--line); border-right:1px solid var(--line); border-bottom:1px solid var(--line); }
+    .summary-card b { display:block; color:var(--muted); font-size:11px; text-transform:uppercase; }
+    .section { padding:20px 24px 4px 24px; }
+    .section-head { margin:0 -24px 12px -24px; padding:11px 24px; background:#eaf3fb; border-top:1px solid var(--line); border-bottom:1px solid var(--line); color:var(--brand); font-weight:800; font-size:14px; }
+    .subhead { margin:18px 0 8px; color:#344054; font-weight:800; }
+    table { width:100%; border-collapse:collapse; margin:0 0 12px 0; background:white; }
+    th, td { border:1px solid var(--line); padding:9px 10px; text-align:left; vertical-align:top; }
+    th { background:#f8fafc; color:#344054; width:34%; }
+    .data th { width:auto; }
+    .badge { display:inline-block; border-radius:999px; padding:3px 9px; font-weight:800; font-size:12px; }
+    .badge-good { color:var(--good); background:#dcfce7; }
+    .badge-bad { color:var(--bad); background:#fee4e2; }
+    .badge-warn { color:var(--warn); background:#fef3c7; }
+    .badge-info { color:var(--info); background:#eef2f6; }
+    .evidence { color:var(--muted); font-size:12px; margin-top:5px; }
+    .field { box-sizing:border-box; width:100%; border:1px solid #cbd5e1; border-radius:5px; padding:7px 8px; font:inherit; background:#fff; color:#111827; }
+    .select { max-width:260px; }
+    .area { min-height:58px; resize:vertical; }
+    .empty { color:var(--muted); background:#f8fafc; border:1px dashed var(--line); padding:10px; border-radius:6px; }
+    ul.compact { margin:0; padding-left:18px; }
+    @media (max-width:760px) { body{padding:8px;} .hero .meta,.summary{grid-template-columns:1fr;} th,td{display:block;width:auto;} }
+</style>
+<script>
+function copyForFreshdesk() {
+    var report = document.getElementById('report-main');
+    var clone = report.cloneNode(true);
+    var originalFields = report.querySelectorAll('input, textarea, select');
+    var clonedFields = clone.querySelectorAll('input, textarea, select');
+    for (var i = 0; i < clonedFields.length; i++) {
+        var original = originalFields[i];
+        var value = '';
+        if (original) {
+            if (original.tagName === 'SELECT') { value = original.options[original.selectedIndex] ? original.options[original.selectedIndex].text : 'N/A'; }
+            else { value = original.value; }
+        }
+        if (!value) { value = 'N/A'; }
+        var span = document.createElement('span');
+        span.textContent = value;
+        span.style.fontWeight = '600';
+        clonedFields[i].parentNode.replaceChild(span, clonedFields[i]);
     }
-</script></head>
+    clone.querySelectorAll('*').forEach(function(e) {
+        var cs = window.getComputedStyle(e);
+        e.style.fontFamily = cs.fontFamily;
+        e.style.fontSize = cs.fontSize;
+        e.style.lineHeight = cs.lineHeight;
+        e.style.color = cs.color;
+        e.style.backgroundColor = cs.backgroundColor;
+        e.style.border = cs.border;
+        e.style.padding = cs.padding;
+        e.style.margin = cs.margin;
+        e.style.fontWeight = cs.fontWeight;
+    });
+    var holder = document.createElement('div');
+    holder.style.position = 'fixed';
+    holder.style.left = '-9999px';
+    holder.appendChild(clone);
+    document.body.appendChild(holder);
+    var range = document.createRange();
+    range.selectNode(clone);
+    var selection = window.getSelection();
+    selection.removeAllRanges();
+    selection.addRange(range);
+    try {
+        var ok = document.execCommand('copy');
+        alert(ok ? 'Formatted report copied. Paste into Freshdesk/Ninja ticket notes.' : 'Copy failed. Select the report and copy manually.');
+    } catch (err) {
+        alert('Copy failed. Select the report and copy manually.');
+    }
+    selection.removeAllRanges();
+    document.body.removeChild(holder);
+}
+</script>
+</head>
 <body>
-    <button class="copy-bar" onclick="copyForFreshdesk()">📋 CLICK TO COPY FOR FRESHDESK TICKET</button>
-    <div id="report-main" class="report-wrap">
-        <div class="hero"><h1>HIPAA AUDIT: $ComputerName</h1><p>Client: <input value="Enter Client Name"> | Date: $((Get-Date).ToString('F'))</p></div>
-        
-        <div class="section-head">Security Agent Status</div>
-        <table>
-            <tr><th>NinjaRMM</th><td><span class="badge $(if($HasNinja){'badge-good'}else{'badge-bad'})">$(if($HasNinja){'[✅] YES'}else{'[❌] NO'})</span></td></tr>
-            <tr><th>Huntress</th><td><span class="badge $(if($HasHuntress){'badge-good'}else{'badge-bad'})">$(if($HasHuntress){'[✅] YES'}else{'[❌] NO'})</span></td></tr>
-            <tr><th>GoToAssist</th><td><span class="badge $(if($HasGoTo){'badge-good'}else{'badge-bad'})">$(if($HasGoTo){'[✅] YES'}else{'[❌] NO'})</span></td></tr>
-        </table>
-
-        <div class="section-head">Identity & Security</div>
-        <table>
-            <tr><th>OS Version</th><td>$($OS.Caption)</td></tr>
-            <tr><th>Serial Number / Key</th><td>$($BIOS.SerialNumber) / <input value="$WinKey"></td></tr>
-            <tr><th>Remote Desktop</th><td style="color:$(if($RDP -eq 'ENABLED'){'#c5221f'}else{'#333'}); font-weight:bold;">$RDP</td></tr>
-            <tr><th>BitLocker Status</th><td><span class="badge $(if($BitLocker -eq 'On'){'badge-good'}else{'badge-bad'})">$BitLocker</span></td></tr>
-        </table>
-
-        <div class="section-head">Storage & RAM</div>
-        <table><tr><th>Total RAM</th><td>$([math]::Round($CS.TotalPhysicalMemory/1GB,1)) GB</td></tr>$DiskRows</table>
-
-        <div class="section-head">Shares & Printers</div>
-        <table>$ShareRows $PrinterRows</table>
-        $(if(!$ShareRows -and !$PrinterRows){"<p style='padding:10px; color:#999; font-size:11px;'>No shared resources detected.</p>"})
-
-        <div class="section-head">1. Backup & Data Retention (§164.308)</div>
-        <div class="sub-head">A. Backup Review</div>
-        <table>
-            <tr><th>Solution</th><td><input value="$BUText"></td></tr>
-            <tr><th>Backup Successful?</th><td><input value="$BUSuccess"></td></tr>
-            <tr><th>Frequency / Retention</th><td><input value="$BUFreq / $BURet"></td></tr>
-        </table>
-
-        <div class="section-head">2. User Audit (§164.308)</div>
-        <table><tr><th>Admins</th><td><input value="$($AdminsList -join ', ')"></td></tr></table>
-        <table><tr style="background:#fafafa; font-weight:bold;"><td>User</td><td>Status</td><td>Last PW Change</td></tr>$UserRows</table>
-
-        <div class="section-head">5. Monitoring & Logs (§164.312)</div>
-        <table><tr style="background:#fafafa; font-weight:bold;"><td>Source</td><td>ID</td><td>Count</td><td>Message</td></tr>$EventRows</table>
-        $(if(!$EventRows){"<p style='padding:15px; color:#999; font-size:11px;'>No repeating errors detected.</p>"})
-
-        <div class="section-head">6. Physical Security (§164.310)</div>
-        <table><tr><th>Location</th><td><input value="Onsite"></td></tr><tr><th>Room Locked?</th><td><input value="Unknown"></td></tr></table>
-
-        <div class="section-head">7. Contingency & Redundancy</div>
-        <table><tr><th>RAID Status</th><td><input value="Healthy"></td></tr></table>
-
-        <div class="section-head">8. Server Exceptions</div>
-        <table><tr><th>Exceptions</th><td><input value="None"></td></tr></table>
+<button class="copy-bar" onclick="copyForFreshdesk()">Copy Formatted Report for Freshdesk / Ninja Ticket Note</button>
+<div id="report-main" class="wrap">
+    <div class="hero">
+        <h1>Max Audit: $(Escape-Html $ComputerName)</h1>
+        <div>HIPAA-oriented MSP monthly audit report generated $(Escape-Html ((Get-Date).ToString("F")))</div>
+        <div class="meta">
+            <div class="metric"><b>Client</b>$(New-Input "" "Client name")</div>
+            <div class="metric"><b>Auditor</b>$(Escape-Html $UserName)</div>
+            <div class="metric"><b>Computer</b>$(Escape-Html $ComputerName)</div>
+            <div class="metric"><b>Uptime</b>$(Escape-Html $UptimeText)</div>
+        </div>
     </div>
-</body></html>
+    <div class="summary">
+        <div class="summary-card"><b>OS Support</b>$(New-Badge $OSSupport.Text $OSSupport.State)</div>
+        <div class="summary-card"><b>Backup</b>$(if($DetectedBackupTools.Count -gt 0){New-Badge "Detected" "Good"}else{New-Badge "Not detected" "Bad"})</div>
+        <div class="summary-card"><b>RDP</b>$(if($RDPEnabled){New-Badge "Enabled" "Warn"}else{New-Badge "Disabled" "Good"})</div>
+        <div class="summary-card"><b>Pending Updates</b>$(if($PendingUpdates.Count -gt 0){New-Badge "$($PendingUpdates.Count) found" "Warn"}else{New-Badge "None found" "Good"})</div>
+    </div>
+
+    <div class="section">
+        <div class="section-head">System Inventory</div>
+        <table>
+            <tr><th>Windows version</th><td>$(Escape-Html $OS.Caption) build $(Escape-Html $OS.BuildNumber)</td></tr>
+            <tr><th>Support status</th><td>$(New-Badge $OSSupport.Text $OSSupport.State)</td></tr>
+            <tr><th>PowerShell version</th><td>$(Escape-Html $PSVer)</td></tr>
+            <tr><th>Manufacturer / model</th><td>$(Escape-Html $CS.Manufacturer) / $(Escape-Html $CS.Model) $(if($IsVM){New-Badge "Virtual machine" "Info"}else{New-Badge "Physical/unknown" "Info"})</td></tr>
+            <tr><th>Serial / Windows key</th><td>$(Escape-Html $BIOS.SerialNumber) / $(New-Input $WinKey "Windows product key")</td></tr>
+            <tr><th>CPU / RAM</th><td>$(Escape-Html $CPU.Name) / $([math]::Round($CS.TotalPhysicalMemory / 1GB, 1)) GB</td></tr>
+        </table>
+    </div>
+
+    <div class="section">
+        <div class="section-head">Agent Status Indicators</div>
+        <table>$AgentRows</table>
+    </div>
+
+    <div class="section">
+        <div class="section-head">Remote Access Scan</div>
+        <table>$RemoteRows</table>
+        <table>
+            <tr><th>Remote Desktop status</th><td>$(if($RDPEnabled){New-Badge "Enabled" "Warn"}else{New-Badge "Disabled" "Good"}) <span class="evidence">NLA: $(Escape-Html $NlaText); failed logons in last 30 days: $RDPFailures</span></td></tr>
+            <tr><th>MSP review</th><td>$(New-TextArea "" "Confirm remote access is authorized, MFA-protected, and not exposed directly to the internet.")</td></tr>
+        </table>
+    </div>
+
+    <div class="section">
+        <div class="section-head">1. Backup & Data Retention (HIPAA §164.308(a)(7))</div>
+        <table>
+            <tr><th>Backup solution used</th><td>$(New-Input $BackupSolution "Backup product")</td></tr>
+            <tr><th>Detected backup signals</th><td><table class="data"><tr><th>Product</th><th>Status</th></tr>$BackupRows</table></td></tr>
+            <tr><th>Are backups completing successfully?</th><td>$(New-Select @("Select...", "Yes", "No", "N/A", "Review vendor console") $BackupSuccess)</td></tr>
+            <tr><th>Last successful backup date & time</th><td>$(New-Input $BackupLast "YYYY-MM-DD HH:MM")</td></tr>
+            <tr><th>Backup frequency</th><td>$(New-Input $BackupFrequency "Hourly / daily / continuous / N/A")</td></tr>
+            <tr><th>Failed backups this month?</th><td>$(New-Select @("Select...", "Yes", "No", "N/A", "Review vendor console") $BackupFailed)</td></tr>
+            <tr><th>Encrypted at rest?</th><td>$(New-Input $BackupEncryption "AES-256 preferred or N/A")</td></tr>
+            <tr><th>Encrypted in transit?</th><td>$(New-Input $BackupTransit "TLS/SSL or N/A")</td></tr>
+            <tr><th>Retention meets HIPAA 6-year documentation need?</th><td>$(New-Input $BackupRetention "Policy / N/A")</td></tr>
+            <tr><th>Restore test evidence</th><td>$(New-TextArea "" "Date, item restored, result, and ticket/reference.")</td></tr>
+        </table>
+    </div>
+
+    <div class="section">
+        <div class="section-head">2. Security & User Audit (HIPAA §164.308, §164.312)</div>
+        <table>
+            <tr><th>AV / EDR installed</th><td>$(Escape-Html $AVText)</td></tr>
+            <tr><th>Defender status</th><td>$(Escape-Html $DefenderText)</td></tr>
+            <tr><th>Local administrators</th><td>$(New-TextArea (($AdminsList | Sort-Object -Unique) -join ", ") "Admin users/groups")</td></tr>
+            <tr><th>Password / MFA notes</th><td>$(New-TextArea "" "Confirm password policy, admin MFA, shared admin accounts, disabled users.")</td></tr>
+        </table>
+        <div class="subhead">Local user accounts</div>
+        <table class="data"><tr><th>User</th><th>Status</th><th>Password last set</th><th>Last logon</th></tr>$(Get-TableOrEmpty $UserRows "No local user data collected.")</table>
+    </div>
+
+    <div class="section">
+        <div class="section-head">3. Server Encryption (HIPAA §164.312(a)(2)(iv))</div>
+        <table>
+            <tr><th>BitLocker summary</th><td>$(Escape-Html $BitLockerSummary)</td></tr>
+            <tr><th>Volumes</th><td><table class="data"><tr><th>Volume</th><th>Protection</th><th>Status</th><th>Percent</th></tr>$BitLockerRows</table></td></tr>
+            <tr><th>Encryption exception / reason</th><td>$(New-TextArea "" "If not encrypted, document VM/storage-layer encryption or business exception.")</td></tr>
+        </table>
+    </div>
+
+    <div class="section">
+        <div class="section-head">4. Network Security (HIPAA §164.312(e))</div>
+        <table>
+            <tr><th>Windows Firewall</th><td>$(Escape-Html $FirewallText)</td></tr>
+            <tr><th>Network adapters</th><td><table class="data"><tr><th>Adapter</th><th>IPv4</th><th>Gateway</th><th>DNS</th></tr>$(Get-TableOrEmpty $NetworkRows "No active network adapters detected.")</table></td></tr>
+            <tr><th>Listening TCP ports</th><td><table class="data"><tr><th>Port</th><th>Detail</th></tr>$(Get-TableOrEmpty $OpenPortsRows "Unable to collect listening ports.")</table></td></tr>
+            <tr><th>Network review notes</th><td>$(New-TextArea "" "Firewall exceptions, exposed services, VLAN/VPN notes, unusual ports.")</td></tr>
+        </table>
+    </div>
+
+    <div class="section">
+        <div class="section-head">5. MSP Monthly Operations</div>
+        <table>
+            <tr><th>Pending reboot</th><td>$(if($PendingReboot){New-Badge "Yes" "Warn"}else{New-Badge "No" "Good"})</td></tr>
+            <tr><th>Last installed update</th><td>$(Escape-Html $LastPatchDate)</td></tr>
+            <tr><th>Pending Windows updates</th><td><ul class="compact">$PendingUpdatesHtml</ul></td></tr>
+            <tr><th>Recent installed updates</th><td><table class="data"><tr><th>KB</th><th>Description</th><th>Installed</th></tr>$(Get-TableOrEmpty $RecentUpdateRows "No hotfix history returned.")</table></td></tr>
+            <tr><th>Drive usage</th><td><table class="data"><tr><th>Drive</th><th>Size</th><th>Free</th><th>Free %</th><th>Label</th></tr>$(Get-TableOrEmpty $DriveRows "No fixed disks detected.")</table></td></tr>
+            <tr><th>Physical disk health</th><td><table class="data"><tr><th>Disk</th><th>Media</th><th>Health</th><th>Operational</th></tr>$(Get-TableOrEmpty $PhysicalDiskRows "Physical disk health unavailable on this OS.")</table></td></tr>
+            <tr><th>Custom scheduled tasks</th><td><table class="data"><tr><th>Name</th><th>Path</th><th>State</th></tr>$(Get-TableOrEmpty $TaskRows "No non-Microsoft scheduled tasks detected.")</table></td></tr>
+        </table>
+    </div>
+
+    <div class="section">
+        <div class="section-head">6. Shares, Printers, and Local Resources</div>
+        <table>
+            <tr><th>Network shares</th><td><table class="data"><tr><th>Name</th><th>Path</th><th>Description</th></tr>$(Get-TableOrEmpty $ShareRows "No custom shares detected.")</table></td></tr>
+            <tr><th>Shared printers</th><td><table class="data"><tr><th>Name</th><th>Share</th><th>Driver</th></tr>$(Get-TableOrEmpty $PrinterRows "No shared printers detected.")</table></td></tr>
+        </table>
+    </div>
+
+    <div class="section">
+        <div class="section-head">7. Monitoring & Event Logs (HIPAA §164.312(b))</div>
+        <table>
+            <tr><th>Potential issues to review</th><td><table class="data"><tr><th>Level</th><th>Source</th><th>ID</th><th>Count</th><th>Sample</th></tr>$(Get-TableOrEmpty $EventRows "No repeated warnings/errors found in the last 30 days.")</table></td></tr>
+            <tr><th>MSP event review notes</th><td>$(New-TextArea "" "Document false positives, remediation taken, and tickets created.")</td></tr>
+        </table>
+    </div>
+
+    <div class="section">
+        <div class="section-head">8. Physical Security & Contingency Planning (HIPAA §164.310, §164.308(a)(7))</div>
+        <table>
+            <tr><th>Physical location</th><td>$(New-Input "" "Server closet, rack, cloud, workstation desk")</td></tr>
+            <tr><th>Room/rack locked?</th><td>$(New-Select)</td></tr>
+            <tr><th>UPS / power protection</th><td>$(New-Input "" "UPS present, runtime, battery age")</td></tr>
+            <tr><th>Disaster recovery method</th><td>$(New-TextArea "" "Recovery process, RTO/RPO, offsite copy, vendor escalation.")</td></tr>
+            <tr><th>Audit exceptions</th><td>$(New-TextArea "" "Non-compliant items, owner, target date, and compensating control.")</td></tr>
+        </table>
+    </div>
+</div>
+</body>
+</html>
 "@
         $HTML | Out-File $ReportPath -Encoding UTF8
         Log-Worker "Audit Complete: $ReportPath"
-    } catch { Log-Worker "CRITICAL ERROR: $($_.Exception.Message)" }
+    } catch {
+        Log-Worker "CRITICAL ERROR: $($_.Exception.Message)"
+        Log-Worker "Line: $($_.InvocationInfo.ScriptLineNumber)"
+    }
 }
 
 # --- UI Assembly ---

@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-04-29
+- Expanded `WinFixTool_v2.ps1` into the Max Audit engine for HIPAA-oriented MSP monthly audits.
+- Added registry/service/process/path detection for NinjaRMM, Huntress, GoToAssist, remote access tools, and backup products.
+- Added report sections for BitLocker, drive usage, Windows Update status/history, support lifecycle, event-log indicators, network shares, printers, RDP posture, custom scheduled tasks, system specs, and PowerShell version.
+- Improved the HTML report styling and the formatted copy workflow for Freshdesk/Ninja ticket notes.
+- Kept PowerShell 5.1-safe syntax and fallbacks for Windows Server 2012-era systems.
+
 ## 2025-12-16
 - Removed the RMM integration from WinFixTool (GUI) and WinFixTool_v2 (GUI).
 - Updated docs to reflect local-only operation.
