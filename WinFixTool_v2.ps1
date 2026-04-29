@@ -1,15 +1,18 @@
 <#
 .SYNOPSIS
-    WinFix Tool v2.1.1 - Lightweight Windows Maintenance & Diagnostics
-    BUILD: 2026-01-28-FIXED (Server 2012 R2 Compatible)
+    WinFix Tool v5.3 - Max Audit Engine
+    BUILD: 2026-04-29-FIXED
 .DESCRIPTION
-    Fast, snappy GUI tool for Windows maintenance. No auto-loading - refresh on demand.
-.NOTES
+    - HIPAA-oriented Max Audit HTML report for MSP monthly reviews.
+    - Robust Copy-to-Clipboard Engine (Freshdesk/Ninja ticket optimized).
+    - Expanded detection for agents, remote access tools, and backup products using Registry, Services, Processes, and common paths.
+    - Captures BitLocker, drives, updates, event logs, shares, printers, RDP, scheduled tasks, support lifecycle, and system specs.
+    - PS 5.1 & Server 2012+ compatible syntax (no ternary operators).
 #>
 
-$ErrorActionPreference = 'Stop'
+$ErrorActionPreference = 'Continue'
 
-# Ensure WinForms types are available and the UI thread runs STA.
+# --- STA Check ---
 try {
     if ([System.Threading.Thread]::CurrentThread.ApartmentState -ne 'STA') {
         $self = $PSCommandPath
@@ -20,1526 +23,855 @@ try {
     }
 } catch { }
 
-# Load assemblies first
+# --- Elevation check ---
+$script:IsElevated = $false
 try {
-    Add-Type -AssemblyName System.Windows.Forms -ErrorAction Stop
-    Add-Type -AssemblyName System.Drawing -ErrorAction Stop
-} catch {
-    try {
-        $logPath = Join-Path $env:TEMP 'WinFix_Debug.log'
-        "[$(Get-Date -Format s)] WinFixTool_v2 startup failed (Assembly load): $($_.Exception.Message)" | Out-File -FilePath $logPath -Append -Encoding UTF8
-    } catch { }
-    Write-Error "Failed to load WinForms assemblies. This tool must run on Windows PowerShell with .NET Framework WinForms available. Error: $($_.Exception.Message)"
-    exit 1
-}
+    $wid = [System.Security.Principal.WindowsIdentity]::GetCurrent()
+    $wp  = New-Object System.Security.Principal.WindowsPrincipal($wid)
+    $script:IsElevated = $wp.IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator)
+} catch {}
 
-# Initialize application settings (must be called before any controls are created)
-try {
-    [System.Windows.Forms.Application]::EnableVisualStyles()
-} catch {
-    # If visual styles fail, continue anyway - not critical
-}
+Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+[System.Windows.Forms.Application]::EnableVisualStyles()
 
-try {
-    [System.Windows.Forms.Application]::SetCompatibleTextRenderingDefault($false)
-} catch {
-    # If already set or fails, ignore - this can happen if called multiple times
-    try {
-        $logPath = Join-Path $env:TEMP 'WinFix_Debug.log'
-        "[$(Get-Date -Format s)] SetCompatibleTextRenderingDefault warning (non-fatal): $($_.Exception.Message)" | Out-File -FilePath $logPath -Append -Encoding UTF8
-    } catch { }
-}
-
-# Provide a default theme palette so color assignments never receive $null.
-$defaultTheme = @{
+# --- Theme ---
+$script:Theme = @{
     Bg      = [System.Drawing.Color]::FromArgb(18, 18, 24)
     Surface = [System.Drawing.Color]::FromArgb(26, 27, 38)
     Card    = [System.Drawing.Color]::FromArgb(36, 37, 51)
     Text    = [System.Drawing.Color]::FromArgb(237, 237, 245)
-    Dim     = [System.Drawing.Color]::FromArgb(148, 150, 172)
     Accent  = [System.Drawing.Color]::FromArgb(99, 102, 241)
     Green   = [System.Drawing.Color]::FromArgb(34, 197, 94)
-    Yellow  = [System.Drawing.Color]::FromArgb(250, 204, 21)
     Red     = [System.Drawing.Color]::FromArgb(239, 68, 68)
 }
-if (-not $script:Theme) { $script:Theme = @{} }
-foreach ($key in $defaultTheme.Keys) {
-    if (-not $script:Theme.ContainsKey($key) -or -not $script:Theme[$key]) {
-        $script:Theme[$key] = $defaultTheme[$key]
-    }
-}
 
-# Basic logger used throughout the UI.
-$script:LogPath = Join-Path $env:TEMP 'WinFix_Debug.log'
-try { $null = New-Item -Path $script:LogPath -ItemType File -Force -ErrorAction SilentlyContinue } catch { }
+# --- Logging ---
 function Log {
     param([string]$Message)
-    $timestamp = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
-    $line = "[$timestamp] $Message"
-    try { Add-Content -Path $script:LogPath -Value $line -Encoding UTF8 -ErrorAction SilentlyContinue } catch { }
+    $ts = (Get-Date).ToString('HH:mm:ss')
     if ($script:txtLog) {
-        $script:txtLog.AppendText("[$((Get-Date).ToString('HH:mm:ss'))] $Message`r`n")
-        $script:txtLog.SelectionStart = $script:txtLog.Text.Length
-        $script:txtLog.ScrollToCaret()
+        $script:txtLog.AppendText("[$ts] $Message`r`n")
+        $script:txtLog.SelectionStart = $script:txtLog.Text.Length; $script:txtLog.ScrollToCaret()
     }
 }
 
-trap {
-    try {
-        $logPath = Join-Path $env:TEMP 'WinFix_Debug.log'
-        "[$(Get-Date -Format s)] Unhandled error: $($_ | Out-String)" | Out-File -FilePath $logPath -Append -Encoding UTF8
-    } catch { }
-    try {
-        [System.Windows.Forms.MessageBox]::Show("WinFixTool_v2 crashed. Details were written to %TEMP%\WinFix_Debug.log`r`n`r`n$($_.Exception.Message)", "WinFixTool_v2 Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error) | Out-Null
-    } catch { }
-    break
-}
-
-function Invoke-DeepDiskCleanup {
-    $results = @()
-    $hasErrors = $false
-    
-    function Get-FreeGB {
-        try {
-            $disk = Get-CimInstance Win32_LogicalDisk -Filter "DeviceID='C:'" -EA Stop
-            return [math]::Round($disk.FreeSpace / 1GB, 2)
-        } catch { return 0 }
-    }
-    
-    function Stop-Svc {
-        param([string]$Name)
-        $svc = Get-Service -Name $Name -EA SilentlyContinue
-        if (-not $svc) { return $true }
-        if ($svc.Status -eq 'Running') {
-            try {
-                Stop-Service -Name $Name -Force -EA Stop
-                $t = 0; while ((Get-Service $Name).Status -ne 'Stopped' -and $t -lt 30) { Start-Sleep 1; $t++ }
-            } catch { return $false }
-        }
-        return (Get-Service $Name).Status -eq 'Stopped'
-    }
-    
-    $startSpace = Get-FreeGB
-    $results += "Starting cleanup on $env:COMPUTERNAME"
-    $results += "Initial free space: $startSpace GB"
-    $results += ""
-    
-    # 1. Windows Update Cache
-    $results += "=== Windows Update Cache ==="
-    $wuaStopped = Stop-Svc "wuauserv"
-
-    $bitsStopped = Stop-Svc "bits"
-    if ($wuaStopped -and $bitsStopped) {
-        $swDist = "C:\Windows\SoftwareDistribution\Download\*"
-        if (Test-Path $swDist) {
-            try { Remove-Item $swDist -Recurse -Force -EA Stop; $results += "Cleared SoftwareDistribution" }
-            catch { $results += "ERROR: SoftwareDistribution: $_"; $hasErrors = $true }
+# --- Background Job Management ---
+$script:CurrentJob = $null
+$script:JobTimer = New-Object System.Windows.Forms.Timer
+$script:JobTimer.Interval = 500
+$script:JobTimer.Add_Tick({
+    if ($script:CurrentJob) {
+        $res = Receive-Job -Job $script:CurrentJob
+        foreach ($l in $res) { if ($l) { Log $l } }
+        if ($script:CurrentJob.State -ne 'Running') {
+            $script:JobTimer.Stop()
+            $script:btnAudit.Enabled = $true; $script:btnAudit.Text = "GENERATE MASTER AUDIT"
+            $latest = Get-ChildItem "$env:TEMP\WinFix_MaxAudit_*.html" -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+            if ($latest) { Invoke-Item $latest.FullName }
+            Remove-Job $script:CurrentJob -Force; $script:CurrentJob = $null
         }
     }
-    Start-Service wuauserv, bits -EA SilentlyContinue
-    
-    # 2. System Temp
-    $results += "`n=== Temp Folders ==="
-    try { Remove-Item "C:\Windows\Temp\*" -Recurse -Force -EA SilentlyContinue; $results += "Cleaned System Temp" }
-    catch { $results += "ERROR: System Temp: $_"; $hasErrors = $true }
-    
-    # 3. User Temp & App Caches
-    try {
-        $users = Get-ChildItem "C:\Users" -Directory -EA SilentlyContinue
-        foreach ($u in $users) {
-            $pathsToClean = @(
-                "$($u.FullName)\AppData\Local\Temp\*",
-                "$($u.FullName)\AppData\Roaming\Microsoft\Teams\Cache\*",
-                "$($u.FullName)\AppData\Roaming\Microsoft\Teams\blob_storage\*",
-                "$($u.FullName)\AppData\Roaming\Microsoft\Teams\GPUCache\*",
-                "$($u.FullName)\AppData\Roaming\Adobe\Common\Media Cache Files\*",
-                "$($u.FullName)\AppData\Local\CrashDumps\*",
-                "$($u.FullName)\AppData\Local\Microsoft\Teams\Current\SquirrelTemp\*"
-            )
-            foreach ($p in $pathsToClean) {
-                if (Test-Path $p) { Remove-Item $p -Recurse -Force -EA SilentlyContinue }
-            }
-        }
-        $results += "Cleaned User Temp, Teams, Adobe, CrashDumps"
-    } catch { $results += "ERROR: User caches: $_"; $hasErrors = $true }
-    
-    # 4. IIS Logs (30+ days old)
-    if (Test-Path "C:\inetpub\logs\LogFiles") {
-        $results += "`n=== IIS Logs ==="
-        try {
-            $oldLogs = Get-ChildItem "C:\inetpub\logs\LogFiles" -Recurse -File -EA SilentlyContinue | Where-Object { $_.LastWriteTime -lt (Get-Date).AddDays(-30) }
-            if ($oldLogs) { $oldLogs | Remove-Item -Force -EA SilentlyContinue; $results += "Removed $($oldLogs.Count) old IIS logs" }
-        } catch { $results += "ERROR: IIS logs: $_"; $hasErrors = $true }
-    }
-    
-    # 5. Hibernation
-    $results += "`n=== Hibernation ==="
-    if (Test-Path "C:\hiberfil.sys") {
-        try { powercfg.exe /h off; $results += "Disabled hibernation (reclaimed hiberfil.sys)" }
-        catch { $results += "ERROR: Hibernation: $_"; $hasErrors = $true }
-    } else { $results += "Hibernation already disabled" }
-    
-    # 6. Recycle Bin
-    $results += "`n=== Recycle Bin ==="
-    try { Clear-RecycleBin -DriveLetter C -Force -EA Stop; $results += "Emptied Recycle Bin" }
-    catch { $results += "Recycle bin already empty or locked" }
-    
-    # 7. DISM Component Cleanup (ResetBase)
-    $results += "`n=== DISM Component Cleanup ==="
-    $results += "Running DISM /ResetBase (this may take several minutes)..."
-    try {
-        $dismProc = Start-Process "dism.exe" -ArgumentList "/Online /Cleanup-Image /StartComponentCleanup /ResetBase /NoRestart" -NoNewWindow -PassThru -Wait
-        if ($dismProc.ExitCode -eq 0) { $results += "DISM cleanup complete" }
-        else { $results += "DISM exited with code $($dismProc.ExitCode)"; $hasErrors = $true }
-    } catch { $results += "ERROR: DISM: $_"; $hasErrors = $true }
-    
-    # 8. CleanMgr (Disk Cleanup)
-    if (Get-Command "cleanmgr.exe" -EA SilentlyContinue) {
-        $results += "`n=== Windows Disk Cleanup ==="
-        try {
-            $stateKeys = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\VolumeCaches"
-            $cleanItems = @("Active Setup Temp Folders","BranchCache","Device Driver Packages","Downloaded Program Files",
-                "Internet Cache Files","Memory Dump Files","Old ChkDsk Files","Previous Installations",
-                "Service Pack Cleanup","Setup Log Files","System error memory dump files","System error minidump files",
-                "Temporary Files","Temporary Setup Files","Thumbnail Cache","Update Cleanup",
-                "Upgrade Discarded Files","Windows Defender","Windows Error Reporting Files")
-            foreach ($k in $cleanItems) {
-                $p = "$stateKeys\$k"
-                if (Test-Path $p) { New-ItemProperty -Path $p -Name StateFlags0001 -Value 2 -PropertyType DWord -Force -EA SilentlyContinue | Out-Null }
-            }
-            Start-Process cleanmgr.exe -ArgumentList "/sagerun:1" -WindowStyle Hidden -Wait
-            $results += "Windows Disk Cleanup complete"
-        } catch { $results += "ERROR: CleanMgr: $_"; $hasErrors = $true }
-    }
-    
-    # 9. OS Compression (CompactOS)
-    $results += "`n=== OS Compression ==="
-    try {
-        $results += "Running CompactOS..."
-        compact.exe /CompactOS:always 2>&1 | Out-Null
-        $results += "Compressing Program Files..."
-        compact.exe /C /S /I /F "C:\Program Files\*" 2>&1 | Out-Null
-        compact.exe /C /S /I /F "C:\Program Files (x86)\*" 2>&1 | Out-Null
-        $results += "Compression complete"
-    } catch { $results += "ERROR: Compression: $_"; $hasErrors = $true }
-    
-    # Final Report
-    $endSpace = Get-FreeGB
-    $reclaimed = [math]::Round($endSpace - $startSpace, 2)
-    if ($reclaimed -lt 0) { $reclaimed = 0 }
-    
-    $results += "`n=========================================="
-    $results += "CLEANUP COMPLETE"
-    $results += "Initial: $startSpace GB | Final: $endSpace GB"
-    $results += "Reclaimed: $reclaimed GB"
-    $results += "Status: $(if ($hasErrors) { 'Completed with errors' } else { 'Success' })"
-    $results += "=========================================="
-    
-    return $results -join "`r`n"
-}
-
-# --- Create Main Form ---
-$form = New-Object System.Windows.Forms.Form
-$form.Text = "WinFix Tool v2.1.1 (2026-01-28)"
-$form.Size = New-Object System.Drawing.Size(780, 560)
-$form.MinimumSize = New-Object System.Drawing.Size(640, 480)
-$form.StartPosition = "CenterScreen"
-$form.BackColor = $script:Theme.Bg
-$form.ForeColor = $script:Theme.Text
-$form.Font = New-Object System.Drawing.Font("Segoe UI", 8)
-$form.FormBorderStyle = "Sizable"
-
-# --- Header ---
-$panelHeader = New-Object System.Windows.Forms.Panel
-$panelHeader.Dock = "Top"
-$panelHeader.Height = 36
-$panelHeader.BackColor = $script:Theme.Surface
-
-$lblTitle = New-Object System.Windows.Forms.Label
-$lblTitle.Text = "WinFix Tool"
-$lblTitle.Location = New-Object System.Drawing.Point(10, 8)
-$lblTitle.AutoSize = $true
-$lblTitle.Font = New-Object System.Drawing.Font("Segoe UI", 11, [System.Drawing.FontStyle]::Bold)
-$lblTitle.ForeColor = $script:Theme.Accent
-
-$lblPC = New-Object System.Windows.Forms.Label
-$lblPC.Text = "$env:COMPUTERNAME"
-$lblPC.Location = New-Object System.Drawing.Point(600, 10)
-$lblPC.AutoSize = $true
-$lblPC.Anchor = "Top, Right"
-$lblPC.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
-
-$panelHeader.Controls.AddRange(@($lblTitle, $lblPC))
-
-# --- Nav Panel ---
-$panelNav = New-Object System.Windows.Forms.Panel
-$panelNav.Dock = "Left"
-$panelNav.Width = 100
-$panelNav.BackColor = $script:Theme.Surface
-
-$navItems = @("Dashboard", "Quick Fix", "Diagnostics", "Network", "Audit")
-$navButtons = @()
-$navY = 5
-
-foreach ($nav in $navItems) {
-    $btn = New-Object System.Windows.Forms.Button
-    $btn.Text = $nav
-    $btn.Location = New-Object System.Drawing.Point(3, $navY)
-    $btn.Size = New-Object System.Drawing.Size(94, 28)
-    $btn.FlatStyle = "Flat"
-    $btn.BackColor = $script:Theme.Card
-    $btn.ForeColor = $script:Theme.Text
-    $btn.FlatAppearance.BorderSize = 0
-    $btn.Font = New-Object System.Drawing.Font("Segoe UI", 8)
-    $btn.Tag = $nav
-    $btn.Add_Click({ Show-Page $this.Tag })
-    $panelNav.Controls.Add($btn)
-    $navButtons += $btn
-    $navY += 32
-}
-
-# --- Log Panel (collapsible) ---
-$panelLog = New-Object System.Windows.Forms.Panel
-$panelLog.Dock = "Bottom"
-$panelLog.Height = 60
-$panelLog.BackColor = $script:Theme.Surface
-
-$lblLog = New-Object System.Windows.Forms.Label
-$lblLog.Text = "Log"
-$lblLog.Dock = "Top"
-$lblLog.Height = 14
-$lblLog.ForeColor = $script:Theme.Dim
-$lblLog.Font = New-Object System.Drawing.Font("Segoe UI", 7)
-
-$script:txtLog = New-Object System.Windows.Forms.TextBox
-$script:txtLog.Multiline = $true
-$script:txtLog.ScrollBars = "Vertical"
-$script:txtLog.ReadOnly = $true
-$script:txtLog.Dock = "Fill"
-$script:txtLog.BackColor = [System.Drawing.Color]::FromArgb(18, 18, 20)
-$script:txtLog.ForeColor = [System.Drawing.Color]::FromArgb(0, 200, 0)
-$script:txtLog.Font = New-Object System.Drawing.Font("Consolas", 8)
-$script:txtLog.BorderStyle = "None"
-
-$panelLog.Controls.AddRange(@($lblLog, $script:txtLog))
-
-# --- Content Panel ---
-$panelContent = New-Object System.Windows.Forms.Panel
-$panelContent.Dock = "Fill"
-$panelContent.BackColor = $script:Theme.Bg
-
-$pages = @{}
-
-# === DASHBOARD PAGE ===
-$pageDash = New-Object System.Windows.Forms.Panel
-$pageDash.Dock = "Fill"
-$pageDash.BackColor = $script:Theme.Bg
-$pageDash.AutoScroll = $true
-
-# Status Grid - Left column
-$lblStatus = New-Object System.Windows.Forms.Label
-$lblStatus.Text = "SYSTEM STATUS"
-$lblStatus.Location = New-Object System.Drawing.Point(10, 8)
-$lblStatus.AutoSize = $true
-$lblStatus.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
-$lblStatus.ForeColor = $script:Theme.Dim
-
-$script:lblCPU = New-Object System.Windows.Forms.Label
-$script:lblCPU.Text = "$($script:StatusPending) CPU: --"
-$script:lblCPU.Location = New-Object System.Drawing.Point(10, 32)
-$script:lblCPU.Size = New-Object System.Drawing.Size(250, 18)
-$script:lblCPU.Font = New-Object System.Drawing.Font("Consolas", 9)
-
-$script:lblRAM = New-Object System.Windows.Forms.Label
-$script:lblRAM.Text = "$($script:StatusPending) Memory: --"
-$script:lblRAM.Location = New-Object System.Drawing.Point(10, 52)
-$script:lblRAM.Size = New-Object System.Drawing.Size(250, 18)
-$script:lblRAM.Font = New-Object System.Drawing.Font("Consolas", 9)
-
-$script:lblDisk = New-Object System.Windows.Forms.Label
-$script:lblDisk.Text = "$($script:StatusPending) Disk C: --"
-$script:lblDisk.Location = New-Object System.Drawing.Point(10, 72)
-$script:lblDisk.Size = New-Object System.Drawing.Size(250, 18)
-$script:lblDisk.Font = New-Object System.Drawing.Font("Consolas", 9)
-
-$script:lblUptime = New-Object System.Windows.Forms.Label
-$script:lblUptime.Text = "$($script:StatusPending) Uptime: --"
-$script:lblUptime.Location = New-Object System.Drawing.Point(10, 92)
-$script:lblUptime.Size = New-Object System.Drawing.Size(250, 18)
-$script:lblUptime.Font = New-Object System.Drawing.Font("Consolas", 9)
-
-$script:lblUpdates = New-Object System.Windows.Forms.Label
-$script:lblUpdates.Text = "$($script:StatusPending) Updates: --"
-$script:lblUpdates.Location = New-Object System.Drawing.Point(10, 112)
-$script:lblUpdates.Size = New-Object System.Drawing.Size(250, 18)
-$script:lblUpdates.Font = New-Object System.Drawing.Font("Consolas", 9)
-
-$script:lblServices = New-Object System.Windows.Forms.Label
-$script:lblServices.Text = "$($script:StatusPending) Services: --"
-$script:lblServices.Location = New-Object System.Drawing.Point(10, 132)
-$script:lblServices.Size = New-Object System.Drawing.Size(250, 18)
-$script:lblServices.Font = New-Object System.Drawing.Font("Consolas", 9)
-
-# Right side - System Info
-$lblInfoTitle = New-Object System.Windows.Forms.Label
-$lblInfoTitle.Text = "SYSTEM INFO"
-$lblInfoTitle.Location = New-Object System.Drawing.Point(270, 8)
-$lblInfoTitle.AutoSize = $true
-$lblInfoTitle.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
-$lblInfoTitle.ForeColor = $script:Theme.Dim
-
-$script:lblSysInfo = New-Object System.Windows.Forms.Label
-$script:lblSysInfo.Text = "Click Refresh to load..."
-$script:lblSysInfo.Location = New-Object System.Drawing.Point(270, 32)
-$script:lblSysInfo.Size = New-Object System.Drawing.Size(300, 140)
-$script:lblSysInfo.Font = New-Object System.Drawing.Font("Consolas", 8)
-$script:lblSysInfo.Anchor = "Top, Left, Right"
-
-# Refresh Button
-$btnRefresh = New-Object System.Windows.Forms.Button
-$btnRefresh.Text = "Refresh Status"
-$btnRefresh.Location = New-Object System.Drawing.Point(10, 180)
-$btnRefresh.Size = New-Object System.Drawing.Size(120, 28)
-$btnRefresh.FlatStyle = "Flat"
-$btnRefresh.BackColor = $script:Theme.Accent
-$btnRefresh.ForeColor = "White"
-$btnRefresh.FlatAppearance.BorderSize = 0
-$btnRefresh.Add_Click({
-    Log "Refreshing status..."
-    $this.Enabled = $false
-    $this.Text = "Loading..."
-    [System.Windows.Forms.Application]::DoEvents()
-    
-    # CPU
-    try {
-        $cpu = (Get-CimInstance Win32_Processor).LoadPercentage
-        if ($cpu -lt 80) {
-            $script:lblCPU.Text = "$($script:StatusOK) CPU: ${cpu}%"
-            $script:lblCPU.ForeColor = $script:Theme.Green
-        } elseif ($cpu -lt 95) {
-            $script:lblCPU.Text = "$($script:StatusWarn) CPU: ${cpu}%"
-            $script:lblCPU.ForeColor = $script:Theme.Yellow
-        } else {
-            $script:lblCPU.Text = "$($script:StatusBad) CPU: ${cpu}%"
-            $script:lblCPU.ForeColor = $script:Theme.Red
-        }
-    } catch { $script:lblCPU.Text = "$($script:StatusBad) CPU: Error"; $script:lblCPU.ForeColor = $script:Theme.Red }
-    [System.Windows.Forms.Application]::DoEvents()
-    
-    # RAM
-    try {
-        $os = Get-CimInstance Win32_OperatingSystem
-        $ramPct = [math]::Round(($os.TotalVisibleMemorySize - $os.FreePhysicalMemory) / $os.TotalVisibleMemorySize * 100)
-        $ramGB = [math]::Round($os.TotalVisibleMemorySize / 1MB, 1)
-        if ($ramPct -lt 80) {
-            $script:lblRAM.Text = "$($script:StatusOK) Memory: ${ramPct}% of ${ramGB}GB"
-            $script:lblRAM.ForeColor = $script:Theme.Green
-        } elseif ($ramPct -lt 95) {
-            $script:lblRAM.Text = "$($script:StatusWarn) Memory: ${ramPct}% of ${ramGB}GB"
-            $script:lblRAM.ForeColor = $script:Theme.Yellow
-        } else {
-            $script:lblRAM.Text = "$($script:StatusBad) Memory: ${ramPct}% of ${ramGB}GB"
-            $script:lblRAM.ForeColor = $script:Theme.Red
-        }
-    } catch { $script:lblRAM.Text = "$($script:StatusBad) Memory: Error"; $script:lblRAM.ForeColor = $script:Theme.Red }
-    [System.Windows.Forms.Application]::DoEvents()
-    
-    # Disk
-    try {
-        $disk = Get-CimInstance Win32_LogicalDisk -Filter "DeviceID='C:'"
-        $diskPct = [math]::Round(($disk.Size - $disk.FreeSpace) / $disk.Size * 100)
-        $diskFree = [math]::Round($disk.FreeSpace / 1GB)
-        if ($diskPct -lt 85) {
-            $script:lblDisk.Text = "$($script:StatusOK) Disk C: ${diskPct}% (${diskFree}GB free)"
-            $script:lblDisk.ForeColor = $script:Theme.Green
-        } elseif ($diskPct -lt 95) {
-            $script:lblDisk.Text = "$($script:StatusWarn) Disk C: ${diskPct}% (${diskFree}GB free)"
-            $script:lblDisk.ForeColor = $script:Theme.Yellow
-        } else {
-            $script:lblDisk.Text = "$($script:StatusBad) Disk C: ${diskPct}% (${diskFree}GB free)"
-            $script:lblDisk.ForeColor = $script:Theme.Red
-        }
-    } catch { $script:lblDisk.Text = "$($script:StatusBad) Disk: Error"; $script:lblDisk.ForeColor = $script:Theme.Red }
-    [System.Windows.Forms.Application]::DoEvents()
-    
-    # Uptime
-    try {
-        $os = Get-CimInstance Win32_OperatingSystem
-        $uptime = (Get-Date) - $os.LastBootUpTime
-        if ($uptime.Days -lt 14) {
-            $script:lblUptime.Text = "$($script:StatusOK) Uptime: $($uptime.Days)d $($uptime.Hours)h"
-            $script:lblUptime.ForeColor = $script:Theme.Green
-        } elseif ($uptime.Days -lt 30) {
-            $script:lblUptime.Text = "$($script:StatusWarn) Uptime: $($uptime.Days)d $($uptime.Hours)h"
-            $script:lblUptime.ForeColor = $script:Theme.Yellow
-        } else {
-            $script:lblUptime.Text = "$($script:StatusBad) Uptime: $($uptime.Days)d (reboot needed)"
-            $script:lblUptime.ForeColor = $script:Theme.Red
-        }
-    } catch { $script:lblUptime.Text = "$($script:StatusBad) Uptime: Error"; $script:lblUptime.ForeColor = $script:Theme.Red }
-    [System.Windows.Forms.Application]::DoEvents()
-    
-    # Windows Updates (slow - do last)
-    try {
-        $updates = (New-Object -ComObject Microsoft.Update.Session).CreateUpdateSearcher()
-        $pending = $updates.Search("IsInstalled=0 and IsHidden=0").Updates.Count
-        if ($pending -eq 0) {
-            $script:lblUpdates.Text = "$($script:StatusOK) Updates: All current"
-            $script:lblUpdates.ForeColor = $script:Theme.Green
-        } elseif ($pending -lt 5) {
-            $script:lblUpdates.Text = "$($script:StatusWarn) Updates: $pending pending"
-            $script:lblUpdates.ForeColor = $script:Theme.Yellow
-        } else {
-            $script:lblUpdates.Text = "$($script:StatusBad) Updates: $pending pending"
-            $script:lblUpdates.ForeColor = $script:Theme.Red
-        }
-    } catch { 
-        $script:lblUpdates.Text = "$($script:StatusPending) Updates: Unable to check"
-        $script:lblUpdates.ForeColor = $script:Theme.Dim
-    }
-    [System.Windows.Forms.Application]::DoEvents()
-    
-    # Critical Services
-    try {
-        $stopped = @()
-        foreach ($svc in @("wuauserv", "Spooler", "BITS", "EventLog", "Dnscache")) {
-            $s = Get-Service -Name $svc -ErrorAction SilentlyContinue
-            if ($s -and $s.Status -ne "Running") { $stopped += $svc }
-        }
-        if ($stopped.Count -eq 0) {
-            $script:lblServices.Text = "$($script:StatusOK) Services: All running"
-            $script:lblServices.ForeColor = $script:Theme.Green
-        } else {
-            $script:lblServices.Text = "$($script:StatusWarn) Services: $($stopped.Count) stopped"
-            $script:lblServices.ForeColor = $script:Theme.Yellow
-        }
-    } catch { $script:lblServices.Text = "$($script:StatusBad) Services: Error"; $script:lblServices.ForeColor = $script:Theme.Red }
-    [System.Windows.Forms.Application]::DoEvents()
-    
-    # System Info
-    try {
-        $cs = Get-CimInstance Win32_ComputerSystem
-        $os = Get-CimInstance Win32_OperatingSystem
-        $bios = Get-CimInstance Win32_Bios
-        $cpu = Get-CimInstance Win32_Processor | Select-Object -First 1
-        
-        $script:lblSysInfo.Text = @"
-$($cs.Manufacturer) $($cs.Model)
-Serial: $($bios.SerialNumber)
-
-$($os.Caption)
-Build: $($os.BuildNumber)
-
-$($cpu.Name)
-Cores: $($cpu.NumberOfCores) / Threads: $($cpu.NumberOfLogicalProcessors)
-"@
-    } catch { $script:lblSysInfo.Text = "Error loading system info" }
-    
-    $this.Text = "Refresh Status"
-    $this.Enabled = $true
-    Log "Status refresh complete"
 })
 
-$pageDash.Controls.AddRange(@($lblStatus, $script:lblCPU, $script:lblRAM, $script:lblDisk, $script:lblUptime, $script:lblUpdates, $script:lblServices, $lblInfoTitle, $script:lblSysInfo, $btnRefresh))
-$pages["Dashboard"] = $pageDash
+# --- Main Form ---
+$form = New-Object System.Windows.Forms.Form
+$form.Text = "WinFix Master Auditor v5.3"; $form.Size = New-Object System.Drawing.Size(900, 650)
+$form.BackColor = $script:Theme.Bg; $form.ForeColor = $script:Theme.Text
+$form.Font = New-Object System.Drawing.Font("Segoe UI", 9)
 
-# === QUICK FIX PAGE ===
-$pageQuick = New-Object System.Windows.Forms.Panel
-$pageQuick.Dock = "Fill"
-$pageQuick.BackColor = $script:Theme.Bg
-$pageQuick.AutoScroll = $true
+# --- Layout ---
+$panelHeader = New-Object System.Windows.Forms.Panel
+$panelHeader.Dock = "Top"; $panelHeader.Height = 45; $panelHeader.BackColor = $script:Theme.Surface
+$lblTitle = New-Object System.Windows.Forms.Label
+$lblTitle.Text = "WINFIX MASTER AUDITOR v5.3"; $lblTitle.Location = New-Object System.Drawing.Point(15, 12); $lblTitle.AutoSize = $true
+$lblTitle.Font = New-Object System.Drawing.Font("Segoe UI", 12, [System.Drawing.FontStyle]::Bold); $lblTitle.ForeColor = $script:Theme.Accent
+$panelHeader.Controls.Add($lblTitle)
 
-$lblQuickTitle = New-Object System.Windows.Forms.Label
-$lblQuickTitle.Text = "QUICK FIXES"
-$lblQuickTitle.Location = New-Object System.Drawing.Point(10, 8)
-$lblQuickTitle.AutoSize = $true
-$lblQuickTitle.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
-$lblQuickTitle.ForeColor = $script:Theme.Dim
+$panelNav = New-Object System.Windows.Forms.Panel
+$panelNav.Dock = "Left"; $panelNav.Width = 130; $panelNav.BackColor = $script:Theme.Surface
+$panelContent = New-Object System.Windows.Forms.Panel
+$panelContent.Dock = "Fill"; $panelContent.BackColor = $script:Theme.Bg
 
-$pageQuick.Controls.Add($lblQuickTitle)
+$panelLog = New-Object System.Windows.Forms.Panel
+$panelLog.Dock = "Bottom"; $panelLog.Height = 120; $panelLog.BackColor = $script:Theme.Surface
+$script:txtLog = New-Object System.Windows.Forms.TextBox
+$script:txtLog.Multiline=$true; $script:txtLog.ReadOnly=$true; $script:txtLog.Dock="Fill"; $script:txtLog.BackColor=[System.Drawing.Color]::Black; $script:txtLog.ForeColor=$script:Theme.Green
+$script:txtLog.Font=New-Object System.Drawing.Font("Consolas", 8); $script:txtLog.ScrollBars="Vertical"
+$panelLog.Controls.Add($script:txtLog)
 
-$fixes = @(
-    @{Name = "Deep Disk Cleanup"; Cmd = {
-        $form = [System.Windows.Forms.Form]@{ Text="Deep Disk Cleanup"; Size="500,400"; StartPosition="CenterScreen"; BackColor=$script:Theme.Bg; ForeColor=$script:Theme.Text }
-        $txt = [System.Windows.Forms.TextBox]@{ Multiline=$true; ScrollBars="Both"; ReadOnly=$true; Location="10,10"; Size="465,300"; BackColor=$script:Theme.Surface; ForeColor=$script:Theme.Text; Font=[System.Drawing.Font]::new("Consolas",8); Anchor="Top,Left,Right,Bottom" }
-        $btn = [System.Windows.Forms.Button]@{ Text="Start Cleanup"; Location="10,320"; Size="465,30"; FlatStyle="Flat"; BackColor=$script:Theme.Accent; ForeColor="White" }
-        $btn.FlatAppearance.BorderSize = 0
-        $btn.Add_Click({
-            $this.Enabled = $false; $this.Text = "Running... Please wait"
-            $txt.Text = "Starting deep disk cleanup...`r`n`r`n"
-            [System.Windows.Forms.Application]::DoEvents()
-            $result = Invoke-DeepDiskCleanup
-            $txt.Text = $result
-            $this.Text = "Complete"; $this.Enabled = $true
-        })
-        $form.Controls.AddRange(@($txt,$btn)); $form.ShowDialog()
-        "Deep Disk Cleanup window closed"
-    }}
-    @{Name = "Flush DNS"; Cmd = { ipconfig /flushdns }}
-    @{Name = "Reset Network"; Cmd = { netsh winsock reset; netsh int ip reset; ipconfig /release; ipconfig /renew; "Done! Restart recommended." }}
-    @{Name = "Fix Windows Update"; Cmd = { Stop-Service wuauserv,cryptSvc,bits,msiserver -Force -EA 0; Remove-Item "C:\Windows\SoftwareDistribution\*","C:\Windows\System32\catroot2\*" -Recurse -Force -EA 0; Start-Service wuauserv,cryptSvc,bits,msiserver -EA 0; "Done!" }}
-    @{Name = "Clear Print Spooler"; Cmd = { Stop-Service Spooler -Force; Remove-Item "C:\Windows\System32\spool\PRINTERS\*" -Force -EA 0; Start-Service Spooler; "Done!" }}
-    @{Name = "SFC Scan"; Cmd = { sfc /scannow }}
-    @{Name = "DISM Repair"; Cmd = { DISM /Online /Cleanup-Image /RestoreHealth }}
-    @{Name = "Sync Time"; Cmd = { w32tm /resync /force }}
-    @{Name = "Restart Explorer"; Cmd = { Stop-Process -Name explorer -Force; Start-Process explorer; "Done!" }}
-)
+$pages = @{}; $navButtons = @()
 
-$fixY = 32; $fixX = 10; $fixCol = 0
-foreach ($fix in $fixes) {
-    $btn = New-Object System.Windows.Forms.Button
-    $btn.Text = $fix.Name
-    $btn.Location = New-Object System.Drawing.Point($fixX, $fixY)
-    $btn.Size = New-Object System.Drawing.Size(130, 32)
-    $btn.FlatStyle = "Flat"
-    $btn.BackColor = $script:Theme.Card
-    $btn.ForeColor = $script:Theme.Text
-    $btn.FlatAppearance.BorderSize = 0
-    $btn.Font = New-Object System.Drawing.Font("Segoe UI", 8)
-    $btn.Tag = $fix.Cmd
-    $btn.Add_Click({
-        Log "Running: $($this.Text)..."
+function New-StubPage {
+    param([string]$Title)
+    $p = New-Object System.Windows.Forms.Panel
+    $p.Dock = "Fill"; $p.BackColor = $script:Theme.Bg
+    $lbl = New-Object System.Windows.Forms.Label
+    $lbl.Text = "$Title — not implemented in this release"
+    $lbl.AutoSize = $true; $lbl.ForeColor = $script:Theme.Text
+    $lbl.Font = New-Object System.Drawing.Font("Segoe UI", 10)
+    $lbl.Location = New-Object System.Drawing.Point(20, 20)
+    $p.Controls.Add($lbl); return $p
+}
+foreach ($n in @("Dashboard", "Quick Fix", "Diagnostics", "Network")) { $pages[$n] = New-StubPage $n }
+
+function Show-Page {
+    param($n)
+    $panelContent.Controls.Clear(); $panelContent.Controls.Add($pages[$n])
+    foreach($b in $navButtons){ $b.BackColor = if($b.Tag -eq $n){$script:Theme.Accent}else{$script:Theme.Card} }
+}
+foreach($n in @("Dashboard", "Quick Fix", "Diagnostics", "Network", "Audit")){
+    $b = New-Object System.Windows.Forms.Button
+    $b.Text=$n; $b.Location=New-Object System.Drawing.Point(5, ($navButtons.Count * 36 + 5)); $b.Size=New-Object System.Drawing.Size(120, 32); $b.FlatStyle="Flat"; $b.Tag=$n
+    $b.Add_Click({ Show-Page $this.Tag }); $panelNav.Controls.Add($b); $navButtons += $b
+}
+
+# === BACKGROUND AUDIT SCRIPT ===
+$script:AuditScript = {
+    param($ComputerName, $UserName, $TempPath)
+
+    $script:_HKN = 0
+    function New-HKey { $script:_HKN++; return "k$script:_HKN" }
+
+    function Log-Worker { param([string]$Message) Write-Output $Message }
+    function Escape-Html {
+        param($Value)
+        if ($null -eq $Value) { return "" }
+        return ([string]$Value) -replace '&','&amp;' -replace '<','&lt;' -replace '>','&gt;' -replace '"','&quot;' -replace "'",'&#39;'
+    }
+    function Get-SafeCim {
+        param([string]$ClassName, [string]$Namespace = "root\cimv2", [string]$Filter = "")
         try {
-            $result = & $this.Tag
-            if ($result) { Log $result }
-            [System.Windows.Forms.MessageBox]::Show("$($this.Text) complete!", "WinFix", "OK", "Information")
-        } catch { Log "Error: $_"; [System.Windows.Forms.MessageBox]::Show("Error: $_", "WinFix", "OK", "Error") }
-    })
-    $pageQuick.Controls.Add($btn)
-    
-    $fixCol++
-    if ($fixCol -ge 4) { $fixCol = 0; $fixX = 10; $fixY += 38 }
-    else { $fixX += 138 }
-}
-
-$pages["Quick Fix"] = $pageQuick
-
-# === DIAGNOSTICS PAGE ===
-$pageDiag = New-Object System.Windows.Forms.Panel
-$pageDiag.Dock = "Fill"
-$pageDiag.BackColor = $script:Theme.Bg
-
-$lblDiagTitle = New-Object System.Windows.Forms.Label
-$lblDiagTitle.Text = "DIAGNOSTICS"
-$lblDiagTitle.Location = New-Object System.Drawing.Point(10, 8)
-$lblDiagTitle.AutoSize = $true
-$lblDiagTitle.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
-$lblDiagTitle.ForeColor = $script:Theme.Dim
-
-$txtDiag = New-Object System.Windows.Forms.TextBox
-$txtDiag.Multiline = $true
-$txtDiag.ScrollBars = "Both"
-$txtDiag.ReadOnly = $true
-$txtDiag.Location = New-Object System.Drawing.Point(10, 30)
-$txtDiag.Size = New-Object System.Drawing.Size(400, 340)
-$txtDiag.BackColor = $script:Theme.Surface
-$txtDiag.ForeColor = $script:Theme.Text
-$txtDiag.Font = New-Object System.Drawing.Font("Consolas", 8)
-$txtDiag.Anchor = "Top, Left, Bottom"
-
-$diagBtns = @(
-    @{Name = "System Specs"; Cmd = {
-        $cs = Get-CimInstance Win32_ComputerSystem
-        $os = Get-CimInstance Win32_OperatingSystem
-        $cpu = Get-CimInstance Win32_Processor
-        $bios = Get-CimInstance Win32_Bios
-        $disk = Get-CimInstance Win32_LogicalDisk -Filter "DriveType=3"
-        $info = "=== SYSTEM ===`r`n$($cs.Manufacturer) $($cs.Model)`r`nSerial: $($bios.SerialNumber)`r`n`r`n"
-        $info += "=== OS ===`r`n$($os.Caption) ($($os.OSArchitecture))`r`nBuild: $($os.BuildNumber)`r`n`r`n"
-        $info += "=== CPU ===`r`n$($cpu.Name)`r`nCores: $($cpu.NumberOfCores)`r`n`r`n"
-        $info += "=== RAM ===`r`n$([math]::Round($cs.TotalPhysicalMemory/1GB,1)) GB`r`n`r`n"
-        $info += "=== DISKS ===`r`n"
-        foreach ($d in $disk) { $info += "$($d.DeviceID) $([math]::Round($d.Size/1GB))GB (Free: $([math]::Round($d.FreeSpace/1GB))GB)`r`n" }
-        $info
-    }}
-    @{Name = "Printers"; Cmd = { Get-Printer | Format-Table Name, DriverName, PortName -AutoSize | Out-String }}
-    @{Name = "Software"; Cmd = { Get-ItemProperty "HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*","HKLM:\Software\Wow6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*" -EA 0 | Where-Object DisplayName | Sort-Object DisplayName | Select-Object DisplayName, DisplayVersion | Format-Table -AutoSize | Out-String }}
-    @{Name = "Event Errors"; Cmd = { Get-WinEvent -FilterHashtable @{LogName='System','Application';Level=1,2;StartTime=(Get-Date).AddDays(-7)} -MaxEvents 20 -EA 0 | Format-Table TimeCreated, ProviderName, Message -Wrap | Out-String }}
-    @{Name = "Services"; Cmd = { Get-Service | Where-Object Status -eq Running | Sort-Object DisplayName | Format-Table DisplayName, Name -AutoSize | Out-String }}
-    @{Name = "Startup"; Cmd = { Get-CimInstance Win32_StartupCommand | Format-Table Name, Command, Location -Wrap | Out-String }}
-)
-
-$btnY = 30
-foreach ($diag in $diagBtns) {
-    $btn = New-Object System.Windows.Forms.Button
-    $btn.Text = $diag.Name
-    $btn.Location = New-Object System.Drawing.Point(420, $btnY)
-    $btn.Size = New-Object System.Drawing.Size(100, 26)
-    $btn.FlatStyle = "Flat"
-    $btn.BackColor = $script:Theme.Card
-    $btn.ForeColor = $script:Theme.Text
-    $btn.FlatAppearance.BorderSize = 0
-    $btn.Font = New-Object System.Drawing.Font("Segoe UI", 8)
-    $btn.Tag = $diag.Cmd
-    $btn.Add_Click({ Log "Running: $($this.Text)..."; $txtDiag.Text = & $this.Tag; Log "Done." })
-    $pageDiag.Controls.Add($btn)
-    $btnY += 30
-}
-
-$pageDiag.Controls.AddRange(@($lblDiagTitle, $txtDiag))
-$pages["Diagnostics"] = $pageDiag
-
-# === NETWORK PAGE ===
-$pageNet = New-Object System.Windows.Forms.Panel
-$pageNet.Dock = "Fill"
-$pageNet.BackColor = $script:Theme.Bg
-
-$lblNetTitle = New-Object System.Windows.Forms.Label
-$lblNetTitle.Text = "NETWORK TOOLS"
-$lblNetTitle.Location = New-Object System.Drawing.Point(10, 8)
-$lblNetTitle.AutoSize = $true
-$lblNetTitle.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
-$lblNetTitle.ForeColor = $script:Theme.Dim
-
-$txtNet = New-Object System.Windows.Forms.TextBox
-$txtNet.Multiline = $true
-$txtNet.ScrollBars = "Both"
-$txtNet.ReadOnly = $true
-$txtNet.Location = New-Object System.Drawing.Point(10, 30)
-$txtNet.Size = New-Object System.Drawing.Size(400, 340)
-$txtNet.BackColor = $script:Theme.Surface
-$txtNet.ForeColor = $script:Theme.Text
-$txtNet.Font = New-Object System.Drawing.Font("Consolas", 8)
-$txtNet.Anchor = "Top, Left, Bottom"
-
-$netBtns = @(
-    @{Name = "IP Config"; Cmd = { ipconfig /all | Out-String }}
-    @{Name = "ARP Table"; Cmd = { arp -a | Out-String }}
-    @{Name = "Test Internet"; Cmd = { Test-Connection 8.8.8.8 -Count 4 | Format-Table Address, ResponseTime, Status | Out-String }}
-    @{Name = "Connections"; Cmd = { netstat -an | Out-String }}
-    @{Name = "DNS Servers"; Cmd = { Get-DnsClientServerAddress | Format-Table InterfaceAlias, ServerAddresses | Out-String }}
-    @{Name = "Routes"; Cmd = { route print | Out-String }}
-    @{Name = "WiFi Passwords"; Cmd = {
-        $output = "=== SAVED WIFI NETWORKS & PASSWORDS ===`r`n`r`n"
-        $profiles = netsh wlan show profiles | Select-String "All User Profile" | ForEach-Object {
-            ($_ -split ":")[-1].Trim()
-        }
-        if ($profiles) {
-            foreach ($wifiProfileName in $profiles) {
-                $output += "Network: $wifiProfileName`r`n"
-                $details = netsh wlan show profile name="$wifiProfileName" key=clear 2>$null
-                $keyContent = $details | Select-String "Key Content"
-                if ($keyContent) {
-                    $password = ($keyContent -split ":")[-1].Trim()
-                    $output += "Password: $password`r`n"
-                } else {
-                    $output += "Password: (none/open network)`r`n"
-                }
-                $auth = $details | Select-String "Authentication"
-                if ($auth) {
-                    $authType = ($auth[0] -split ":")[-1].Trim()
-                    $output += "Auth: $authType`r`n"
-                }
-                $output += "`r`n"
+            if (Get-Command Get-CimInstance -ErrorAction SilentlyContinue) {
+                if ($Filter) { return Get-CimInstance -Namespace $Namespace -ClassName $ClassName -Filter $Filter -ErrorAction Stop }
+                return Get-CimInstance -Namespace $Namespace -ClassName $ClassName -ErrorAction Stop
             }
-        } else {
-            $output += "No saved WiFi profiles found.`r`n"
+            if ($Filter) { return Get-WmiObject -Namespace $Namespace -Class $ClassName -Filter $Filter -ErrorAction Stop }
+            return Get-WmiObject -Namespace $Namespace -Class $ClassName -ErrorAction Stop
+        } catch { return $null }
+    }
+    function New-Badge {
+        param([string]$Text, [string]$State)
+        $class = "badge-info"
+        if ($State -eq "Good") { $class = "badge-good" }
+        if ($State -eq "Bad")  { $class = "badge-bad" }
+        if ($State -eq "Warn") { $class = "badge-warn" }
+        return "<span class='badge $class'>$(Escape-Html $Text)</span>"
+    }
+    function New-Input {
+        param([string]$Value = "", [string]$Placeholder = "Enter details")
+        $key = New-HKey
+        return "<input class='field' type='text' data-key='$key' value='$(Escape-Html $Value)' placeholder='$(Escape-Html $Placeholder)'>"
+    }
+    function New-TextArea {
+        param([string]$Value = "", [string]$Placeholder = "Enter notes")
+        $key = New-HKey
+        return "<textarea class='field area' data-key='$key' placeholder='$(Escape-Html $Placeholder)'>$(Escape-Html $Value)</textarea>"
+    }
+    function New-Select {
+        param([string[]]$Options = @("Select...", "Yes", "No", "N/A"), [string]$Selected = "")
+        $key = New-HKey
+        $html = "<select class='field select' data-key='$key'>"
+        foreach ($opt in $Options) {
+            $sel = if ($opt -eq $Selected) { " selected" } else { "" }
+            $html += "<option$sel>$(Escape-Html $opt)</option>"
         }
-        $output
-    }}
-)
-
-$btnY = 30
-foreach ($net in $netBtns) {
-    $btn = New-Object System.Windows.Forms.Button
-    $btn.Text = $net.Name
-    $btn.Location = New-Object System.Drawing.Point(420, $btnY)
-    $btn.Size = New-Object System.Drawing.Size(100, 26)
-    $btn.FlatStyle = "Flat"
-    $btn.BackColor = $script:Theme.Card
-    $btn.ForeColor = $script:Theme.Text
-    $btn.FlatAppearance.BorderSize = 0
-    $btn.Font = New-Object System.Drawing.Font("Segoe UI", 8)
-    $btn.Tag = $net.Cmd
-    $btn.Add_Click({ Log "Running: $($this.Text)..."; $txtNet.Text = & $this.Tag; Log "Done." })
-    $pageNet.Controls.Add($btn)
-    $btnY += 30
-}
-
-$pageNet.Controls.AddRange(@($lblNetTitle, $txtNet))
-$pages["Network"] = $pageNet
-
-# === AUDIT PAGE ===
-$pageAudit = New-Object System.Windows.Forms.Panel
-$pageAudit.Dock = "Fill"
-$pageAudit.BackColor = $script:Theme.Bg
-$pageAudit.AutoScroll = $true
-
-$lblAuditTitle = New-Object System.Windows.Forms.Label
-$lblAuditTitle.Text = "SECURITY AUDIT"
-$lblAuditTitle.Location = New-Object System.Drawing.Point(10, 8)
-$lblAuditTitle.AutoSize = $true
-$lblAuditTitle.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
-$lblAuditTitle.ForeColor = $script:Theme.Dim
-
-$lblAuditDesc = New-Object System.Windows.Forms.Label
-$lblAuditDesc.Text = "Generate Polar Nite Security & Backup Audit (HTML)."
-$lblAuditDesc.Location = New-Object System.Drawing.Point(10, 32)
-$lblAuditDesc.Size = New-Object System.Drawing.Size(600, 20)
-$lblAuditDesc.Font = New-Object System.Drawing.Font("Segoe UI", 8)
-
-$btnAudit = New-Object System.Windows.Forms.Button
-$btnAudit.Text = "Generate Audit Report"
-$btnAudit.Location = New-Object System.Drawing.Point(10, 60)
-$btnAudit.Size = New-Object System.Drawing.Size(150, 32)
-$btnAudit.FlatStyle = "Flat"
-$btnAudit.BackColor = $script:Theme.Accent
-$btnAudit.ForeColor = "White"
-$btnAudit.FlatAppearance.BorderSize = 0
-$btnAudit.Add_Click({
-    try {
-        Log "Generating Polar Nite Audit..."
-        $this.Enabled = $false
-        $this.Text = "Scanning..."
-        [System.Windows.Forms.Application]::DoEvents()
-    
-    # --- Gather Local Data ---
-    Log "Getting system information..."
-    [System.Windows.Forms.Application]::DoEvents()
-    $CompInfo = Get-CimInstance Win32_ComputerSystem -EA SilentlyContinue
-    $OSInfo = Get-CimInstance Win32_OperatingSystem -EA SilentlyContinue
-    $AdminGroup = Get-LocalGroupMember -Group "Administrators" -EA SilentlyContinue
-    
-    $Uptime = "Unknown"
-    if ($OSInfo -and $OSInfo.LastBootUpTime) {
-        $upt = (Get-Date) - $OSInfo.LastBootUpTime
-        $Uptime = "{0}D {1}H" -f $upt.Days, $upt.Hours
+        return $html + "</select>"
     }
-    $IsVM = $CompInfo.Model -match "Virtual|VMware|Hyper-V|KVM|Xen"
-    
-    # EOS Check
-    $EOSWarning = ""
-    if ($OSInfo.Caption -match "Server 2003|Server 2008 [^R]|Server 2012 [^R]|Windows 7|Windows 8[^.]|SBS 2011") {
-        $EOSWarning = "<span class='alert'>[END OF SUPPORT - SECURITY RISK]</span>"
+    function Get-TableOrEmpty {
+        param([string]$Rows, [string]$Empty = "No items detected.")
+        if ([string]::IsNullOrWhiteSpace($Rows)) { return "<tr><td colspan='8' class='empty'>$(Escape-Html $Empty)</td></tr>" }
+        return $Rows
     }
-    # Note: Server 2008 R2 and 2012 R2 have extended support until 2023/2026
-    
-    # Roles
-    Log "Detecting server roles..."
-    [System.Windows.Forms.Application]::DoEvents()
-    $DetectedRoles = "Workstation"
-    if (Get-Command Get-WindowsFeature -EA SilentlyContinue) {
-        try { 
-            $DetectedRoles = "Checking (this may take a moment)..."
-            $roles = Get-WindowsFeature | Where-Object Installed | Select-Object -First 50 -ExpandProperty Name
-            $DetectedRoles = $roles -join ", "
-        } catch { $DetectedRoles = "Unable to enumerate" }
-    }
-    
-    # Backup Detection
-    Log "Scanning for backup software..."
-    [System.Windows.Forms.Application]::DoEvents()
-    $BackupKeywords = @("Veeam","Acronis","Datto","Carbonite","Cyber Protect","Backup Exec","Backblaze","Ahsay","CrashPlan","ShadowProtect")
-    $BackupServices = @()
-    try {
-        $BackupServices = Get-Service -EA SilentlyContinue | Where-Object {
-            $name = $_.DisplayName
-            $isMatch = $false
-            foreach ($keyword in $BackupKeywords) {
-                if ($name -and $name -like "*$keyword*") { $isMatch = $true; break }
-            }
-            $isMatch
-        }
-    } catch {}
-    $BackupServiceNames = $BackupServices | Select-Object -ExpandProperty DisplayName -Unique
-    $UninstallPaths = @(
-        'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*',
-        'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*'
-    )
-    $BackupProgramNames = @()
-    foreach ($path in $UninstallPaths) {
-        try {
-            $packages = Get-ItemProperty -Path $path -EA SilentlyContinue
-            foreach ($pkg in $packages) {
-                $display = $pkg.DisplayName
-                if (-not $display) { continue }
-                $isMatch = $false
-                foreach ($keyword in $BackupKeywords) {
-                    if ($display -like "*$keyword*") { $isMatch = $true; break }
-                }
-                if ($isMatch) { $BackupProgramNames += $display }
-            }
-        } catch {}
-    }
-    $BackupSoftwareListAll = ($BackupServiceNames + $BackupProgramNames) | Where-Object { $_ } | Sort-Object -Unique
-    $BackupSoftwareListHtml = if ($BackupSoftwareListAll) {
-        '<ul style="margin:0; padding-left:16px;">' + ($BackupSoftwareListAll | ForEach-Object { "<li>$(Escape-ForHtmlAttr $_)</li>" }) -join '' + '</ul>'
-    } else { 'None detected' }
-    $DetectedBackup = if ($BackupSoftwareListAll) { $BackupSoftwareListAll -join '; ' } else { 'Not Detected' }
-    
-    # Updates
-    Log "Checking Windows Updates..."
-    [System.Windows.Forms.Application]::DoEvents()
-    $LastHotFix = Get-HotFix -EA SilentlyContinue | Sort-Object InstalledOn -Descending | Select-Object -First 1
-    $LastUpdateDate = if ($LastHotFix.InstalledOn) { $LastHotFix.InstalledOn.ToString('yyyy-MM-dd') } else { "Unknown" }
-    $PendingReboot = (Test-Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending") -or 
-                     (Test-Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\RebootRequired")
-    
-    # AV
-    Log "Checking antivirus status..."
-    [System.Windows.Forms.Application]::DoEvents()
-    $AV = Get-CimInstance -Namespace root/SecurityCenter2 -ClassName AntivirusProduct -EA SilentlyContinue
-    $AVName = if ($AV) { $AV.displayName } else { "None Detected" }
-    $Defender = $null
-    if (Get-Command Get-MpComputerStatus -ErrorAction SilentlyContinue) {
-        $Defender = Get-MpComputerStatus -EA SilentlyContinue
-    }
-    if ($Defender) {
-        $RTPEnabled = if ($Defender.RealTimeProtectionEnabled) { "Yes" } else { "No" }
-        $LastScan = if ($Defender.QuickScanEndTime) { $Defender.QuickScanEndTime.ToString("yyyy-MM-dd") } else { "Unknown" }
-    } else {
-        $RTPEnabled = "Unknown"
-        $LastScan = "Unknown"
-    }
-    
-    # BitLocker
-    $BitLockerStatus = "Unknown"
-    if ($IsVM) {
-        $BitLockerStatus = "Virtual Machine - Check Host Encryption"
-    } else {
-        if (Get-Command Get-BitLockerVolume -ErrorAction SilentlyContinue) {
+    function Get-RegistryEvidence {
+        param([string[]]$Patterns)
+        $hits = @()
+        $paths = @(
+            "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*",
+            "HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*",
+            "HKLM:\SYSTEM\CurrentControlSet\Services\*",
+            "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*"
+        )
+        foreach ($path in $paths) {
             try {
-                $bl = Get-BitLockerVolume -MountPoint "C:" -ErrorAction Stop
-                $BitLockerStatus = if ($bl.ProtectionStatus -eq "On") { "Encrypted" } else { "Not Encrypted" }
-            } catch {
-                $BitLockerStatus = "Error checking BitLocker"
-            }
-        } else {
-            $BitLockerStatus = "BitLocker Cmdlet Not Available"
-        }
-    }
-    
-    # Firewall
-    $FWProfiles = "Unknown"
-    if (Get-Command Get-NetFirewallProfile -ErrorAction SilentlyContinue) {
-        $FWProfiles = (Get-NetFirewallProfile -EA SilentlyContinue | Where-Object Enabled).Name -join ", "
-        if (-not $FWProfiles) { $FWProfiles = "DISABLED" }
-    } else {
-        # Fallback for older systems
-        try {
-            $fwPolicy = New-Object -ComObject HNetCfg.FwPolicy2 -EA Stop
-            $profiles = @()
-            if ($fwPolicy.FirewallEnabled(1)) { $profiles += "Domain" }
-            if ($fwPolicy.FirewallEnabled(2)) { $profiles += "Private" }
-            if ($fwPolicy.FirewallEnabled(4)) { $profiles += "Public" }
-            $FWProfiles = if ($profiles) { $profiles -join ", " } else { "DISABLED" }
-        } catch { $FWProfiles = "Unable to determine" }
-    }
-    
-    # RDP
-    $RDP = Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server" -Name fDenyTSConnections -EA SilentlyContinue
-    $RDPStatus = if ($RDP.fDenyTSConnections -eq 1) { "Disabled" } else { "Enabled" }
-    $RdpFailureNotes = "No recent failures detected"
-    try {
-        $rdpFailures = Get-WinEvent -FilterHashtable @{LogName='Security'; Id=4625; StartTime=(Get-Date).AddDays(-30)} -MaxEvents 5 -EA SilentlyContinue
-        if ($rdpFailures) { $RdpFailureNotes = "Yes ($($rdpFailures.Count) events in last 30 days)" }
-    } catch {
-        $RdpFailureNotes = "Unable to query Security log (requires elevated rights)"
-    }
-    
-    # Disk Health & RAID
-    $Disks = $null
-    if (Get-Command Get-PhysicalDisk -ErrorAction SilentlyContinue) {
-        $Disks = Get-PhysicalDisk -EA SilentlyContinue | Select-Object FriendlyName, MediaType, HealthStatus
-    }
-    $DiskHealth = if ($Disks) { ($Disks | ForEach-Object { "$($_.MediaType): $($_.HealthStatus)" }) -join "; " } else { "Unknown (cmdlet unavailable)" }
-    
-    $RAIDStatus = "Unknown"
-    if ($IsVM) {
-        $RAIDStatus = "Virtual Machine - Check Host RAID"
-    } else {
-        # Try local
-        if (Get-Command Get-PhysicalDisk -ErrorAction SilentlyContinue) {
-            $pDisks = Get-PhysicalDisk -ErrorAction SilentlyContinue
-            if ($pDisks) {
-                 $RAIDStatus = ($pDisks | Select-Object -ExpandProperty MediaType -Unique) -join ", "
-            }
-        } else {
-            $RAIDStatus = "Physical disk cmdlet unavailable"
-        }
-    }
-    
-    # Storage Warning
-    $CDrive = Get-CimInstance Win32_LogicalDisk -Filter "DeviceID='C:'" -EA SilentlyContinue
-    $FreePct = if ($CDrive) { [math]::Round(($CDrive.FreeSpace / $CDrive.Size) * 100, 1) } else { 0 }
-    $StorageWarn = if ($FreePct -lt 15) { "LOW DISK: $FreePct% Free" } else { "" }
-
-    # Physical drives & TPM
-    $PhysicalDrives = Get-CimInstance Win32_DiskDrive -EA SilentlyContinue
-    $PhysicalDriveInfo = if ($PhysicalDrives) { ($PhysicalDrives | ForEach-Object { "$($_.DeviceID): $($_.Model) ($($_.Status))" }) -join "; " } else { "Not available" }
-    $TpmStatus = "Not present or unsupported"
-    if (Get-Command Get-Tpm -ErrorAction SilentlyContinue) {
-        try {
-            $tpm = Get-Tpm -ErrorAction Stop
-            if ($tpm.TpmReady) { $TpmStatus = "Yes (TPM ready)" } else { $TpmStatus = "No (TPM present but not ready)" }
-        } catch {
-            $TpmStatus = "No (Get-Tpm failed)"
-        }
-    }
-    
-    # Local Users
-    Log "Enumerating local users..."
-    [System.Windows.Forms.Application]::DoEvents()
-    $LocalUserCmd = Get-Command Get-LocalUser -ErrorAction SilentlyContinue
-    $LocalUserObjects = if ($LocalUserCmd) { Get-LocalUser -EA SilentlyContinue } else { @() }
-    $LocalUsersDetailed = @()
-    if ($LocalUserObjects) {
-        foreach ($user in $LocalUserObjects | Sort-Object Name) {
-            $status = if ($user.Enabled) { "Enabled" } else { "Disabled" }
-            $pwdDate = if ($user.PasswordLastSet) { $user.PasswordLastSet.ToString('yyyy-MM-dd HH:mm') } else { 'Never' }
-            $LocalUsersDetailed += "$($user.Name) [$status] - Last PW: $pwdDate"
-        }
-    } else {
-        $LocalUsersDetailed += "Local account enumeration not supported on this host."
-    }
-    $LocalUsers = $LocalUsersDetailed -join "; "
-
-    $AdminListEntries = @()
-    $AdminDetails = @()
-    if ($AdminGroup) {
-        foreach ($member in $AdminGroup | Sort-Object Name -Unique) {
-            $detail = [ordered]@{
-                Name = $member.Name
-                ObjectClass = $member.ObjectClass
-                Enabled = "Unknown"
-                PasswordLastSet = "Unknown"
-            }
-            if ($member.ObjectClass -eq "User") {
-                if (-not $LocalUserCmd -or $member.Name -match '\\') {
-                    $detail.Enabled = "Domain-managed"
-                    $detail.PasswordLastSet = "Managed externally"
-                } else {
-                    $localUser = Get-LocalUser -Name $member.Name -EA SilentlyContinue
-                    if ($localUser) {
-                        $detail.Enabled = if ($localUser.Enabled) { "Enabled" } else { "Disabled" }
-                        $detail.PasswordLastSet = if ($localUser.PasswordLastSet) { $localUser.PasswordLastSet.ToString('yyyy-MM-dd HH:mm') } else { 'Never' }
-                    }
-                }
-            } elseif ($member.ObjectClass -eq "Group") {
-                $detail.PasswordLastSet = "Group membership"
-            }
-            $AdminDetails += [pscustomobject]$detail
-            $AdminListEntries += "<li>$($detail.Name) ($($detail.Enabled)) - Last PW: $($detail.PasswordLastSet)</li>"
-        }
-    }
-    $AdminList = if ($AdminListEntries) { $AdminListEntries -join "" } else { "<li>Unknown</li>" }
-
-    $AdminAccessSummary = if ($AdminDetails) { ($AdminDetails | ForEach-Object { "$($_.Name) [$($_.Enabled)] - Last PW: $($_.PasswordLastSet)" }) -join "; " } else { "Unable to enumerate administrators" }
-    $AdminPasswordSummary = if ($AdminDetails) { ($AdminDetails | Where-Object { $_.ObjectClass -eq 'User' } | ForEach-Object { "$($_.Name): $($_.PasswordLastSet)" }) -join "; " } else { "Unknown" }
-    $DisabledAdminList = ($AdminDetails | Where-Object { $_.Enabled -eq 'Disabled' } | Select-Object -ExpandProperty Name) -join ", "
-    if (-not $DisabledAdminList) { $DisabledAdminList = "None" }
-    $MfaStatus = "Unknown (verify with identity provider)"
-    
-    # Password Policy
-    Log "Checking password policy..."
-    [System.Windows.Forms.Application]::DoEvents()
-    $PassComplex = "Unknown"
-    $secPol = $null
-    try {
-        $secFile = "$env:TEMP\secpol.cfg"
-        secedit /export /cfg $secFile /quiet 2>$null
-        $secPol = Get-Content $secFile -EA SilentlyContinue
-        if ($secPol -match "PasswordComplexity\s*=\s*1") { $PassComplex = "Yes" }
-        elseif ($secPol -match "PasswordComplexity\s*=\s*0") { $PassComplex = "No" }
-        Remove-Item $secFile -EA SilentlyContinue
-    } catch {}
-
-    $PasswordMinLength = Get-SecPolValue -Lines $secPol -Key "MinimumPasswordLength"
-    $PasswordMaxAge = Get-SecPolValue -Lines $secPol -Key "MaximumPasswordAge"
-    $PasswordHistory = Get-SecPolValue -Lines $secPol -Key "PasswordHistorySize"
-    $PasswordPolicySummary = "MinLen: $($PasswordMinLength -or 'Unknown'); MaxAge: $($PasswordMaxAge -or 'Unknown'); History: $($PasswordHistory -or 'Unknown'); Complexity: $PassComplex"
-
-    $PatchEntries = @()
-    $PatchListHtml = 'Unknown'
-    $PatchSummary = 'Unknown'
-    Log "Checking for pending patches..."
-    [System.Windows.Forms.Application]::DoEvents()
-    
-    # Simplified approach - run directly with timeout protection
-    try {
-        $wuSession = New-Object -ComObject 'Microsoft.Update.Session' -ErrorAction Stop
-        $wuSearcher = $wuSession.CreateUpdateSearcher()
-        $wuSearcher.Online = $false  # Search local cache only
-        
-        # Try to get update count
-        try {
-            $wuResult = $wuSearcher.Search("IsInstalled=0 and Type='Software' and IsHidden=0")
-            
-            if ($wuResult -and $wuResult.Updates) {
-                $pendingCount = $wuResult.Updates.Count
-                
-                if ($pendingCount -le 0) {
-                    $PatchSummary = 'None detected'
-                    $PatchListHtml = 'No pending patches detected.'
-                } else {
-                    $PatchSummary = "$pendingCount pending"
-                    $maxToShow = [Math]::Min(10, $pendingCount)
-                    
-                    # Safely iterate updates
-                    for ($i = 0; $i -lt $maxToShow; $i++) {
-                        try {
-                            $update = $wuResult.Updates.Item($i)
-                            if ($update -and $update.Title) {
-                                $PatchEntries += "<li>$(Escape-ForHtmlAttr $update.Title)</li>"
-                            }
-                        } catch {
-                            # Skip update if error accessing it
-                            continue
+                foreach ($item in (Get-ItemProperty -Path $path -ErrorAction SilentlyContinue)) {
+                    $hay = "$($item.DisplayName) $($item.PSChildName) $($item.Publisher) $($item.InstallLocation)"
+                    foreach ($pattern in $Patterns) {
+                        if ($hay -match [regex]::Escape($pattern)) {
+                            $label = $item.DisplayName
+                            if (-not $label) { $label = $item.PSChildName }
+                            if ($label) { $hits += "Registry: $label" }
                         }
                     }
-                    
-                    $PatchListHtml = if ($PatchEntries.Count -gt 0) {
-                        '<ul style="margin:0; padding-left:16px;">' + ($PatchEntries -join '') + '</ul>'
-                    } else {
-                        "$pendingCount pending (details unavailable)"
+                }
+            } catch {}
+        }
+        return $hits
+    }
+    function Find-Tool {
+        param([string]$Name, [string[]]$Patterns, [string[]]$Paths = @())
+        $evidence = @()
+        try {
+            $services = Get-Service -ErrorAction SilentlyContinue | Where-Object {
+                $svcText = "$($_.Name) $($_.DisplayName)"
+                $matched = $false
+                foreach ($pattern in $Patterns) { if ($svcText -match [regex]::Escape($pattern)) { $matched = $true } }
+                $matched
+            }
+            foreach ($svc in $services) { $evidence += "Service: $($svc.DisplayName) [$($svc.Status)]" }
+        } catch {}
+        try {
+            $processes = Get-Process -ErrorAction SilentlyContinue | Where-Object {
+                $procText = "$($_.ProcessName) $($_.Path)"
+                $matched = $false
+                foreach ($pattern in $Patterns) { if ($procText -match [regex]::Escape($pattern)) { $matched = $true } }
+                $matched
+            }
+            foreach ($proc in $processes) { $evidence += "Process: $($proc.ProcessName)" }
+        } catch {}
+        $evidence += Get-RegistryEvidence -Patterns $Patterns
+        foreach ($path in $Paths) {
+            try { if (Test-Path $path) { $evidence += "Path: $path" } } catch {}
+        }
+        $evidence = @($evidence | Where-Object { $_ } | Sort-Object -Unique)
+        return New-Object PSObject -Property @{
+            Name = $Name
+            Detected = ($evidence.Count -gt 0)
+            Evidence = $evidence
+        }
+    }
+    function Get-OsSupportStatus {
+        param($OSInfo)
+        $build = 0
+        [int]::TryParse([string]$OSInfo.BuildNumber, [ref]$build) | Out-Null
+        $caption = [string]$OSInfo.Caption
+        $today = Get-Date
+        $eosTable = @{
+            3790=[datetime]'2015-07-14'; 6002=[datetime]'2020-01-14'; 7601=[datetime]'2020-01-14'
+            9200=[datetime]'2023-10-10'; 9600=[datetime]'2023-10-10'
+            10240=[datetime]'2017-05-09'; 10586=[datetime]'2017-10-10'
+            14393=[datetime]'2027-01-12'; 15063=[datetime]'2018-10-09'; 16299=[datetime]'2019-04-09'
+            17134=[datetime]'2019-11-12'; 17763=[datetime]'2029-01-09'
+            18362=[datetime]'2020-12-08'; 18363=[datetime]'2022-05-10'
+            19041=[datetime]'2021-12-14'; 19042=[datetime]'2023-05-09'; 19043=[datetime]'2022-12-13'
+            19044=[datetime]'2024-06-11'; 19045=[datetime]'2025-10-14'
+            20348=[datetime]'2031-10-14'
+            22000=[datetime]'2023-10-10'; 22621=[datetime]'2024-10-08'; 22631=[datetime]'2025-11-11'
+            26100=[datetime]'2034-10-10'
+        }
+        $state = "Warn"
+        $label = "$caption (build $build) — verify at aka.ms/WindowsLifecycle"
+        if ($eosTable.ContainsKey($build)) {
+            $endDate = $eosTable[$build]
+            if ($today -le $endDate) {
+                $months = [math]::Round(($endDate - $today).TotalDays / 30)
+                $label = "$caption (build $build) — supported until $($endDate.ToString('yyyy-MM-dd')) ($months months remaining)"
+                $state = if ($months -le 6) { "Warn" } else { "Good" }
+            } else {
+                $label = "$caption (build $build) — END OF SUPPORT $($endDate.ToString('yyyy-MM-dd'))"
+                $state = "Bad"
+            }
+        }
+        return New-Object PSObject -Property @{ Text = $label; State = $state }
+    }
+
+    try {
+        Log-Worker "Max Audit: collecting operating system, hardware, and PowerShell details..."
+        $OS = Get-SafeCim Win32_OperatingSystem
+        $CS = Get-SafeCim Win32_ComputerSystem
+        $BIOS = Get-SafeCim Win32_BIOS
+        $CPU = Get-SafeCim Win32_Processor | Select-Object -First 1
+        $OSSupport = Get-OsSupportStatus -OSInfo $OS
+        $PSVer = $PSVersionTable.PSVersion.ToString()
+        $Uptime = $null
+        if ($OS -and $OS.LastBootUpTime) { $Uptime = (Get-Date) - $OS.LastBootUpTime }
+        $UptimeText = "Unknown"
+        if ($Uptime) { $UptimeText = "{0} days, {1} hours" -f $Uptime.Days, $Uptime.Hours }
+        $IsVM = ($CS.Model -match "Virtual|VMware|KVM|VirtualBox|HVM|Hyper-V|VRTUAL|vbox" -or $CS.Manufacturer -match "VMware|Xen|QEMU|Microsoft Corporation|Parallels|innotek")
+
+        $WinKey = "Not Found"
+        try { $WinKey = (Get-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\SoftwareProtectionPlatform" -ErrorAction Stop).BackupProductKeyDefault } catch {}
+
+        Log-Worker "Max Audit: scanning RMM, EDR, remote access, and backup products..."
+        $AgentTools = @(
+            (Find-Tool "NinjaRMM" @("NinjaRMM", "NinjaRM", "NinjaOne", "NinjaRemote") @("$env:ProgramFiles\NinjaRMMAgent", "${env:ProgramFiles(x86)}\NinjaRMMAgent")),
+            (Find-Tool "Huntress" @("Huntress", "HuntressAgent") @("$env:ProgramFiles\Huntress", "${env:ProgramFiles(x86)}\Huntress")),
+            (Find-Tool "GoToAssist" @("GoToAssist", "GoTo Resolve", "g2ax", "GoTo Opener") @("$env:ProgramFiles\GoToAssist", "${env:ProgramFiles(x86)}\GoToAssist"))
+        )
+        $RemoteTools = @(
+            (Find-Tool "TeamViewer" @("TeamViewer") @("$env:ProgramFiles\TeamViewer", "${env:ProgramFiles(x86)}\TeamViewer")),
+            (Find-Tool "AnyDesk" @("AnyDesk") @("$env:ProgramFiles\AnyDesk", "${env:ProgramFiles(x86)}\AnyDesk")),
+            (Find-Tool "Splashtop" @("Splashtop", "SRService") @("$env:ProgramFiles\Splashtop", "${env:ProgramFiles(x86)}\Splashtop")),
+            (Find-Tool "ConnectWise Control" @("ScreenConnect", "ConnectWise Control") @("${env:ProgramFiles(x86)}\ScreenConnect Client")),
+            (Find-Tool "RustDesk" @("RustDesk") @("$env:ProgramFiles\RustDesk", "${env:ProgramFiles(x86)}\RustDesk")),
+            (Find-Tool "LogMeIn" @("LogMeIn", "LogMeInRemoteUser") @("$env:ProgramFiles\LogMeIn", "${env:ProgramFiles(x86)}\LogMeIn")),
+            (Find-Tool "Chrome Remote Desktop" @("chromoting", "Chrome Remote Desktop") @("${env:ProgramFiles(x86)}\Google\Chrome Remote Desktop"))
+        )
+        $BackupTools = @(
+            (Find-Tool "Synology Active Backup / Hyper Backup" @("Synology", "Active Backup", "Hyper Backup", "Synology Drive") @("$env:ProgramFiles\Synology", "${env:ProgramFiles(x86)}\Synology")),
+            (Find-Tool "Veeam" @("Veeam") @("$env:ProgramFiles\Veeam", "${env:ProgramFiles(x86)}\Veeam")),
+            (Find-Tool "Datto" @("Datto", "Datto Windows Agent", "ShadowSnap") @("$env:ProgramFiles\Datto", "${env:ProgramFiles(x86)}\Datto")),
+            (Find-Tool "Acronis" @("Acronis") @("$env:ProgramFiles\Acronis", "${env:ProgramFiles(x86)}\Acronis")),
+            (Find-Tool "Carbonite" @("Carbonite") @("$env:ProgramFiles\Carbonite", "${env:ProgramFiles(x86)}\Carbonite")),
+            (Find-Tool "Windows Server Backup" @("wbengine", "Windows Server Backup") @())
+        )
+
+        $AgentRows = ""
+        foreach ($tool in $AgentTools) {
+            $badge = if ($tool.Detected) { New-Badge "Installed" "Good" } else { New-Badge "Not detected" "Bad" }
+            $evidence = if ($tool.Detected) { Escape-Html (($tool.Evidence | Select-Object -First 4) -join "; ") } else { "No service, process, registry, or common path match." }
+            $AgentRows += "<tr><th>$(Escape-Html $tool.Name)</th><td>$badge<div class='evidence'>$evidence</div></td></tr>"
+        }
+        $RemoteRows = ""
+        foreach ($tool in $RemoteTools) {
+            $badge = if ($tool.Detected) { New-Badge "Detected" "Warn" } else { New-Badge "Not detected" "Good" }
+            $evidence = if ($tool.Detected) { Escape-Html (($tool.Evidence | Select-Object -First 4) -join "; ") } else { "No local signal found." }
+            $RemoteRows += "<tr><th>$(Escape-Html $tool.Name)</th><td>$badge<div class='evidence'>$evidence</div></td></tr>"
+        }
+        $DetectedBackupTools = @($BackupTools | Where-Object { $_.Detected })
+        $BackupRows = ""
+        foreach ($tool in $BackupTools) {
+            $badge = if ($tool.Detected) { New-Badge "Detected" "Good" } else { New-Badge "Not detected" "Info" }
+            $evidence = if ($tool.Detected) { Escape-Html (($tool.Evidence | Select-Object -First 4) -join "; ") } else { "No local signal found." }
+            $BackupRows += "<tr><th>$(Escape-Html $tool.Name)</th><td>$badge<div class='evidence'>$evidence</div></td></tr>"
+        }
+        $BackupSolution = "Not detected"
+        $BackupSuccess = "N/A"
+        $BackupFailed = "N/A"
+        $BackupLast = "N/A"
+        $BackupFrequency = "N/A"
+        $BackupEncryption = "N/A"
+        $BackupTransit = "N/A"
+        $BackupRetention = "N/A"
+        if ($DetectedBackupTools.Count -gt 0) {
+            $BackupSolution = ($DetectedBackupTools | ForEach-Object { $_.Name }) -join "; "
+            $BackupSuccess = "Review vendor console"
+            $BackupFailed = "Review vendor console"
+            $BackupLast = "Review vendor console"
+            $BackupFrequency = "Review vendor console"
+            $BackupEncryption = "Review vendor console / expected AES-256 where supported"
+            $BackupTransit = "Review vendor console / expected TLS"
+            $BackupRetention = "Review policy"
+        }
+        try {
+            $WinBackupEvents = Get-WinEvent -LogName "Microsoft-Windows-Backup" -MaxEvents 10 -ErrorAction SilentlyContinue
+            $LatestBackupEvent = $WinBackupEvents | Select-Object -First 1
+            if ($LatestBackupEvent) {
+                if ($DetectedBackupTools.Count -eq 0) { $BackupSolution = "Windows Server Backup event log present" }
+                if ($LatestBackupEvent.Id -eq 4) { $BackupSuccess = "Yes"; $BackupFailed = "No" } else { $BackupSuccess = "No"; $BackupFailed = "Yes" }
+                $BackupLast = $LatestBackupEvent.TimeCreated.ToString("yyyy-MM-dd HH:mm")
+            }
+        } catch {}
+
+        Log-Worker "Max Audit: collecting patching, update history, Defender, firewall, and RDP posture..."
+        $PendingReboot = $false
+        foreach ($rebootKey in @(
+            "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending",
+            "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\RebootRequired",
+            "HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\PendingFileRenameOperations"
+        )) { try { if (Test-Path $rebootKey) { $PendingReboot = $true } } catch {} }
+
+        $PendingUpdates = @()
+        try {
+            $UpdateSession = New-Object -ComObject Microsoft.Update.Session
+            $UpdateSearcher = $UpdateSession.CreateUpdateSearcher()
+            $SearchResult = $UpdateSearcher.Search("IsInstalled=0 and Type='Software' and IsHidden=0")
+            for ($i = 0; $i -lt $SearchResult.Updates.Count; $i++) { $PendingUpdates += $SearchResult.Updates.Item($i).Title }
+        } catch { $PendingUpdates += "Unable to query Windows Update COM API: $($_.Exception.Message)" }
+
+        $LastPatchDate = "Unknown"
+        $RecentUpdateRows = ""
+        try {
+            $uSess = New-Object -ComObject Microsoft.Update.Session
+            $uSearch = $uSess.CreateUpdateSearcher()
+            $uCount = $uSearch.GetTotalHistoryCount()
+            if ($uCount -gt 0) {
+                $uHist = $uSearch.QueryHistory(0, [math]::Min($uCount, 50))
+                $uInstalled = @(for ($ui = 0; $ui -lt $uHist.Count; $ui++) { if ($uHist.Item($ui).ResultCode -eq 2) { $uHist.Item($ui) } }) | Sort-Object Date -Descending
+                if ($uInstalled.Count -gt 0) {
+                    $LastPatchDate = $uInstalled[0].Date.ToString('yyyy-MM-dd')
+                    foreach ($uh in ($uInstalled | Select-Object -First 12)) {
+                        $uhTitle = $uh.Title
+                        if ($uhTitle.Length -gt 100) { $uhTitle = $uhTitle.Substring(0, 97) + '...' }
+                        $RecentUpdateRows += "<tr><td>$(Escape-Html $uhTitle)</td><td>$(Escape-Html $uh.Date.ToString('yyyy-MM-dd'))</td></tr>"
                     }
                 }
-            } else {
-                $PatchSummary = 'No results'
-                $PatchListHtml = 'Windows Update API returned no results'
             }
-        } catch {
-            $PatchSummary = 'Check failed'
-            $PatchListHtml = "Error: $($_.Exception.Message)"
-            Log "Patch check error: $_"
+        } catch {}
+        if ($LastPatchDate -eq "Unknown") {
+            try {
+                $hfLast = Get-HotFix -ErrorAction SilentlyContinue | Sort-Object InstalledOn -Descending | Select-Object -First 1
+                if ($hfLast -and $hfLast.InstalledOn) { $LastPatchDate = $hfLast.InstalledOn.ToString('yyyy-MM-dd') }
+                if ([string]::IsNullOrWhiteSpace($RecentUpdateRows)) {
+                    foreach ($hf in (Get-HotFix -ErrorAction SilentlyContinue | Sort-Object InstalledOn -Descending | Select-Object -First 12)) {
+                        $RecentUpdateRows += "<tr><td>$(Escape-Html "$($hf.HotFixID) -- $($hf.Description)")</td><td>$(Escape-Html $hf.InstalledOn)</td></tr>"
+                    }
+                }
+            } catch {}
         }
-    } catch {
-        $PatchSummary = 'WU API unavailable'
-        $PatchListHtml = 'Windows Update COM object unavailable'
-        Log "Cannot create Windows Update Session: $_"
-    }
 
-    $BackupEncryptionMap = @{
-        'Veeam' = 'AES-256 (Veeam default)'
-        'Acronis' = 'AES-256 (Acronis encrypted vault)'
-        'Datto' = 'AES-256 (Datto cloud)'
-        'Carbonite' = 'AES-128 (Carbonite standard)'
-        'ShadowProtect' = 'AES-256 (StorageCraft default)'
-        'CrashPlan' = 'AES-256 (CrashPlan vault)'
-        'Backup Exec' = 'AES-128 (Symantec Backup Exec)'
-    }
-    $lookupString = ($BackupSoftwareListAll -join '; ')
-    $EncryptionDetails = @()
-    foreach ($pattern in $BackupEncryptionMap.Keys) {
-        if ($lookupString -match $pattern) { $EncryptionDetails += $BackupEncryptionMap[$pattern] }
-    }
-    $BackupEncryptionType = if ($EncryptionDetails) { $EncryptionDetails -join '; ' } else { 'Unknown (verify backup vendor settings)' }
-
-    $BackupsEncrypted = 'Unknown'
-    if ($EncryptionDetails) {
-        $BackupsEncrypted = 'Yes (per vendor defaults)'
-    }
-
-    $BackupTransferEncrypted = 'Assumed TLS/SSL (vendor default)'
-
-    $OffsiteCopy = 'Unknown'
-    if ($OffsiteCopy -eq 'Unknown' -and $DetectedBackup -match 'Datto|Carbonite|Backblaze') {
-        $OffsiteCopy = 'Yes (cloud-enabled vendor)'
-    }
-
-    $BackupFrequency = 'Unknown (check backup console)'
-    $BackupRetention = 'Unknown'
-
-    $BackupSuccess = "Unknown"
-    $BackupLastSuccess = "Unknown"
-    $BackupFailuresThisMonth = "Unknown"
-
-    # Open Ports
-    $OpenPorts = "Unknown"
-    if (Get-Command Get-NetTCPConnection -ErrorAction SilentlyContinue) {
+        $AVText = "Not detected"
         try {
-            $OpenPorts = (Get-NetTCPConnection -State Listen -EA SilentlyContinue | Select-Object -ExpandProperty LocalPort -Unique | Sort-Object {[int]$_}) -join ", "
-        } catch {
-            $OpenPorts = "Unable to enumerate"
+            $AV = Get-SafeCim -Namespace "root\SecurityCenter2" -ClassName "AntivirusProduct"
+            if ($AV) { $AVText = (($AV | ForEach-Object { $_.displayName }) -join "; ") }
+        } catch {}
+        $DefenderText = "Not available"
+        if (Get-Command Get-MpComputerStatus -ErrorAction SilentlyContinue) {
+            try {
+                $Defender = Get-MpComputerStatus -ErrorAction Stop
+                $sigAge = "Unknown"
+                if ($Defender.AntivirusSignatureLastUpdated) {
+                    $ageDays = [math]::Round(((Get-Date) - $Defender.AntivirusSignatureLastUpdated).TotalDays, 1)
+                    $sigAge = "$ageDays days ago ($($Defender.AntivirusSignatureLastUpdated.ToString('yyyy-MM-dd')))"
+                }
+                $DefenderText = "Realtime: $($Defender.RealTimeProtectionEnabled); Signatures: $sigAge; Last scan: $($Defender.QuickScanEndTime)"
+                if ($AVText -eq "Not detected") { $AVText = "Microsoft Defender" }
+            } catch { $DefenderText = "Unable to query Defender: $($_.Exception.Message)" }
         }
-    } else {
-        # Fallback for older systems
+
+        $FirewallText = "Unknown"
         try {
-            $netstat = netstat -an | Select-String "LISTENING" | ForEach-Object {
-                if ($_ -match ':([0-9]+)\s') { $matches[1] }
-            } | Select-Object -Unique | Sort-Object {[int]$_}
-            $OpenPorts = $netstat -join ", "
-        } catch {
-            $OpenPorts = "Unable to enumerate"
+            if (Get-Command Get-NetFirewallProfile -ErrorAction SilentlyContinue) {
+                $profiles = Get-NetFirewallProfile -ErrorAction SilentlyContinue
+                $FirewallText = (($profiles | ForEach-Object { "$($_.Name): $($_.Enabled)" }) -join "; ")
+            } else {
+                $FirewallText = ((netsh advfirewall show allprofiles state) -join " ")
+            }
+        } catch {}
+        $RDPEnabled = $false
+        $RDPText = "Unknown"
+        $NlaText = "Unknown"
+        try {
+            $rdpReg = Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server" -ErrorAction Stop
+            if ($rdpReg.fDenyTSConnections -eq 0) { $RDPEnabled = $true; $RDPText = "Enabled" } else { $RDPText = "Disabled" }
+            $nla = Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" -ErrorAction SilentlyContinue
+            if ($nla.UserAuthentication -eq 1) { $NlaText = "Enabled" } else { $NlaText = "Disabled or unknown" }
+        } catch {}
+        $RDPFailures = 0
+        try {
+            $failEvents = Get-WinEvent -FilterHashtable @{LogName='Security'; Id=4625; StartTime=(Get-Date).AddDays(-30)} -MaxEvents 500 -ErrorAction SilentlyContinue
+            if ($failEvents) {
+                $RDPFailures = @($failEvents | Where-Object { try { $_.Properties[8].Value -eq 10 } catch { $false } }).Count
+            }
+        } catch {}
+
+        Log-Worker "Max Audit: collecting storage, BitLocker, shares, printers, users, and scheduled tasks..."
+        $BitLockerRows = ""
+        $BitLockerSummary = "Not available"
+        try {
+            if (Get-Command Get-BitLockerVolume -ErrorAction SilentlyContinue) {
+                $blVolumes = Get-BitLockerVolume -ErrorAction SilentlyContinue
+                foreach ($bl in $blVolumes) {
+                    $state = if ($bl.ProtectionStatus -eq "On") { "Good" } else { "Bad" }
+                    $BitLockerRows += "<tr><td>$(Escape-Html $bl.MountPoint)</td><td>$(New-Badge $bl.ProtectionStatus $state)</td><td>$(Escape-Html $bl.VolumeStatus)</td><td>$(Escape-Html $bl.EncryptionPercentage)%</td></tr>"
+                }
+                if ($blVolumes) { $BitLockerSummary = (($blVolumes | ForEach-Object { "$($_.MountPoint) $($_.ProtectionStatus)" }) -join "; ") }
+            } else {
+                $wmiVolumes = Get-SafeCim -Namespace "root\CIMV2\Security\MicrosoftVolumeEncryption" -ClassName "Win32_EncryptableVolume"
+                foreach ($vol in $wmiVolumes) {
+                    $prot = "Off"
+                    if ($vol.ProtectionStatus -eq 1) { $prot = "On" }
+                    $state = if ($prot -eq "On") { "Good" } else { "Bad" }
+                    $BitLockerRows += "<tr><td>$(Escape-Html $vol.DriveLetter)</td><td>$(New-Badge $prot $state)</td><td>WMI fallback</td><td>N/A</td></tr>"
+                }
+                if ($wmiVolumes) { $BitLockerSummary = "WMI fallback used" }
+            }
+        } catch { $BitLockerSummary = "Unable to query BitLocker: $($_.Exception.Message)" }
+        if ([string]::IsNullOrWhiteSpace($BitLockerRows)) { $BitLockerRows = "<tr><td colspan='4'>BitLocker details unavailable. On older Server builds this may require optional components or admin rights.</td></tr>" }
+
+        $DriveRows = ""
+        $StorageWarning = "None"
+        $logicalDisks = Get-SafeCim -ClassName Win32_LogicalDisk -Filter "DriveType=3"
+        foreach ($d in $logicalDisks) {
+            $sizeGb = 0; $freeGb = 0; $freePct = 0
+            if ($d.Size -gt 0) {
+                $sizeGb = [math]::Round($d.Size / 1GB, 1)
+                $freeGb = [math]::Round($d.FreeSpace / 1GB, 1)
+                $freePct = [math]::Round(($d.FreeSpace / $d.Size) * 100, 1)
+            }
+            $state = "Good"
+            if ($freePct -lt 15) { $state = "Bad"; $StorageWarning = "Low disk space detected" }
+            elseif ($freePct -lt 25) { $state = "Warn" }
+            $DriveRows += "<tr><td>$(Escape-Html $d.DeviceID)</td><td>$sizeGb GB</td><td>$freeGb GB</td><td>$(New-Badge "$freePct% free" $state)</td><td>$(Escape-Html $d.VolumeName)</td></tr>"
         }
-    }
+        $PhysicalDiskRows = ""
+        try {
+            if (Get-Command Get-PhysicalDisk -ErrorAction SilentlyContinue) {
+                foreach ($pd in (Get-PhysicalDisk -ErrorAction SilentlyContinue)) { $PhysicalDiskRows += "<tr><td>$(Escape-Html $pd.FriendlyName)</td><td>$(Escape-Html $pd.MediaType)</td><td>$(Escape-Html $pd.HealthStatus)</td><td>$(Escape-Html $pd.OperationalStatus)</td></tr>" }
+            }
+        } catch {}
 
-    # Security log metadata
-    $SecurityLogInfo = $null
-    try { $SecurityLogInfo = Get-WinEvent -ListLog Security -EA SilentlyContinue } catch {}
-    $SecurityLogsEnabled = if ($SecurityLogInfo -and $SecurityLogInfo.IsEnabled) { "Yes" } else { "No" }
-    $SecurityLogSizeMB = if ($SecurityLogInfo -and $SecurityLogInfo.MaximumSizeInBytes) { [math]::Round($SecurityLogInfo.MaximumSizeInBytes / 1MB, 0) } else { "Unknown" }
+        $ShareRows = ""
+        try {
+            if (Get-Command Get-SmbShare -ErrorAction SilentlyContinue) {
+                foreach ($s in (Get-SmbShare -ErrorAction SilentlyContinue | Where-Object { $_.Name -notmatch '\$$' })) { $ShareRows += "<tr><td>$(Escape-Html $s.Name)</td><td>$(Escape-Html $s.Path)</td><td>$(Escape-Html $s.Description)</td></tr>" }
+            } else {
+                foreach ($s in (Get-SafeCim Win32_Share | Where-Object { $_.Name -notmatch '\$$' })) { $ShareRows += "<tr><td>$(Escape-Html $s.Name)</td><td>$(Escape-Html $s.Path)</td><td>$(Escape-Html $s.Description)</td></tr>" }
+            }
+        } catch {}
+        $PrinterRows = ""
+        try {
+            if (Get-Command Get-Printer -ErrorAction SilentlyContinue) {
+                foreach ($p in (Get-Printer -ErrorAction SilentlyContinue | Where-Object { $_.Shared })) { $PrinterRows += "<tr><td>$(Escape-Html $p.Name)</td><td>$(Escape-Html $p.ShareName)</td><td>$(Escape-Html $p.DriverName)</td></tr>" }
+            } else {
+                foreach ($p in (Get-SafeCim Win32_Printer | Where-Object { $_.Shared })) { $PrinterRows += "<tr><td>$(Escape-Html $p.Name)</td><td>$(Escape-Html $p.ShareName)</td><td>$(Escape-Html $p.DriverName)</td></tr>" }
+            }
+        } catch {}
 
-    # Application & database logs
-    $AppErrors = @()
-    try { $AppErrors = Get-WinEvent -FilterHashtable @{LogName='Application'; Level=1,2; StartTime=(Get-Date).AddDays(-30)} -MaxEvents 5 -EA SilentlyContinue } catch {}
-    $AppErrorSummary = Format-EventSummary $AppErrors
-    $DatabaseEvents = @()
-    try {
-        $DatabaseEvents = Get-WinEvent -FilterHashtable @{LogName='Application'; Level=2,3; StartTime=(Get-Date).AddDays(-30)} -MaxEvents 5 -EA SilentlyContinue | Where-Object { $_.ProviderName -match 'MSSQL|SQL' }
-    } catch {}
-    $DatabaseErrorSummary = Format-EventSummary $DatabaseEvents
-    $PerformanceEvents = @()
-    try { $PerformanceEvents = Get-WinEvent -FilterHashtable @{LogName='System'; Level=1,2; StartTime=(Get-Date).AddDays(-30)} -MaxEvents 5 -EA SilentlyContinue } catch {}
-    $PerformanceSummary = Format-EventSummary $PerformanceEvents
+        $IsDC = $false
+        try { if ($CS.DomainRole -ge 4) { $IsDC = $true } } catch {}
+        $UserRows = ""
+        $AdminsList = @()
+        try {
+            if ($IsDC) {
+                $UserRows = "<tr><td colspan='4'>Domain Controller -- local user enumeration skipped. Use Active Directory tools.</td></tr>"
+                $AdminsList = @("(Domain Controller -- see Active Directory)")
+            } elseif (Get-Command Get-LocalUser -ErrorAction SilentlyContinue) {
+                foreach ($u in (Get-LocalUser -ErrorAction SilentlyContinue)) {
+                    $status = if ($u.Enabled) { "Enabled" } else { "Disabled" }
+                    $UserRows += "<tr><td>$(Escape-Html $u.Name)</td><td>$status</td><td>$(Escape-Html $u.PasswordLastSet)</td><td>$(Escape-Html $u.LastLogon)</td></tr>"
+                }
+                $AdminsList = Get-LocalGroupMember -SID 'S-1-5-32-544' -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name
+            } else {
+                foreach ($u in (Get-SafeCim Win32_UserAccount -Filter "LocalAccount = True")) {
+                    $status = if ($u.Disabled) { "Disabled" } else { "Enabled" }
+                    $UserRows += "<tr><td>$(Escape-Html $u.Name)</td><td>$status</td><td>WMI fallback</td><td>WMI fallback</td></tr>"
+                }
+                try { $AdminsList = ([ADSI]"WinNT://$ComputerName/Administrators,group").psbase.Invoke("Members") | ForEach-Object { $_.GetType().InvokeMember("Name", 'GetProperty', $null, $_, $null) } } catch {}
+            }
+        } catch {}
 
-    # Repeating critical/log entries (warnings/errors/critical) in last 30 days
-    Log "Analyzing event logs..."
-    [System.Windows.Forms.Application]::DoEvents()
-    $EventFilters = @{ LogName = 'System','Application','Security'; Level = 1,2,3; StartTime = (Get-Date).AddDays(-30) }
-    $RecentEventEntries = @()
-    try { $RecentEventEntries = Get-WinEvent -FilterHashtable $EventFilters -MaxEvents 100 -EA SilentlyContinue } catch {}
-    $RepeatedEvents = @()
-    if ($RecentEventEntries) {
-        $RepeatedEvents = $RecentEventEntries | Group-Object { "$($_.ProviderName)|$($_.Id)|$($_.Level)" } | Where-Object { $_.Count -gt 1 }
-    }
-    if ($RepeatedEvents) {
-        $eventRows = $RepeatedEvents | ForEach-Object {
-            $sample = $_.Group | Sort-Object TimeCreated -Descending | Select-Object -First 1
-            $levelName = switch ($sample.Level) { 1 { 'Critical' } 2 { 'Error' } 3 { 'Warning' } default { "Level $($sample.Level)" } }
-            $message = if ($sample.Message) { $sample.Message.Substring(0,[Math]::Min(150,$sample.Message.Length)) } else { 'No message' }
-            $message = (Escape-ForHtmlAttr $message)
-            "<tr><td>$(Escape-ForHtmlAttr $($sample.ProviderName))</td><td>$($sample.Id)</td><td>$levelName</td><td>$($_.Count)x</td><td>$($sample.TimeCreated.ToString('yyyy-MM-dd'))</td><td>$message</td></tr>"
-        }
-        $EventsHTML = "<table style='width:100%; font-size:0.85em;'><tr><th>Source</th><th>ID</th><th>Level</th><th>Count</th><th>Last Seen</th><th>Message</th></tr>" + ($eventRows -join '') + "</table>"
-    } else {
-        $EventsHTML = "No repeating warnings/errors/critical events detected in the last 30 days"
-    }
-    
-    # Disk Encryption reason text
-    $diskEncryptionReason = if ($IsVM) { "Virtual Machine" } else { "Verify host encryption" }
-    
-    # --- Generate HTML ---
-    Log "Generating HTML report..."
-    [System.Windows.Forms.Application]::DoEvents()
-    $html = @"
+        $TaskRows = ""
+        try {
+            if (Get-Command Get-ScheduledTask -ErrorAction SilentlyContinue) {
+                $tasks = Get-ScheduledTask -ErrorAction SilentlyContinue | Where-Object { $_.TaskPath -notlike "\Microsoft\*" } | Select-Object -First 30
+                foreach ($t in $tasks) { $TaskRows += "<tr><td>$(Escape-Html $t.TaskName)</td><td>$(Escape-Html $t.TaskPath)</td><td>$(Escape-Html $t.State)</td></tr>" }
+            } else {
+                $csv = schtasks /query /fo csv /v 2>$null | ConvertFrom-Csv
+                foreach ($t in ($csv | Where-Object { $_.TaskName -notlike "\Microsoft\*" } | Select-Object -First 30)) { $TaskRows += "<tr><td>$(Escape-Html $t.TaskName)</td><td>Legacy schtasks</td><td>$(Escape-Html $t.Status)</td></tr>" }
+            }
+        } catch {}
+
+        Log-Worker "Max Audit: collecting network configuration and event-log indicators..."
+        $NetworkRows = ""
+        try {
+            if (Get-Command Get-NetIPConfiguration -ErrorAction SilentlyContinue) {
+                foreach ($nic in (Get-NetIPConfiguration -ErrorAction SilentlyContinue | Where-Object { $_.IPv4Address })) {
+                    $ips = ($nic.IPv4Address | ForEach-Object { $_.IPAddress }) -join ", "
+                    $dns = ($nic.DNSServer.ServerAddresses | Where-Object { $_ }) -join ", "
+                    $gw = ($nic.IPv4DefaultGateway.NextHop | Where-Object { $_ }) -join ", "
+                    $NetworkRows += "<tr><td>$(Escape-Html $nic.InterfaceAlias)</td><td>$(Escape-Html $ips)</td><td>$(Escape-Html $gw)</td><td>$(Escape-Html $dns)</td></tr>"
+                }
+            } else {
+                foreach ($nic in (Get-SafeCim Win32_NetworkAdapterConfiguration -Filter "IPEnabled = True")) {
+                    $NetworkRows += "<tr><td>$(Escape-Html $nic.Description)</td><td>$(Escape-Html ($nic.IPAddress -join ', '))</td><td>$(Escape-Html ($nic.DefaultIPGateway -join ', '))</td><td>$(Escape-Html ($nic.DNSServerSearchOrder -join ', '))</td></tr>"
+                }
+            }
+        } catch {}
+        $OpenPortsRows = ""
+        try {
+            if (Get-Command Get-NetTCPConnection -ErrorAction SilentlyContinue) {
+                foreach ($port in (Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | Group-Object LocalPort | Sort-Object { [int]$_.Name } | Select-Object -First 40)) { $OpenPortsRows += "<tr><td>TCP/$($port.Name)</td><td>$($port.Count) listener(s)</td></tr>" }
+            } else {
+                $netstat = netstat -ano -p tcp | Select-String "LISTENING"
+                foreach ($line in ($netstat | Select-Object -First 40)) { $OpenPortsRows += "<tr><td colspan='2'>$(Escape-Html $line.Line)</td></tr>" }
+            }
+        } catch {}
+        $EventRows = ""
+        try {
+            $events = Get-WinEvent -FilterHashtable @{LogName='System','Application'; Level=1,2,3; StartTime=(Get-Date).AddDays(-30)} -MaxEvents 300 -ErrorAction SilentlyContinue
+            $groups = $events | Group-Object { "$($_.ProviderName)|$($_.Id)|$($_.LevelDisplayName)" } | Sort-Object Count -Descending | Select-Object -First 20
+            foreach ($g in $groups) {
+                $sample = $g.Group[0]
+                $msg = ""
+                if ($sample.Message) { $msg = $sample.Message.Substring(0, [math]::Min($sample.Message.Length, 180)) }
+                $EventRows += "<tr><td>$(Escape-Html $sample.LevelDisplayName)</td><td>$(Escape-Html $sample.ProviderName)</td><td>$(Escape-Html $sample.Id)</td><td>$($g.Count)x</td><td>$(Escape-Html $msg)</td></tr>"
+            }
+        } catch {}
+
+        $PendingUpdatesHtml = ""
+        if ($PendingUpdates.Count -gt 0) {
+            foreach ($u in ($PendingUpdates | Select-Object -First 20)) { $PendingUpdatesHtml += "<li>$(Escape-Html $u)</li>" }
+        } else { $PendingUpdatesHtml = "<li>No pending software updates detected by Windows Update search.</li>" }
+
+        $ReportPath = Join-Path $TempPath "WinFix_MaxAudit_$($ComputerName)_$(Get-Date -Format 'yyyyMMdd_HHmm').html"
+        Log-Worker "Max Audit: building professional HIPAA report..."
+        $HTML = @"
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Security Audit: $env:COMPUTERNAME</title>
-    <style>
-        :root { --accent: #0056b3; --good: #27ae60; --warn: #f39c12; --alert: #e74c3c; }
-        body { font-family: 'Segoe UI', sans-serif; background: #f4f7f6; color: #2c3e50; padding: 20px; font-size: 12px; line-height: 1.3; }
-        h1 { color: var(--accent); border-bottom: 3px solid var(--accent); padding-bottom: 10px; }
-        h2 { background: #e8f4f8; color: var(--accent); padding: 10px; border-top: 3px solid var(--accent); margin-top: 30px; }
-        h3 { color: var(--accent); border-left: 4px solid var(--accent); padding-left: 10px; }
-        table { border-collapse: collapse; width: 100%; background: white; box-shadow: 0 2px 5px rgba(0,0,0,0.1); margin-bottom: 15px; font-size: 0.85rem; }
-        th, td { padding: 10px; border-bottom: 1px solid #ecf0f1; text-align: left; font-size: 0.85rem; }
-        th { background: #ecf0f1; width: 40%; font-weight: bold; }
-        .alert { color: var(--alert); font-weight: bold; }
-        .good { color: var(--good); font-weight: bold; }
-        .warn { color: var(--warn); font-weight: bold; }
-        .input { border: 1px solid #bdc3c7; padding: 5px; border-radius: 4px; width: 90%; }
-        select { border: 1px solid #bdc3c7; padding: 5px; border-radius: 4px; }
-        .copy-btn { background: var(--accent); color: white; border: none; padding: 10px 20px; border-radius: 5px; cursor: pointer; position: fixed; bottom: 30px; right: 30px; }
-    </style>
-    <script>
-        function copyReport() {
-            var clone = document.body.cloneNode(true);
-            clone.querySelectorAll('.copy-btn').forEach(b => b.remove());
-            clone.querySelectorAll('input, select, textarea').forEach(el => {
-                var val = el.tagName === 'SELECT' ? el.options[el.selectedIndex]?.text : el.value;
-                var span = document.createElement('span');
-                span.textContent = val || 'N/A';
-                span.style.fontWeight = 'bold';
-                el.parentNode.replaceChild(span, el);
-            });
-            
-            // Create a temporary container with inline styles
-            var temp = document.createElement('div');
-            temp.style.position = 'absolute';
-            temp.style.left = '-9999px';
-            
-            // Clone and inline all styles
-            var styleContent = document.querySelector('style').innerHTML;
-            var styledContent = '<div style="font-family: Arial, sans-serif; line-height: 1.6; color: #2c3e50;">' +
-                clone.innerHTML + '</div>';
-            
-            temp.innerHTML = styledContent;
-            document.body.appendChild(temp);
-            
-            // Add inline styles to all elements based on CSS classes
-            temp.querySelectorAll('h1').forEach(el => el.style.cssText = 'color: #2c3e50; border-bottom: 3px solid #3498db; padding-bottom: 10px;');
-            temp.querySelectorAll('h2').forEach(el => el.style.cssText = 'color: #2980b9; margin-top: 30px; border-bottom: 2px solid #bdc3c7; padding-bottom: 5px;');
-            temp.querySelectorAll('h3').forEach(el => el.style.cssText = 'color: #34495e; margin-top: 20px;');
-            temp.querySelectorAll('table').forEach(el => el.style.cssText = 'width: 100%; border-collapse: collapse; margin-bottom: 20px; background: white;');
-            temp.querySelectorAll('th').forEach(el => el.style.cssText = 'background: #3498db; color: white; padding: 12px; text-align: left; font-weight: bold;');
-            temp.querySelectorAll('td').forEach(el => el.style.cssText = 'padding: 10px; border: 1px solid #ecf0f1;');
-            temp.querySelectorAll('.good').forEach(el => el.style.cssText = 'color: #27ae60; font-weight: bold;');
-            temp.querySelectorAll('.alert').forEach(el => el.style.cssText = 'color: #c0392b; font-weight: bold;');
-            temp.querySelectorAll('.warn').forEach(el => el.style.cssText = 'color: #e67e22; font-weight: bold;');
-            temp.querySelectorAll('span[style*="font-weight"]').forEach(el => el.style.fontWeight = 'bold');
-            
-            // Select and copy
-            var range = document.createRange();
-            range.selectNodeContents(temp);
-            var selection = window.getSelection();
-            selection.removeAllRanges();
-            selection.addRange(range);
-            
-            try {
-                document.execCommand('copy');
-                alert('Report copied with formatting! Paste into Freshdesk ticket.');
-            } catch (err) {
-                alert('Copy failed. Please select all (Ctrl+A) and copy manually.');
-            }
-            
-            selection.removeAllRanges();
-            document.body.removeChild(temp);
+<meta charset="UTF-8">
+<title>WinFix Max Audit - $(Escape-Html $ComputerName)</title>
+<style>
+    :root { --ink:#202733; --muted:#667085; --line:#d9e2ec; --panel:#ffffff; --soft:#f6f8fb; --brand:#145c9e; --brand2:#0f766e; --good:#157347; --bad:#b42318; --warn:#b45309; --info:#475467; }
+    body { margin:0; padding:24px; background:#edf2f7; color:var(--ink); font-family:"Segoe UI", Arial, sans-serif; font-size:13px; line-height:1.45; }
+    .copy-bar { position:sticky; top:0; z-index:999; width:100%; border:0; background:var(--brand); color:white; padding:12px 16px; font-weight:700; cursor:pointer; border-radius:6px; margin-bottom:14px; font-family:inherit; font-size:14px; }
+    .copy-bar:hover { background:#0f4a8a; }
+    .wrap { max-width:1040px; margin:0 auto; background:var(--panel); border:1px solid var(--line); border-radius:8px; overflow:hidden; box-shadow:0 10px 24px rgba(32,39,51,.08); }
+    .hero { background:#12344d; color:#fff; padding:28px 32px; }
+    .hero h1 { margin:0 0 8px 0; font-size:24px; letter-spacing:0; }
+    .hero .meta { display:grid; grid-template-columns:repeat(4,1fr); gap:10px; margin-top:16px; }
+    .metric { background:rgba(255,255,255,.12); border:1px solid rgba(255,255,255,.18); border-radius:6px; padding:10px; }
+    .metric b { display:block; font-size:11px; color:#d7e9ff; text-transform:uppercase; margin-bottom:3px; }
+    .summary { display:grid; grid-template-columns:repeat(4,1fr); gap:12px; padding:16px 22px; background:#f8fafc; border-bottom:1px solid var(--line); }
+    .summary-card { border-left:4px solid var(--brand2); background:white; padding:10px 12px; border-radius:6px; border-top:1px solid var(--line); border-right:1px solid var(--line); border-bottom:1px solid var(--line); }
+    .summary-card b { display:block; color:var(--muted); font-size:11px; text-transform:uppercase; }
+    .section { padding:20px 24px 4px 24px; }
+    .section-head { margin:0 -24px 12px -24px; padding:11px 24px; background:#eaf3fb; border-top:1px solid var(--line); border-bottom:1px solid var(--line); color:var(--brand); font-weight:800; font-size:14px; }
+    .subhead { margin:18px 0 8px; color:#344054; font-weight:800; }
+    table { width:100%; border-collapse:collapse; margin:0 0 12px 0; background:white; }
+    th, td { border:1px solid var(--line); padding:9px 10px; text-align:left; vertical-align:top; }
+    th { background:#f8fafc; color:#344054; width:34%; }
+    .data th { width:auto; }
+    .badge { display:inline-block; border-radius:999px; padding:3px 9px; font-weight:800; font-size:12px; }
+    .badge-good { color:var(--good); background:#dcfce7; }
+    .badge-bad  { color:var(--bad);  background:#fee4e2; }
+    .badge-warn { color:var(--warn); background:#fef3c7; }
+    .badge-info { color:var(--info); background:#eef2f6; }
+    .evidence { color:var(--muted); font-size:12px; margin-top:5px; }
+    .field { box-sizing:border-box; width:100%; border:1px solid #cbd5e1; border-radius:5px; padding:7px 8px; font:inherit; background:#fff; color:#111827; }
+    .select { max-width:260px; }
+    .area { min-height:58px; resize:vertical; }
+    .empty { color:var(--muted); background:#f8fafc; border:1px dashed var(--line); padding:10px; border-radius:6px; }
+    ul.compact { margin:0; padding-left:18px; }
+    @media (max-width:760px) { body{padding:8px;} .hero .meta,.summary{grid-template-columns:1fr;} th,td{display:block;width:auto;} }
+</style>
+<script>
+function copyForFreshdesk() {
+    var report = document.getElementById('report-main');
+    var clone = report.cloneNode(true);
+    var origMap = {};
+    report.querySelectorAll('[data-key]').forEach(function(el) { origMap[el.getAttribute('data-key')] = el; });
+    clone.querySelectorAll('[data-key]').forEach(function(clonedEl) {
+        var key = clonedEl.getAttribute('data-key');
+        var orig = origMap[key];
+        var val = 'N/A';
+        if (orig) {
+            if (orig.tagName === 'SELECT') { val = orig.selectedIndex >= 0 ? orig.options[orig.selectedIndex].text : 'N/A'; }
+            else { val = orig.value || 'N/A'; }
         }
-    </script>
+        var span = document.createElement('span');
+        span.textContent = val;
+        span.style.fontWeight = '600';
+        if (['No','Failed','Non-Compliant'].indexOf(val) !== -1) { span.style.color = '#b42318'; }
+        else if (['Yes','Compliant','Encrypted'].indexOf(val) !== -1) { span.style.color = '#157347'; }
+        clonedEl.parentNode.replaceChild(span, clonedEl);
+    });
+    var html = clone.outerHTML;
+    var plain = clone.textContent;
+    if (navigator.clipboard && window.ClipboardItem) {
+        navigator.clipboard.write([new ClipboardItem({
+            'text/html': new Blob([html], {type:'text/html'}),
+            'text/plain': new Blob([plain], {type:'text/plain'})
+        })]).then(function() {
+            alert('Report copied! Paste into your Freshdesk / Ninja ticket note.');
+        }).catch(function() { _fallbackCopy(clone); });
+        return;
+    }
+    _fallbackCopy(clone);
+}
+function _fallbackCopy(clone) {
+    var holder = document.createElement('div');
+    holder.style.cssText = 'position:fixed;left:-9999px;top:0;';
+    holder.appendChild(clone);
+    document.body.appendChild(holder);
+    var range = document.createRange();
+    range.selectNode(clone);
+    var sel = window.getSelection();
+    sel.removeAllRanges(); sel.addRange(range);
+    try { document.execCommand('copy'); alert('Report copied! Paste into your Freshdesk / Ninja ticket note.'); }
+    catch(e) { alert('Copy failed -- select the report manually and copy.'); }
+    sel.removeAllRanges();
+    document.body.removeChild(holder);
+}
+</script>
 </head>
 <body>
-<h1>INTERNAL SERVER SECURITY & BACKUP AUDIT FORM</h1>
+<button class="copy-bar" onclick="copyForFreshdesk()">Copy Formatted Report for Freshdesk / Ninja Ticket Note</button>
+<div id="report-main" class="wrap">
+    <div class="hero">
+        <h1>Max Audit: $(Escape-Html $ComputerName)</h1>
+        <div>HIPAA-oriented MSP monthly audit report generated $(Escape-Html ((Get-Date).ToString("F")))</div>
+        <div class="meta">
+            <div class="metric"><b>Client</b>$(New-Input "" "Client name")</div>
+            <div class="metric"><b>Auditor</b>$(Escape-Html $UserName)</div>
+            <div class="metric"><b>Computer</b>$(Escape-Html $ComputerName)</div>
+            <div class="metric"><b>Uptime</b>$(Escape-Html $UptimeText)</div>
+        </div>
+    </div>
+    <div class="summary">
+        <div class="summary-card"><b>OS Support</b>$(New-Badge $OSSupport.Text $OSSupport.State)</div>
+        <div class="summary-card"><b>Backup</b>$(if($DetectedBackupTools.Count -gt 0){New-Badge "Detected" "Good"}else{New-Badge "Not detected" "Bad"})</div>
+        <div class="summary-card"><b>RDP</b>$(if($RDPEnabled){New-Badge "Enabled" "Warn"}else{New-Badge "Disabled" "Good"})</div>
+        <div class="summary-card"><b>Pending Updates</b>$(if($PendingUpdates.Count -gt 0){New-Badge "$($PendingUpdates.Count) found" "Warn"}else{New-Badge "None found" "Good"})</div>
+    </div>
 
-<p><strong>Client:</strong> <input class='input' style='width:300px;' placeholder='Client name'></p>
-<p><strong>Audit Month:</strong> $(Get-Date -Format 'MMMM yyyy')</p>
-<p><strong>Completed By:</strong> $env:USERNAME</p>
+    <div class="section">
+        <div class="section-head">System Inventory</div>
+        <table>
+            <tr><th>Windows version</th><td>$(Escape-Html $OS.Caption) build $(Escape-Html $OS.BuildNumber)</td></tr>
+            <tr><th>Support status</th><td>$(New-Badge $OSSupport.Text $OSSupport.State)</td></tr>
+            <tr><th>PowerShell version</th><td>$(Escape-Html $PSVer)</td></tr>
+            <tr><th>Manufacturer / model</th><td>$(Escape-Html $CS.Manufacturer) / $(Escape-Html $CS.Model) $(if($IsVM){New-Badge "Virtual machine" "Info"}else{New-Badge "Physical/unknown" "Info"})</td></tr>
+            <tr><th>Serial / Windows key</th><td>$(Escape-Html $BIOS.SerialNumber) / $(New-Input $WinKey "Windows product key")</td></tr>
+            <tr><th>CPU / RAM</th><td>$(Escape-Html $CPU.Name) / $([math]::Round($CS.TotalPhysicalMemory / 1GB, 1)) GB</td></tr>
+        </table>
+    </div>
 
-<h3>Server Identifying Information</h3>
-<table>
-    <tr><th>Server Name</th><td>$(Escape-ForHtmlAttr $CompInfo.Name)</td></tr>
-    <tr><th>Location (onsite/offsite)</th><td><input class='input' value='Onsite (confirm)'></td></tr>
-    <tr><th>OS Version</th><td>$($OSInfo.Caption) (Build $($OSInfo.BuildNumber)) ($($OSInfo.OSArchitecture)) $EOSWarning</td></tr>
-    <tr><th>Role(s)</th><td><input class='input' value='$(Escape-ForHtmlAttr $DetectedRoles)'></td></tr>
-    <tr><th>Who has administrative access</th><td><ul>$AdminList</ul></td></tr>
-    <tr><th>Last admin password changes</th><td><input class='input' value='$(Escape-ForHtmlAttr $AdminPasswordSummary)'></td></tr>
-    <tr><th>Virtual Machine</th><td>$(if($IsVM){"Yes (Guest - check host RAID/BitLocker)"}else{"No (Physical)"})</td></tr>
-</table>
+    <div class="section">
+        <div class="section-head">Agent Status Indicators</div>
+        <table>$AgentRows</table>
+    </div>
 
-<h2>1. Backup & Data Retention (HIPAA §164.308(a)(7))</h2>
-<h3>A. Backup System Review</h3>
-<table>
-    <tr><th>Backup solution used</th><td><input class='input' value='$(Escape-ForHtmlAttr $DetectedBackup)'></td></tr>
-    <tr><th>Are backups completing successfully?</th><td><input class='input' value='$(Escape-ForHtmlAttr $BackupSuccess)'></td></tr>
-    <tr><th>Last successful backup date & time</th><td><input class='input' value='$(Escape-ForHtmlAttr $BackupLastSuccess)'></td></tr>
-    <tr><th>Backup frequency</th><td><input class='input' value='$(Escape-ForHtmlAttr $BackupFrequency)'></td></tr>
-    <tr><th>Are there any failed backups this month?</th><td><input class='input' value='$(Escape-ForHtmlAttr $BackupFailuresThisMonth)'></td></tr>
-</table>
+    <div class="section">
+        <div class="section-head">Remote Access Scan</div>
+        <table>$RemoteRows</table>
+        <table>
+            <tr><th>Remote Desktop status</th><td>$(if($RDPEnabled){New-Badge "Enabled" "Warn"}else{New-Badge "Disabled" "Good"}) <span class="evidence">NLA: $(Escape-Html $NlaText); RDP logon failures (last 30d): $RDPFailures</span></td></tr>
+            <tr><th>MSP review</th><td>$(New-TextArea "" "Confirm remote access is authorized, MFA-protected, and not exposed directly to the internet.")</td></tr>
+        </table>
+    </div>
 
-<h3>B. Backup Encryption</h3>
-<table>
-    <tr><th>Are backups encrypted at rest?</th><td><input class='input' value='$(Escape-ForHtmlAttr $BackupsEncrypted)'></td></tr>
-    <tr><th>Encryption standard used</th><td><input class='input' value='$(Escape-ForHtmlAttr $BackupEncryptionType)'></td></tr>
-    <tr><th>Are backup transfer channels encrypted?</th><td><input class='input' value='$(Escape-ForHtmlAttr $BackupTransferEncrypted)'></td></tr>
-</table>
+    <div class="section">
+        <div class="section-head">1. Backup &amp; Data Retention (HIPAA &sect;164.308(a)(7))</div>
+        <table>
+            <tr><th>Backup solution used</th><td>$(New-Input $BackupSolution "Backup product")</td></tr>
+            <tr><th>Detected backup signals</th><td><table class="data"><tr><th>Product</th><th>Status</th></tr>$BackupRows</table></td></tr>
+            <tr><th>Are backups completing successfully?</th><td>$(New-Select @("Select...", "Yes", "No", "N/A", "Review vendor console") $BackupSuccess)</td></tr>
+            <tr><th>Last successful backup date &amp; time</th><td>$(New-Input $BackupLast "YYYY-MM-DD HH:MM")</td></tr>
+            <tr><th>Backup frequency</th><td>$(New-Input $BackupFrequency "Hourly / daily / continuous / N/A")</td></tr>
+            <tr><th>Failed backups this month?</th><td>$(New-Select @("Select...", "Yes", "No", "N/A", "Review vendor console") $BackupFailed)</td></tr>
+            <tr><th>Encrypted at rest?</th><td>$(New-Input $BackupEncryption "AES-256 preferred or N/A")</td></tr>
+            <tr><th>Encrypted in transit?</th><td>$(New-Input $BackupTransit "TLS/SSL or N/A")</td></tr>
+            <tr><th>Retention meets HIPAA 6-year documentation need?</th><td>$(New-Input $BackupRetention "Policy / N/A")</td></tr>
+            <tr><th>Restore test evidence</th><td>$(New-TextArea "" "Date, item restored, result, and ticket/reference.")</td></tr>
+        </table>
+    </div>
 
-<h3>C. Backup Retention</h3>
-<table>
-    <tr><th>Retention period</th><td><input class='input' value='$(Escape-ForHtmlAttr $BackupRetention)'></td></tr>
-    <tr><th>Does retention meet HIPAA’s 6-year requirement?</th><td><input class='input' value='Unknown (verify documentation)'></td></tr>
-</table>
+    <div class="section">
+        <div class="section-head">2. Security &amp; User Audit (HIPAA &sect;164.308, &sect;164.312)</div>
+        <table>
+            <tr><th>AV / EDR installed</th><td>$(Escape-Html $AVText)</td></tr>
+            <tr><th>Defender status</th><td>$(Escape-Html $DefenderText)</td></tr>
+            <tr><th>Local administrators</th><td>$(New-TextArea (($AdminsList | Sort-Object -Unique) -join ", ") "Admin users/groups")</td></tr>
+            <tr><th>Password / MFA notes</th><td>$(New-TextArea "" "Confirm password policy, admin MFA, shared admin accounts, disabled users.")</td></tr>
+        </table>
+        <div class="subhead">Local user accounts</div>
+        <table class="data"><tr><th>User</th><th>Status</th><th>Password last set</th><th>Last logon</th></tr>$(Get-TableOrEmpty $UserRows "No local user data collected.")</table>
+    </div>
 
-<h3>D. Restore Testing</h3>
-<table>
-    <tr><th>Was a test restore performed in the last 90 days?</th><td><input class='input' value='Unknown'></td></tr>
-    <tr><th>Date of last verification restore</th><td><input class='input' placeholder='YYYY-MM-DD'></td></tr>
-    <tr><th>Result</th><td><input class='input' value='Unknown'></td></tr>
-</table>
+    <div class="section">
+        <div class="section-head">3. Server Encryption (HIPAA &sect;164.312(a)(2)(iv))</div>
+        <table>
+            <tr><th>BitLocker summary</th><td>$(Escape-Html $BitLockerSummary)</td></tr>
+            <tr><th>Volumes</th><td><table class="data"><tr><th>Volume</th><th>Protection</th><th>Status</th><th>Percent</th></tr>$BitLockerRows</table></td></tr>
+            <tr><th>Encryption exception / reason</th><td>$(New-TextArea "" "If not encrypted, document VM/storage-layer encryption or business exception.")</td></tr>
+        </table>
+    </div>
 
-<h2>2. Server Security & Patch Compliance (HIPAA §164.308(a)(1), §164.312(c))</h2>
-<h3>A. Update Status</h3>
-<table>
-    <tr><th>Are Windows Updates current?</th><td>$(if($PendingReboot){"<span class='warn'>Reboot Pending</span>"}else{"<span class='good'>Yes</span>"})</td></tr>
-    <tr><th>Last update date</th><td>$LastUpdateDate</td></tr>
-    <tr><th>Pending patches?</th><td><input class='input' value='$(Escape-ForHtmlAttr $PatchSummary)'></td></tr>
-</table>
+    <div class="section">
+        <div class="section-head">4. Network Security (HIPAA &sect;164.312(e))</div>
+        <table>
+            <tr><th>Windows Firewall</th><td>$(Escape-Html $FirewallText)</td></tr>
+            <tr><th>Network adapters</th><td><table class="data"><tr><th>Adapter</th><th>IPv4</th><th>Gateway</th><th>DNS</th></tr>$(Get-TableOrEmpty $NetworkRows "No active network adapters detected.")</table></td></tr>
+            <tr><th>Listening TCP ports</th><td><table class="data"><tr><th>Port</th><th>Detail</th></tr>$(Get-TableOrEmpty $OpenPortsRows "Unable to collect listening ports.")</table></td></tr>
+            <tr><th>Network review notes</th><td>$(New-TextArea "" "Firewall exceptions, exposed services, VLAN/VPN notes, unusual ports.")</td></tr>
+        </table>
+    </div>
 
-<h3>B. Antivirus / EDR</h3>
-<table>
-    <tr><th>AV/EDR installed</th><td>$AVName</td></tr>
-    <tr><th>Real-time protection enabled?</th><td>$(if($RTPEnabled -eq 'Yes'){"<span class='good'>Yes</span>"}else{"<span class='alert'>No</span>"})</td></tr>
-    <tr><th>Last scan date</th><td>$LastScan</td></tr>
-    <tr><th>Any detections this month?</th><td><input class='input' placeholder='Attach or summarize if yes'></td></tr>
-</table>
+    <div class="section">
+        <div class="section-head">5. MSP Monthly Operations</div>
+        <table>
+            <tr><th>Pending reboot</th><td>$(if($PendingReboot){New-Badge "Yes - reboot needed" "Warn"}else{New-Badge "No" "Good"})</td></tr>
+            <tr><th>Last installed update</th><td>$(Escape-Html $LastPatchDate)</td></tr>
+            <tr><th>Pending Windows updates</th><td><ul class="compact">$PendingUpdatesHtml</ul></td></tr>
+            <tr><th>Recent installed updates</th><td><table class="data"><tr><th>Update</th><th>Date</th></tr>$(Get-TableOrEmpty $RecentUpdateRows "No update history returned.")</table></td></tr>
+            <tr><th>Drive usage</th><td><table class="data"><tr><th>Drive</th><th>Size</th><th>Free</th><th>Free %</th><th>Label</th></tr>$(Get-TableOrEmpty $DriveRows "No fixed disks detected.")</table></td></tr>
+            <tr><th>Physical disk health</th><td><table class="data"><tr><th>Disk</th><th>Media</th><th>Health</th><th>Operational</th></tr>$(Get-TableOrEmpty $PhysicalDiskRows "Physical disk health unavailable on this OS.")</table></td></tr>
+            <tr><th>Custom scheduled tasks</th><td><table class="data"><tr><th>Name</th><th>Path</th><th>State</th></tr>$(Get-TableOrEmpty $TaskRows "No non-Microsoft scheduled tasks detected.")</table></td></tr>
+        </table>
+    </div>
 
-<h3>C. Local User Accounts</h3>
-<table>
-    <tr><th>List all local server accounts</th><td><input class='input' value='$(Escape-ForHtmlAttr $LocalUsers)'></td></tr>
-    <tr><th>Any accounts without MFA?</th><td><input class='input' value='$(Escape-ForHtmlAttr $MfaStatus)'></td></tr>
-    <tr><th>Any disabled but unremoved accounts?</th><td><input class='input' value='$(Escape-ForHtmlAttr $DisabledAdminList)'></td></tr>
-    <tr><th>Any unexpected accounts?</th><td><input class='input' value='Review local account list'></td></tr>
-</table>
+    <div class="section">
+        <div class="section-head">6. Shares, Printers, and Local Resources</div>
+        <table>
+            <tr><th>Network shares</th><td><table class="data"><tr><th>Name</th><th>Path</th><th>Description</th></tr>$(Get-TableOrEmpty $ShareRows "No custom shares detected.")</table></td></tr>
+            <tr><th>Shared printers</th><td><table class="data"><tr><th>Name</th><th>Share</th><th>Driver</th></tr>$(Get-TableOrEmpty $PrinterRows "No shared printers detected.")</table></td></tr>
+        </table>
+    </div>
 
-<h3>D. Administrator Access</h3>
-<table>
-    <tr><th>Who has administrative credentials</th><td><input class='input' value='$(Escape-ForHtmlAttr $AdminAccessSummary)'></td></tr>
-    <tr><th>Are admin passwords changed regularly?</th><td><input class='input' value='$(Escape-ForHtmlAttr $AdminPasswordSummary)'></td></tr>
-    <tr><th>Is password complexity enforced?</th><td><input class='input' value='$(Escape-ForHtmlAttr $PassComplex)'></td></tr>
-    <tr><th>Password policy details</th><td><input class='input' value='$(Escape-ForHtmlAttr $PasswordPolicySummary)'></td></tr>
-    <tr><th>Are there any shared admin accounts?</th><td><input class='input' value='Unknown (review team accounts)'></td></tr>
-</table>
+    <div class="section">
+        <div class="section-head">7. Monitoring &amp; Event Logs (HIPAA &sect;164.312(b))</div>
+        <table>
+            <tr><th>Potential issues to review</th><td><table class="data"><tr><th>Level</th><th>Source</th><th>ID</th><th>Count</th><th>Sample</th></tr>$(Get-TableOrEmpty $EventRows "No repeated warnings/errors found in the last 30 days.")</table></td></tr>
+            <tr><th>MSP event review notes</th><td>$(New-TextArea "" "Document false positives, remediation taken, and tickets created.")</td></tr>
+        </table>
+    </div>
 
-<h2>3. Server Encryption (HIPAA §164.312(a)(2)(iv))</h2>
-<h3>A. Disk Encryption</h3>
-<table>
-    <tr><th>Is full-disk encryption enabled?</th><td>$(if($BitLockerStatus -eq 'Encrypted'){"<span class='good'>Yes (BitLocker)</span>"}else{"<span class='warn'>$BitLockerStatus</span>"})</td></tr>
-    <tr><th>Encryption status</th><td>$BitLockerStatus</td></tr>
-    <tr><th>TPM present/enabled</th><td>$TpmStatus</td></tr>
-    <tr><th>If not encrypted, reason why</th><td><input class='input' value='$(Escape-ForHtmlAttr $diskEncryptionReason)'></td></tr>
-</table>
-
-<h3>B. Data Encryption</h3>
-<table>
-    <tr><th>Are ChiroTouch data files stored in encrypted form?</th><td><input class='input' value='Unknown'></td></tr>
-    <tr><th>Are database backups encrypted?</th><td><input class='input' value='$(Escape-ForHtmlAttr $BackupsEncrypted)'></td></tr>
-</table>
-
-<h2>4. Server Firewall & Network Security (HIPAA §164.312(e))</h2>
-<h3>A. Local Firewall</h3>
-<table>
-    <tr><th>Windows Firewall enabled?</th><td>$(if($FWProfiles -ne 'DISABLED'){"<span class='good'>Enabled ($FWProfiles)</span>"}else{"<span class='alert'>DISABLED</span>"})</td></tr>
-    <tr><th>Inbound rule review</th><td><textarea class='input' rows='2' placeholder='List allowed inbound ports'></textarea></td></tr>
-    <tr><th>Outbound rule review</th><td><textarea class='input' rows='2' placeholder='Confirm non-essential ports are blocked'></textarea></td></tr>
-    <tr><th>Open Ports</th><td style='font-size:0.85em;'>$(Escape-ForHtmlAttr $OpenPorts)</td></tr>
-</table>
-
-<h3>B. Remote Access</h3>
-<table>
-    <tr><th>Does anyone RDP to the server?</th><td>$(if($RDPStatus -eq 'Enabled'){"<span class='warn'>Yes</span>"}else{"<span class='good'>No</span>"})</td></tr>
-    <tr><th>If yes: Is RDP protected by VPN?</th><td><input class='input' value='Unknown'></td></tr>
-    <tr><th>MFA required?</th><td><input class='input' value='Unknown'></td></tr>
-    <tr><th>External RDP open to internet?</th><td><input class='input' value='No (verify firewall)'></td></tr>
-    <tr><th>Any failed RDP attempts this month?</th><td><input class='input' value='$(Escape-ForHtmlAttr $RdpFailureNotes)'></td></tr>
-</table>
-
-<h2>5. Server Monitoring & Logs (HIPAA §164.312(b))</h2>
-<h3>A. Event Logs</h3>
-<table>
-    <tr><th>Security logs enabled?</th><td><input class='input' value='$(Escape-ForHtmlAttr $SecurityLogsEnabled)'></td></tr>
-    <tr><th>Retention period (in days)</th><td><input class='input' value='Log max size: $SecurityLogSizeMB MB (per policy)'></td></tr>
-    <tr><th>Any critical events found this month?</th><td>$EventsHTML</td></tr>
-</table>
-
-<h3>B. Application Logs</h3>
-<table>
-    <tr><th>Any application errors?</th><td><input class='input' value='$(Escape-ForHtmlAttr $AppErrorSummary)'></td></tr>
-    <tr><th>Any database errors?</th><td><input class='input' value='$(Escape-ForHtmlAttr $DatabaseErrorSummary)'></td></tr>
-    <tr><th>Any performance concerns logged?</th><td><input class='input' value='$(Escape-ForHtmlAttr $PerformanceSummary)'></td></tr>
-</table>
-
-<h3>C. Huntress / EDR Logs</h3>
-<table>
-    <tr><th>Any incidents detected on the server?</th><td><input class='input' value='Unknown (check EDR console)'></td></tr>
-</table>
-
-<h2>6. Physical Security (HIPAA §164.310)</h2>
-<h3>A. Server Location</h3>
-<table>
-    <tr><th>Where is the server physically located?</th><td><input class='input' value='Onsite (rack/closet)'></td></tr>
-    <tr><th>Is the room locked?</th><td><input class='input' value='Yes'></td></tr>
-    <tr><th>Who has physical access?</th><td><input class='input' value='Facilities, Polar Nite IT'></td></tr>
-    <tr><th>Any environmental risks?</th><td><input class='input' value='Unknown'></td></tr>
-</table>
-
-<h2>7. Contingency & Failover (HIPAA §164.308(a)(7)(ii)(C))</h2>
-<h3>A. Disaster Recovery</h3>
-<table>
-    <tr><th>If the server failed, how would be restored?</th><td><input class='input' value='Bare metal restore / documented recovery plan'></td></tr>
-    <tr><th>Estimated recovery time (RTO)</th><td><input class='input' value='Estimate required'></td></tr>
-    <tr><th>Are offsite backups present?</th><td><input class='input' value='$(Escape-ForHtmlAttr $OffsiteCopy)'></td></tr>
-</table>
-
-<h3>B. Redundancy</h3>
-<table>
-    <tr><th>RAID status</th><td><input class='input' value='$(Escape-ForHtmlAttr $RAIDStatus)'></td></tr>
-    <tr><th>Storage warnings</th><td>$(if($StorageWarn){"<span class='alert'>$StorageWarn</span>"}{"<span class='good'>None ($FreePct% free)</span>"})</td></tr>
-    <tr><th>Drive SMART status</th><td><input class='input' value='$(Escape-ForHtmlAttr $DiskHealth)'></td></tr>
-    <tr><th>Physical drives</th><td><input class='input' value='$(Escape-ForHtmlAttr $PhysicalDriveInfo)'></td></tr>
-</table>
-
-<h2>8. Server Exceptions (Anything Not Compliant)</h2>
-<table>
-    <tr><th>Description of issue</th><th>Safeguard</th><th>Risk rating</th><th>Owner</th><th>Status</th><th>Notes</th></tr>
-    <tr>
-        <td><textarea class='input' rows='2'></textarea></td>
-        <td><input class='input'></td>
-        <td><select><option>Low</option><option>Moderate</option><option>High</option></select></td>
-        <td><select><option>Polar Nite IT</option><option>Client</option></select></td>
-        <td><select><option>Planned</option><option>In Progress</option><option>Not Scheduled</option></select></td>
-        <td><textarea class='input' rows='2'></textarea></td>
-    </tr>
-</table>
-
-<button class='copy-btn' onclick='copyReport()'>Copy Report</button>
-<p style='text-align:center; margin-top:50px; color:#95a5a6; font-size:0.8em;'>WinFix Polar Nite Audit v2.1</p>
+    <div class="section">
+        <div class="section-head">8. Physical Security &amp; Contingency Planning (HIPAA &sect;164.310, &sect;164.308(a)(7))</div>
+        <table>
+            <tr><th>Physical location</th><td>$(New-Input "" "Server closet, rack, cloud, workstation desk")</td></tr>
+            <tr><th>Room/rack locked?</th><td>$(New-Select)</td></tr>
+            <tr><th>UPS / power protection</th><td>$(New-Input "" "UPS present, runtime, battery age")</td></tr>
+            <tr><th>Disaster recovery method</th><td>$(New-TextArea "" "Recovery process, RTO/RPO, offsite copy, vendor escalation.")</td></tr>
+            <tr><th>Audit exceptions</th><td>$(New-TextArea "" "Non-compliant items, owner, target date, and compensating control.")</td></tr>
+        </table>
+    </div>
+</div>
 </body>
 </html>
 "@
-
-
-    # Save and open
-    Log "Saving HTML report..."
-    [System.Windows.Forms.Application]::DoEvents()
-    $reportPath = "$env:TEMP\SecurityAudit_$($env:COMPUTERNAME)_$(Get-Date -Format 'yyyyMMdd_HHmm').html"
-    $html | Out-File -FilePath $reportPath -Encoding UTF8
-    
-    Log "Opening report in browser..."
-    [System.Windows.Forms.Application]::DoEvents()
-    Invoke-Item $reportPath
-    
-    Log "Audit report saved to $reportPath"
-    $this.Text = "Generate Audit Report"
-    $this.Enabled = $true
-    [System.Windows.Forms.MessageBox]::Show("Audit report opened in browser.`n`nFile saved to:`n$reportPath", "Audit Complete", "OK", "Information")
-    
+        try {
+            [System.IO.File]::WriteAllText($ReportPath, $HTML, (New-Object System.Text.UTF8Encoding($false)))
+        } catch {
+            $fallbackPath = Join-Path $TempPath "WinFix_MaxAudit_fallback.html"
+            try { [System.IO.File]::WriteAllText($fallbackPath, $HTML, (New-Object System.Text.UTF8Encoding($false))); $ReportPath = $fallbackPath } catch {}
+        }
+        Log-Worker "Audit Complete: $ReportPath"
     } catch {
-        Log "ERROR generating audit: $_"
-        $this.Text = "Generate Audit Report"
-        $this.Enabled = $true
-        [System.Windows.Forms.MessageBox]::Show("Audit generation failed:`n`n$($_.Exception.Message)`n`nCheck the log for details.", "Audit Error", "OK", "Error")
+        Log-Worker "CRITICAL ERROR: $($_.Exception.Message)"
+        Log-Worker "Line: $($_.InvocationInfo.ScriptLineNumber)"
     }
-})
+}
 
-$pageAudit.Controls.AddRange(@($lblAuditTitle, $lblAuditDesc, $btnAudit))
+# --- UI Assembly ---
+$pageAudit = New-Object System.Windows.Forms.Panel
+$pageAudit.Dock = "Fill"; $pageAudit.BackColor = $script:Theme.Bg
+
+$infoLbl = New-Object System.Windows.Forms.Label
+$infoLbl.Text = "Generates a HIPAA-oriented HTML audit report.`nReport opens automatically when complete."
+$infoLbl.AutoSize = $true; $infoLbl.ForeColor = $script:Theme.Text
+$infoLbl.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+$infoLbl.Location = New-Object System.Drawing.Point(250, 160)
+
+$script:btnAudit = New-Object System.Windows.Forms.Button
+$script:btnAudit.Text = "GENERATE MASTER AUDIT"
+$script:btnAudit.Size = New-Object System.Drawing.Size(300, 50)
+$script:btnAudit.Location = New-Object System.Drawing.Point(250, 200)
+$script:btnAudit.FlatStyle = "Flat"
+$script:btnAudit.BackColor = $script:Theme.Accent
+$script:btnAudit.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
+$script:btnAudit.Add_Click({
+    if ($script:CurrentJob) { return }
+    $this.Enabled = $false; $this.Text = "SCANNING..."
+    $script:CurrentJob = Start-Job -Name "SecurityAudit" -ScriptBlock $script:AuditScript -ArgumentList @($env:COMPUTERNAME, $env:USERNAME, $env:TEMP)
+    $script:JobTimer.Start()
+})
+$pageAudit.Controls.Add($infoLbl)
+$pageAudit.Controls.Add($script:btnAudit)
+
+if (-not $script:IsElevated) {
+    $warnLbl = New-Object System.Windows.Forms.Label
+    $warnLbl.Text = "WARNING: Not running as Administrator. Some checks may return incomplete results."
+    $warnLbl.AutoSize = $true; $warnLbl.ForeColor = $script:Theme.Red
+    $warnLbl.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
+    $warnLbl.Location = New-Object System.Drawing.Point(250, 260)
+    $pageAudit.Controls.Add($warnLbl)
+}
+
 $pages["Audit"] = $pageAudit
 
-# --- Navigation ---
-function Show-Page {
-    param($PageName)
-    $panelContent.Controls.Clear()
-    if ($pages.ContainsKey($PageName)) {
-        $panelContent.Controls.Add($pages[$PageName])
-        foreach ($btn in $navButtons) {
-            $btn.BackColor = if ($btn.Tag -eq $PageName) { $script:Theme.Accent } else { $script:Theme.Card }
-        }
-        Log "View: $PageName"
-    }
-}
-
-function Get-SecPolValue {
-    param([string[]]$Lines, [string]$Key)
-    if (-not $Lines) { return $null }
-    foreach ($line in $Lines) {
-        if ($line -match "^\s*$Key\s*=\s*(.+)$") {
-            return $matches[1].Trim()
-        }
-    }
-    return $null
-}
-
-function Escape-ForHtmlAttr {
-    param([string]$Value)
-    if (-not $Value) { return "" }
-    return ($Value -replace '&','&amp;' -replace '<','&lt;' -replace '>','&gt;' -replace '"','&quot;' -replace "'","&#39;")
-}
-
-function Format-EventSummary {
-    param([array]$Events)
-    if (-not $Events) { return "None detected in the last 30 days" }
-    return ($Events | ForEach-Object { "$($_.ProviderName) (#$($_.Id))" }) -join "; "
-}
-
-# --- Assemble Form ---
-$form.Controls.Add($panelContent)
-$form.Controls.Add($panelLog)
-$form.Controls.Add($panelNav)
-$form.Controls.Add($panelHeader)
-
 # --- Initialize ---
-$form.Add_Shown({
-    Show-Page "Dashboard"
-    Log "WinFix Tool v2.1.1 (Server 2012 R2 Fixed) ready - click Refresh to scan"
-})
-
+$form.Controls.AddRange(@($panelContent, $panelLog, $panelNav, $panelHeader))
+$form.Add_Shown({ Show-Page "Audit" })
 [void]$form.ShowDialog()
