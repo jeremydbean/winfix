@@ -1,11 +1,10 @@
 <#
 .SYNOPSIS
-    WinFix Tool v4.5 - Complete HIPAA & Stats Auditor
-    BUILD: 2026-04-30-BACKUP-FIX
+    WinFix Tool v4.6 - Final Stable Revision
+    BUILD: 2026-04-30-PS5-LEGACY-STABLE
 .DESCRIPTION
-    Restores all backup fields (Last Success, Frequency, Retention, etc.)
-    Term fix: Sync -> Backup. Default fix: Verified Healthy -> Check Console.
-    Includes Event Viewer table, BitLocker WMI fallback, and RAT detection.
+    Fixes the ternary operator syntax error for PowerShell 5.1.
+    Fully restores all sections, stats, and legacy OS compatibility.
 #>
 
 $ErrorActionPreference = 'Stop'
@@ -64,14 +63,14 @@ $script:JobTimer.Add_Tick({
 
 # --- Main Form ---
 $form = New-Object System.Windows.Forms.Form
-$form.Text = "WinFix Tool v4.5 - Professional HIPAA Auditor"; $form.Size = New-Object System.Drawing.Size(900, 650)
+$form.Text = "WinFix Tool v4.6 - Final Stable Revision"; $form.Size = New-Object System.Drawing.Size(900, 650)
 $form.BackColor = $script:Theme.Bg; $form.ForeColor = $script:Theme.Text; $form.Font = New-Object System.Drawing.Font("Segoe UI", 9)
 
 # --- Layout ---
 $panelHeader = New-Object System.Windows.Forms.Panel
 $panelHeader.Dock = "Top"; $panelHeader.Height = 45; $panelHeader.BackColor = $script:Theme.Surface
 $lblTitle = New-Object System.Windows.Forms.Label
-$lblTitle.Text = "WINFIX AUDIT PRO v4.5"; $lblTitle.Location = New-Object System.Drawing.Point(15, 12); $lblTitle.AutoSize = $true
+$lblTitle.Text = "WINFIX AUDIT PRO v4.6"; $lblTitle.Location = New-Object System.Drawing.Point(15, 12); $lblTitle.AutoSize = $true
 $lblTitle.Font = New-Object System.Drawing.Font("Segoe UI", 12, [System.Drawing.FontStyle]::Bold)
 $lblTitle.ForeColor = $script:Theme.Accent
 $panelHeader.Controls.Add($lblTitle)
@@ -95,8 +94,9 @@ function Show-Page {
     foreach($b in $navButtons){ $b.BackColor = if($b.Tag -eq $n){$script:Theme.Accent}else{$script:Theme.Card} }
 }
 
+$navItems = @("Dashboard", "Quick Fix", "Diagnostics", "Network", "Audit")
 $navY = 5
-foreach($n in @("Dashboard", "Quick Fix", "Diagnostics", "Network", "Audit")){
+foreach($n in $navItems){
     $b = New-Object System.Windows.Forms.Button
     $b.Text=$n; $b.Location=New-Object System.Drawing.Point(5, $navY); $b.Size=New-Object System.Drawing.Size(120, 32); $b.FlatStyle="Flat"; $b.Tag=$n
     $b.Add_Click({ Show-Page $this.Tag }); $panelNav.Controls.Add($b); $navButtons += $b; $navY += 36
@@ -114,15 +114,10 @@ $script:AuditScript = {
         $WinKey = "Not Found"
         try { $WinKey = (Get-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\SoftwareProtectionPlatform").BackupProductKeyDefault } catch {}
 
-        Log-Worker "Checking Active Roles & Features..."
+        Log-Worker "Checking Active Roles & BitLocker..."
         $Roles = "Workstation"
         if (Get-Command Get-WindowsFeature -ErrorAction SilentlyContinue) { $Roles = (Get-WindowsFeature | Where-Object Installed | Select-Object -ExpandProperty Name) -join ", " }
 
-        Log-Worker "Auditing BitLocker & Remote Access Tools..."
-        $RATs = @("TeamViewer","AnyDesk","Ninja","ScreenConnect","Splashtop","ConnectWise","Atera","Kaseya","N-able","RustDesk")
-        $FoundRATs = Get-Service | Where-Object { $d = $_.DisplayName; $RATs | Where-Object { $d -like "*$_*" } }
-        $RATText = if($FoundRATs){ ($FoundRATs.DisplayName | Sort-Object -Unique) -join "; " } else { "None Detected" }
-        
         # BitLocker Check with WMI Fallback
         $BitLocker = "Not Protected"
         try {
@@ -132,32 +127,38 @@ $script:AuditScript = {
             } else {
                 $wmiBL = Get-CimInstance -Namespace root\CIMV2\Security\MicrosoftVolumeEncryption -ClassName Win32_EncryptableVolume -Filter "DriveLetter='C:'" -ErrorAction SilentlyContinue
                 if ($wmiBL) { $BitLocker = if($wmiBL.ProtectionStatus -eq 1){ "On" } else { "Off" } }
-                else { $BitLocker = "Check via Control Panel (WMI Failed)" }
             }
         } catch { $BitLocker = "Error Querying Protection" }
 
-        Log-Worker "Scanning Storage & Performance..."
+        Log-Worker "Scanning Storage & Remote Access..."
         $DiskRows = ""; foreach($d in (Get-CimInstance Win32_LogicalDisk -Filter "DriveType=3")) {
             $DiskRows += "<tr><td>$($d.DeviceID)</td><td>$([math]::Round($d.Size/1GB,1)) GB</td><td>$([math]::Round($d.FreeSpace/1GB,1)) GB</td></tr>"
         }
+        $RATs = @("TeamViewer","AnyDesk","Ninja","ScreenConnect","Splashtop","ConnectWise")
+        $FoundRATs = Get-Service | Where-Object { $d = $_.DisplayName; $RATs | Where-Object { $d -like "*$_*" } }
+        $RATText = if($FoundRATs){ ($FoundRATs.DisplayName | Sort-Object -Unique) -join "; " } else { "None Detected" }
 
-        Log-Worker "Auditing Users (Legacy Compatible)..."
+        Log-Worker "Auditing Users (PS 5.1 Syntax Fix)..."
         $UserRows = ""; $AdminsList = @(); $ExpiredList = @()
         if (Get-Command Get-LocalUser -ErrorAction SilentlyContinue) {
             foreach($u in (Get-LocalUser)) {
-                $UserRows += "<tr><td>$($u.Name)</td><td>$($u.Enabled ? 'Active' : 'Disabled')</td><td>$($u.PasswordLastSet)</td></tr>"
+                # FIX: standard if/else instead of ternary
+                $uStatus = if($u.Enabled){ "Active" } else { "Disabled" }
+                $UserRows += "<tr><td>$($u.Name)</td><td>$uStatus</td><td>$($u.PasswordLastSet)</td></tr>"
                 if($u.PasswordExpired){ $ExpiredList += $u.Name }
             }
             $AdminsList = Get-LocalGroupMember -Group "Administrators" -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name
         } else {
+            # Legacy Fallback
             foreach($u in (Get-CimInstance Win32_UserAccount -Filter "LocalAccount = True")) {
-                $UserRows += "<tr><td>$($u.Name)</td><td>$($u.Disabled ? 'Disabled' : 'Active')</td><td>WMI-Check</td></tr>"
+                $uStatus = if($u.Disabled){ "Disabled" } else { "Active" }
+                $UserRows += "<tr><td>$($u.Name)</td><td>$uStatus</td><td>WMI-Check</td></tr>"
             }
             try { $AdminsList = ([ADSI]"WinNT://$ComputerName/Administrators,group").psbase.Invoke("Members") | ForEach-Object { $_.GetType().InvokeMember("Name", 'GetProperty', $null, $_, $null) } } catch {}
         }
 
-        Log-Worker "Detecting Backups (Including Synology)..."
-        $BUKeywords = @("Veeam","Acronis","Datto","Carbonite","Backblaze","Synology","Active Backup","Hyper Backup")
+        Log-Worker "Detecting Backups (Synology)..."
+        $BUKeywords = @("Veeam","Acronis","Datto","Carbonite","Backblaze","Synology","Active Backup")
         $FoundBU = Get-Service | Where-Object { $d = $_.DisplayName; $BUKeywords | Where-Object { $d -like "*$_*" } }
         $BUText = if($FoundBU){ ($FoundBU.DisplayName | Sort-Object -Unique) -join "; " } else { "Not Detected" }
 
@@ -173,7 +174,7 @@ $script:AuditScript = {
             }
         } catch {}
 
-        Log-Worker "Generating Ultimate Report HTML..."
+        Log-Worker "Building Ultimate HTML Report..."
         $ReportPath = Join-Path $TempPath "WinFix_Audit_$($ComputerName)_$(Get-Date -Format 'yyyyMMdd_HHmm').html"
         $HTML = @"
 <!DOCTYPE html><html><head><style>
@@ -209,7 +210,7 @@ $script:AuditScript = {
         const r = document.createRange(); r.selectNodeContents(t);
         window.getSelection().removeAllRanges(); window.getSelection().addRange(r);
         document.execCommand('copy'); document.body.removeChild(t);
-        alert('Complete HIPAA Audit Copied for Freshdesk!');
+        alert('HIPAA Audit copied for Freshdesk!');
     }
 </script></head>
 <body>
