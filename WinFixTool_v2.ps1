@@ -1,12 +1,12 @@
 <#
 .SYNOPSIS
-    WinFix Tool v2.3 - "Freshdesk Optimized" Security Audit
-    BUILD: 2026-04-29-MAX-AUDIT-PRO
+    WinFix Tool v2.4 - Freshdesk Audit Pro (Stability Fix)
+    BUILD: 2026-04-30-STABLE-AUDIT
 .DESCRIPTION
-    A maintenance and audit tool designed to generate high-fidelity, rich-text
-    reports that can be pasted directly into Freshdesk ticket notes.
+    Advanced Windows Maintenance & Audit tool. 
+    Fixes the "Hanging" issue by utilizing background jobs for intensive data collection.
 .NOTES
-    Requires Administrator privileges for automated data collection.
+    Requires Administrator privileges.
 #>
 
 $ErrorActionPreference = 'Stop'
@@ -59,9 +59,37 @@ function Log {
     }
 }
 
+# --- Background Job Management ---
+$script:CurrentJob = $null
+$script:JobTimer = New-Object System.Windows.Forms.Timer
+$script:JobTimer.Interval = 500
+
+$script:JobTimer.Add_Tick({
+    if ($script:CurrentJob) {
+        $results = Receive-Job -Job $script:CurrentJob
+        foreach ($line in $results) { if ($line) { Log $line } }
+
+        if ($script:CurrentJob.State -ne 'Running') {
+            Log "Task Finished: $($script:CurrentJob.Name)"
+            $script:JobTimer.Stop()
+            $script:btnAudit.Enabled = $true
+            $script:btnAudit.Text = "🚀 RUN FULL SYSTEM AUDIT"
+            
+            # Check if an HTML report was generated
+            $latestReport = Get-ChildItem "$env:TEMP\WinFix_Audit_*.html" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+            if ($latestReport -and $latestReport.LastWriteTime -gt (Get-Date).AddMinutes(-2)) {
+                Invoke-Item $latestReport.FullName
+            }
+            
+            Remove-Job $script:CurrentJob
+            $script:CurrentJob = $null
+        }
+    }
+})
+
 # --- Main Form ---
 $form = New-Object System.Windows.Forms.Form
-$form.Text = "WinFix Tool v2.3 - Freshdesk Audit Pro"
+$form.Text = "WinFix Tool v2.4 - Freshdesk Audit Pro (Stable)"
 $form.Size = New-Object System.Drawing.Size(900, 650)
 $form.BackColor = $script:Theme.Bg
 $form.ForeColor = $script:Theme.Text
@@ -80,78 +108,63 @@ $panelContent = New-Object System.Windows.Forms.Panel
 $panelContent.Dock = "Fill"; $panelContent.BackColor = $script:Theme.Bg
 
 $panelLog = New-Object System.Windows.Forms.Panel
-$panelLog.Dock = "Bottom"; $panelLog.Height = 80; $panelLog.BackColor = $script:Theme.Surface
+$panelLog.Dock = "Bottom"; $panelLog.Height = 120; $panelLog.BackColor = $script:Theme.Surface
 $script:txtLog = New-Object System.Windows.Forms.TextBox
-$script:txtLog.Multiline=$true; $script:txtLog.ReadOnly=$true; $script:txtLog.Dock="Fill"; $script:txtLog.BackColor=[System.Drawing.Color]::Black; $script:txtLog.ForeColor=$script:Theme.Green; $script:txtLog.Font="Consolas, 8"
+$script:txtLog.Multiline=$true; $script:txtLog.ReadOnly=$true; $script:txtLog.Dock="Fill"; $script:txtLog.BackColor=[System.Drawing.Color]::Black; $script:txtLog.ForeColor=$script:Theme.Green; $script:txtLog.Font="Consolas, 8"; $script:txtLog.ScrollBars = "Vertical"
 $panelLog.Controls.Add($script:txtLog)
 
-$pages = @{}
-function Show-Page {
-    param($PageName)
-    $panelContent.Controls.Clear()
-    $panelContent.Controls.Add($pages[$PageName])
-}
+# --- Audit Logic (Extracted for Background Job) ---
+$script:AuditScript = {
+    param($ComputerName, $UserName, $TempPath)
+    
+    function Log-Worker($msg) { Write-Output $msg }
 
-# === AUDIT PAGE ===
-$pageAudit = New-Object System.Windows.Forms.Panel
-$pageAudit.Dock = "Fill"; $pageAudit.BackColor = $script:Theme.Bg
-
-$btnAudit = New-Object System.Windows.Forms.Button
-$btnAudit.Text = "🚀 RUN FULL SYSTEM AUDIT"; $btnAudit.Size = "300, 50"; $btnAudit.Location = "250, 200"; $btnAudit.FlatStyle="Flat"; $btnAudit.BackColor=$script:Theme.Accent; $btnAudit.ForeColor="White"
-$btnAudit.Font = "Segoe UI, 10, Bold"
-
-$btnAudit.Add_Click({
+    Log-Worker "Gathering Hardware Specs..."
+    $OS = Get-CimInstance Win32_OperatingSystem
+    $CS = Get-CimInstance Win32_ComputerSystem
+    $BIOS = Get-CimInstance Win32_Bios
+    
+    Log-Worker "Checking VBS and Credential Guard..."
+    $VBS = "Not Available"
     try {
-        Log "Initializing Deep Audit for Freshdesk..."
-        $this.Enabled = $false; $this.Text = "Gathering Data..."
-        [System.Windows.Forms.Application]::DoEvents()
+        $DG = Get-CimInstance -Namespace root\Microsoft\Windows\DeviceGuard -ClassName Win32_DeviceGuard -ErrorAction SilentlyContinue
+        if ($DG) { $VBS = if ($DG.VirtualizationBasedSecurityStatus -eq 2) { "Enabled" } else { "Disabled" } }
+    } catch {}
 
-        # --- DATA GATHERING ---
-        $OS = Get-CimInstance Win32_OperatingSystem
-        $CS = Get-CimInstance Win32_ComputerSystem
-        $BIOS = Get-CimInstance Win32_Bios
-        
-        # Security Hardening (VBS/CredGuard)
-        $VBS = "Not Available"
-        try {
-            $DG = Get-CimInstance -Namespace root\Microsoft\Windows\DeviceGuard -ClassName Win32_DeviceGuard -ErrorAction SilentlyContinue
-            if ($DG) { $VBS = if ($DG.VirtualizationBasedSecurityStatus -eq 2) { "Enabled" } else { "Disabled" } }
-        } catch {}
+    Log-Worker "Checking SMBv1 Vulnerability..."
+    $SMB1 = "Unknown"
+    try { $SMB1 = (Get-SmbServerConfiguration).EnableSMB1Protocol } catch {}
+    
+    Log-Worker "Enumerating Local Administrators..."
+    $Admins = (Get-LocalGroupMember -Group "Administrators" -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name) -join ", "
+    
+    Log-Worker "Checking BitLocker Status..."
+    $BitLocker = "Not Found"
+    try {
+        $bl = Get-BitLockerVolume -MountPoint "C:" -ErrorAction SilentlyContinue
+        if ($bl) { $BitLocker = $bl.ProtectionStatus }
+    } catch {}
 
-        # Legacy Protocols & Risks
-        $SMB1 = "Unknown"
-        try { $SMB1 = (Get-SmbServerConfiguration).EnableSMB1Protocol } catch {}
-        
-        # User Audit
-        $Admins = (Get-LocalGroupMember -Group "Administrators" -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name) -join ", "
-        
-        # Encryption
-        $BitLocker = "Not Found"
-        try {
-            if (Get-Command Get-BitLockerVolume -ErrorAction SilentlyContinue) {
-                $bl = Get-BitLockerVolume -MountPoint "C:"
-                $BitLocker = $bl.ProtectionStatus
-            }
-        } catch {}
+    Log-Worker "Scanning Active Network Ports..."
+    $Ports = @()
+    try {
+        $tcp = Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue
+        foreach($t in $tcp) {
+            $proc = Get-Process -Id $t.OwningProcess -ErrorAction SilentlyContinue
+            if ($proc) { $Ports += "$($t.LocalPort)/$($proc.ProcessName)" }
+        }
+    } catch {}
+    $TopPorts = ($Ports | Select-Object -Unique | Select-Object -First 15) -join ", "
 
-        # Network/Ports
-        $Ports = @()
-        try {
-            $tcp = Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue
-            foreach($t in $tcp) {
-                $proc = Get-Process -Id $t.OwningProcess -ErrorAction SilentlyContinue
-                if ($proc) { $Ports += "$($t.LocalPort)/$($proc.ProcessName)" }
-            }
-        } catch {}
-        $TopPorts = ($Ports | Select-Object -Unique | Select-Object -First 15) -join ", "
-
-        # --- HTML OUTPUT (Optimized for Freshdesk Copy/Paste) ---
-        $ReportPath = "$env:TEMP\WinFix_Audit_$(Get-Date -Format 'yyyyMMdd_HHmm').html"
-        $HTML = @"
+    Log-Worker "Building HTML Report..."
+    $ReportPath = Join-Path $TempPath "WinFix_Audit_$($ComputerName)_$(Get-Date -Format 'yyyyMMdd_HHmm').html"
+    
+    # HTML content identical to v2.3 but with worker-friendly variables
+    $HTML = @"
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Security Audit - $env:COMPUTERNAME</title>
+    <title>Security Audit - $ComputerName</title>
     <style>
         body { font-family: 'Segoe UI', Arial, sans-serif; background: #f4f7f9; color: #333; padding: 20px; }
         .audit-container { max-width: 800px; margin: auto; background: white; padding: 0; border: 1px solid #d1d8db; border-radius: 4px; overflow: hidden; }
@@ -171,19 +184,14 @@ $btnAudit.Add_Click({
         function copyForFreshdesk() {
             const container = document.getElementById('audit-report');
             const clone = container.cloneNode(true);
-            
-            // Convert inputs to plain text spans for pasting
             clone.querySelectorAll('input').forEach(input => {
                 const span = document.createElement('span');
                 span.innerText = input.value || 'N/A';
                 span.style.fontWeight = 'bold';
                 input.parentNode.replaceChild(span, input);
             });
-
-            // Apply absolute inlining for Freshdesk's editor
             clone.style.fontFamily = 'Segoe UI, Arial, sans-serif';
             clone.style.border = '1px solid #d1d8db';
-            
             clone.querySelectorAll('.section-title').forEach(el => {
                 el.style.backgroundColor = '#f8f9fa';
                 el.style.borderBottom = '2px solid #1a73e8';
@@ -191,12 +199,10 @@ $btnAudit.Add_Click({
                 el.style.fontWeight = 'bold';
                 el.style.color = '#1a73e8';
             });
-
             clone.querySelectorAll('table').forEach(el => {
                 el.style.width = '100%';
                 el.style.borderCollapse = 'collapse';
             });
-
             clone.querySelectorAll('th').forEach(el => {
                 el.style.textAlign = 'left';
                 el.style.padding = '10px';
@@ -204,33 +210,24 @@ $btnAudit.Add_Click({
                 el.style.backgroundColor = '#fafafa';
                 el.style.color = '#666666';
             });
-
             clone.querySelectorAll('td').forEach(el => {
                 el.style.padding = '10px';
                 el.style.borderBottom = '1px solid #eeeeee';
             });
-
             clone.querySelectorAll('.status-good').forEach(el => el.style.color = '#27ae60');
             clone.querySelectorAll('.status-alert').forEach(el => el.style.color = '#e74c3c');
-
             const temp = document.createElement('div');
             temp.style.position = 'fixed';
             temp.style.left = '-9999px';
             temp.appendChild(clone);
             document.body.appendChild(temp);
-
             const range = document.createRange();
             range.selectNodeContents(temp);
             const selection = window.getSelection();
             selection.removeAllRanges();
             selection.addRange(range);
-            
-            try {
-                document.execCommand('copy');
-                alert('Report copied! Now paste (Ctrl+V) into your Freshdesk ticket note.');
-            } catch (err) {
-                alert('Copy failed.');
-            }
+            document.execCommand('copy');
+            alert('Report copied! Now paste (Ctrl+V) into Freshdesk.');
             document.body.removeChild(temp);
         }
     </script>
@@ -239,33 +236,29 @@ $btnAudit.Add_Click({
     <button class="copy-banner" onclick="copyForFreshdesk()">📋 CLICK TO COPY FOR FRESHDESK TICKET</button>
     <div id="audit-report" class="audit-container">
         <div class="header" style="background-color: #12344d; color: white; padding: 20px;">
-            <h1 style="margin: 0;">SECURITY AUDIT: $env:COMPUTERNAME</h1>
-            <p style="margin: 5px 0 0 0; opacity: 0.8; font-size: 12px;">Generated on: $(Get-Date -Format 'F')</p>
+            <h1 style="margin: 0;">SECURITY AUDIT: $ComputerName</h1>
+            <p style="margin: 5px 0 0 0; opacity: 0.8; font-size: 12px;">Generated on: $((Get-Date).ToString('F'))</p>
         </div>
-
         <div class="section">
             <p><strong>Client Name:</strong> <input class="user-edit" value="Enter Client..."></p>
-            <p><strong>Audit Performed By:</strong> <input class="user-edit" value="$env:USERNAME"></p>
+            <p><strong>Audit Performed By:</strong> <input class="user-edit" value="$UserName"></p>
         </div>
-
         <div class="section-title">System & Hardening</div>
         <div class="section">
             <table>
                 <tr><th>Operating System</th><td>$($OS.Caption) (Build $($OS.BuildNumber))</td></tr>
                 <tr><th>Serial Number</th><td>$($BIOS.SerialNumber)</td></tr>
-                <tr><th>VBS / Credential Guard</th><td class="$(if($VBS -eq 'Enabled'){'status-good'}else{'status-alert'})">$VBS</td></tr>
-                <tr><th>BitLocker Status (C:)</th><td class="$(if($BitLocker -eq 'On'){'status-good'}else{'status-alert'})">$BitLocker</td></tr>
+                <tr><th>VBS / Credential Guard</th><td class="$($VBS -eq 'Enabled' ? 'status-good' : 'status-alert')">$VBS</td></tr>
+                <tr><th>BitLocker Status (C:)</th><td class="$($BitLocker -eq 'On' ? 'status-good' : 'status-alert')">$BitLocker</td></tr>
             </table>
         </div>
-
         <div class="section-title">Network Attack Surface</div>
         <div class="section">
             <table>
-                <tr><th>SMBv1 Status</th><td class="$(if($SMB1 -eq $true){'status-alert'}else{'status-good'})">$(if($SMB1 -eq $true){'ENABLED (Vulnerable)'}else{'Disabled'})</td></tr>
+                <tr><th>SMBv1 Status</th><td class="$($SMB1 -eq $true ? 'status-alert' : 'status-good')">$($SMB1 -eq $true ? 'ENABLED (Vulnerable)' : 'Disabled')</td></tr>
                 <tr><th>Listening Ports (Top 15)</th><td style="font-size: 11px;">$TopPorts</td></tr>
             </table>
         </div>
-
         <div class="section-title">Identity & Access</div>
         <div class="section">
             <table>
@@ -273,30 +266,36 @@ $btnAudit.Add_Click({
                 <tr><th>Uptime</th><td>$([math]::Round(((Get-Date) - $($OS.LastBootUpTime)).TotalDays, 1)) Days</td></tr>
             </table>
         </div>
-        
-        <div class="section" style="background: #fdfdfe; border-top: 1px solid #eee; font-style: italic; font-size: 11px; color: #999;">
-            Note: This audit is a snapshot and does not replace regular compliance reviews.
-        </div>
     </div>
-    <div style="text-align: center; margin-top: 20px; color: #999; font-size: 11px;">WinFix Tool v2.3 - IT Toolkit</div>
 </body>
 </html>
 "@
-        $HTML | Out-File $ReportPath -Encoding UTF8
-        Invoke-Item $ReportPath
-        Log "Audit complete. HTML saved and opened: $ReportPath"
-        
-    } catch {
-        Log "Audit Failed: $_"
-    } finally {
-        $this.Enabled = $true; $this.Text = "🚀 RUN FULL SYSTEM AUDIT"
-    }
+    $HTML | Out-File $ReportPath -Encoding UTF8
+    Log-Worker "Audit Complete: $ReportPath"
+}
+
+# === AUDIT PAGE UI ===
+$pageAudit = New-Object System.Windows.Forms.Panel
+$pageAudit.Dock = "Fill"; $pageAudit.BackColor = $script:Theme.Bg
+
+$script:btnAudit = New-Object System.Windows.Forms.Button
+$script:btnAudit.Text = "🚀 RUN FULL SYSTEM AUDIT"; $script:btnAudit.Size = "300, 50"; $script:btnAudit.Location = "250, 200"; $script:btnAudit.FlatStyle="Flat"; $script:btnAudit.BackColor=$script:Theme.Accent; $script:btnAudit.ForeColor="White"
+$script:btnAudit.Font = "Segoe UI, 10, Bold"; $script:btnAudit.Cursor = [System.Windows.Forms.Cursors]::Hand
+
+$script:btnAudit.Add_Click({
+    if ($script:CurrentJob) { return }
+    
+    Log "Starting Background Audit Job..."
+    $script:btnAudit.Enabled = $false
+    $script:btnAudit.Text = "SCANNING SYSTEM..."
+    
+    $script:CurrentJob = Start-Job -Name "SecurityAudit" -ScriptBlock $script:AuditScript -ArgumentList @($env:COMPUTERNAME, $env:USERNAME, $env:TEMP)
+    $script:JobTimer.Start()
 })
 
-$pageAudit.Controls.Add($btnAudit)
-$pages["Audit"] = $pageAudit
+$pageAudit.Controls.Add($script:btnAudit)
+$panelContent.Controls.Add($pageAudit)
 
 # --- Final Assembly ---
 $form.Controls.AddRange(@($panelContent, $panelLog, $panelNav, $panelHeader))
-$form.Add_Shown({ Show-Page "Audit" })
 [void]$form.ShowDialog()
