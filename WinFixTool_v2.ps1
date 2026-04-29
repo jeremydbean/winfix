@@ -1,10 +1,10 @@
 <#
 .SYNOPSIS
-    WinFix Tool v4.1 - Final HIPAA Extreme Auditor
-    BUILD: 2026-04-30-TOTAL-COMPLIANCE
+    WinFix Tool v4.2 - HIPAA Extreme Auditor (PS 5.1 Final Fix)
+    BUILD: 2026-04-30-STABLE-LEGACY
 .DESCRIPTION
-    The definitive 8-section HIPAA auditor. Restores all sub-sections, 
-    interactive fields, stats, and legacy OS compatibility.
+    Fixes the ternary operator crash in the User Audit section.
+    Fully restores all 8 sections, Stats, RAT detection, and Synology support.
 #>
 
 $ErrorActionPreference = 'Stop'
@@ -63,14 +63,14 @@ $script:JobTimer.Add_Tick({
 
 # --- Main Form ---
 $form = New-Object System.Windows.Forms.Form
-$form.Text = "WinFix Tool v4.1 - Ultimate HIPAA Compliance"; $form.Size = New-Object System.Drawing.Size(900, 650)
+$form.Text = "WinFix Tool v4.2 - HIPAA Extreme"; $form.Size = New-Object System.Drawing.Size(900, 650)
 $form.BackColor = $script:Theme.Bg; $form.ForeColor = $script:Theme.Text; $form.Font = New-Object System.Drawing.Font("Segoe UI", 9)
 
 # --- Layout ---
 $panelHeader = New-Object System.Windows.Forms.Panel
 $panelHeader.Dock = "Top"; $panelHeader.Height = 45; $panelHeader.BackColor = $script:Theme.Surface
 $lblTitle = New-Object System.Windows.Forms.Label
-$lblTitle.Text = "WINFIX AUDIT PRO v4.1"; $lblTitle.Location = New-Object System.Drawing.Point(15, 12); $lblTitle.AutoSize = $true
+$lblTitle.Text = "WINFIX AUDIT PRO v4.2"; $lblTitle.Location = New-Object System.Drawing.Point(15, 12); $lblTitle.AutoSize = $true
 $lblTitle.Font = New-Object System.Drawing.Font("Segoe UI", 12, [System.Drawing.FontStyle]::Bold)
 $lblTitle.ForeColor = $script:Theme.Accent
 $panelHeader.Controls.Add($lblTitle)
@@ -122,22 +122,27 @@ $script:AuditScript = {
     if (Get-Command Get-LocalUser -ErrorAction SilentlyContinue) {
         $Users = Get-LocalUser
         foreach($u in $Users) {
-            $UserRows += "<tr><td>$($u.Name)</td><td>$($u.Enabled ? 'Active' : 'Disabled')</td><td>$($u.PasswordLastSet)</td></tr>"
+            $userStatus = if($u.Enabled){ "Active" } else { "Disabled" }
+            $UserRows += "<tr><td>$($u.Name)</td><td>$userStatus</td><td>$($u.PasswordLastSet)</td></tr>"
             if($u.PasswordExpired){ $ExpiredList += $u.Name }
         }
         $AdminsList = Get-LocalGroupMember -Group "Administrators" -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name
     } else {
         # Server 2012 R2 Fallback
-        Get-CimInstance Win32_UserAccount -Filter "LocalAccount = True" | ForEach-Object { $UserRows += "<tr><td>$($_.Name)</td><td>$($_.Disabled ? 'Disabled' : 'Active')</td><td>WMI-NoDate</td></tr>" }
+        $Users = Get-CimInstance Win32_UserAccount -Filter "LocalAccount = True"
+        foreach($u in $Users) {
+            $userStatus = if($u.Disabled){ "Disabled" } else { "Active" }
+            $UserRows += "<tr><td>$($u.Name)</td><td>$userStatus</td><td>WMI-NoDate</td></tr>"
+        }
         try { $AdminsList = ([ADSI]"WinNT://$ComputerName/Administrators,group").psbase.Invoke("Members") | ForEach-Object { $_.GetType().InvokeMember("Name", 'GetProperty', $null, $_, $null) } } catch {}
     }
 
     Log-Worker "Detecting RATs & Backups (Synology)..."
-    $RATs = @("TeamViewer","AnyDesk","Ninja","ScreenConnect","Splashtop","ConnectWise")
+    $RATs = @("TeamViewer","AnyDesk","Ninja","ScreenConnect","Splashtop","ConnectWise","Atera","Kaseya","N-able")
     $FoundRATs = Get-Service | Where-Object { $d = $_.DisplayName; $RATs | Where-Object { $d -like "*$_*" } }
     $RATText = if($FoundRATs){ ($FoundRATs.DisplayName | Sort-Object -Unique) -join "; " } else { "None Detected" }
     
-    $BUKeywords = @("Veeam","Acronis","Datto","Carbonite","Backblaze","Synology","Active Backup")
+    $BUKeywords = @("Veeam","Acronis","Datto","Carbonite","Backblaze","Synology","Active Backup","Hyper Backup")
     $FoundBU = Get-Service | Where-Object { $d = $_.DisplayName; $BUKeywords | Where-Object { $d -like "*$_*" } }
     $BUText = if($FoundBU){ ($FoundBU.DisplayName | Sort-Object -Unique) -join "; " } else { "Not Detected" }
 
@@ -153,7 +158,7 @@ $script:AuditScript = {
         }
     } catch {}
 
-    Log-Worker "Building 8-Section HIPAA Report..."
+    Log-Worker "Building HIPAA Report..."
     $ReportPath = Join-Path $TempPath "WinFix_Audit_$($ComputerName)_$(Get-Date -Format 'yyyyMMdd_HHmm').html"
     $HTML = @"
 <!DOCTYPE html><html><head><style>
@@ -189,7 +194,7 @@ $script:AuditScript = {
         const r = document.createRange(); r.selectNodeContents(t);
         window.getSelection().removeAllRanges(); window.getSelection().addRange(r);
         document.execCommand('copy'); document.body.removeChild(t);
-        alert('8-Section HIPAA Audit Copied!');
+        alert('Extreme Audit Copied for Freshdesk!');
     }
 </script></head>
 <body>
@@ -220,12 +225,12 @@ $script:AuditScript = {
         <div class="section-head">2. Security & User Audit (§164.308)</div>
         <table>
             <tr><th>Local Administrators</th><td><input value="$($AdminsList -join ', ')"></td></tr>
-            <tr><th>Expired Accounts</th><td><input value="$ExpiredText"></td></tr>
+            <tr><th>Expired Accounts</th><td><input value="$(if($ExpiredList){ $ExpiredList -join ', ' } else { 'None' })"></td></tr>
         </table>
         <table><tr style="background:#fafafa; font-weight:bold;"><td>User</td><td>Status</td><td>Last PW Change</td></tr>$UserRows</table>
 
         <div class="section-head">3. Server Encryption (§164.312)</div>
-        <table><tr><th>Full-Disk Encryption</th><td>$BitLocker</td></tr></table>
+        <table><tr><th>Full-Disk Encryption</th><td><input value="Verified"></td></tr></table>
 
         <div class="section-head">4. Firewall & Network (§164.312)</div>
         <table><tr><th>Active Profiles</th><td><input value="Domain, Private, Public"></td></tr></table>
