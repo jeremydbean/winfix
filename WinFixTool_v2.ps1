@@ -636,7 +636,7 @@ $script:AuditScript = {
     @media (max-width:760px) { body{padding:8px;} .hero .meta,.summary{grid-template-columns:1fr;} th,td{display:block;width:auto;} }
 </style>
 <script>
-function copyForFreshdesk() {
+async function copyForFreshdesk() {
     var report = document.getElementById('report-main');
     var clone = report.cloneNode(true);
     var origMap = {};
@@ -656,32 +656,73 @@ function copyForFreshdesk() {
         else if (['Yes','Compliant','Encrypted'].indexOf(val) !== -1) { span.style.color = '#157347'; }
         clonedEl.parentNode.replaceChild(span, clonedEl);
     });
-    var html = clone.outerHTML;
-    var plain = clone.textContent;
-    if (navigator.clipboard && window.ClipboardItem) {
-        navigator.clipboard.write([new ClipboardItem({
-            'text/html': new Blob([html], {type:'text/html'}),
-            'text/plain': new Blob([plain], {type:'text/plain'})
-        })]).then(function() {
-            alert('Report copied! Paste into your Freshdesk / Ninja ticket note.');
-        }).catch(function() { _fallbackCopy(clone); });
-        return;
-    }
-    _fallbackCopy(clone);
-}
-function _fallbackCopy(clone) {
+
     var holder = document.createElement('div');
-    holder.style.cssText = 'position:fixed;left:-9999px;top:0;';
+    holder.style.position = 'fixed';
+    holder.style.left = '-10000px';
+    holder.style.top = '0';
+    holder.style.width = '1040px';
+    holder.style.backgroundColor = '#ffffff';
     holder.appendChild(clone);
     document.body.appendChild(holder);
-    var range = document.createRange();
-    range.selectNode(clone);
-    var sel = window.getSelection();
-    sel.removeAllRanges(); sel.addRange(range);
-    try { document.execCommand('copy'); alert('Report copied! Paste into your Freshdesk / Ninja ticket note.'); }
-    catch(e) { alert('Copy failed -- select the report manually and copy.'); }
-    sel.removeAllRanges();
+
+    function inlineStyles(root) {
+        var props = [
+            'backgroundColor', 'border', 'borderBottom', 'borderCollapse', 'borderLeft', 'borderRadius',
+            'borderRight', 'borderTop', 'boxSizing', 'color', 'display', 'fontFamily', 'fontSize',
+            'fontWeight', 'lineHeight', 'margin', 'marginBottom', 'marginTop', 'maxWidth', 'padding',
+            'paddingBottom', 'paddingLeft', 'paddingRight', 'paddingTop', 'textAlign', 'textTransform',
+            'verticalAlign', 'width'
+        ];
+        var nodes = [root];
+        var descendants = root.querySelectorAll('*');
+        for (var n = 0; n < descendants.length; n++) { nodes.push(descendants[n]); }
+        for (var i = 0; i < nodes.length; i++) {
+            var e = nodes[i];
+            var cs = window.getComputedStyle(e);
+            for (var p = 0; p < props.length; p++) {
+                var prop = props[p];
+                try { e.style[prop] = cs[prop]; } catch (ignore) { }
+            }
+        }
+    }
+
+    inlineStyles(clone);
+    clone.style.margin = '0';
+    clone.style.maxWidth = '1040px';
+    clone.style.width = '1040px';
+
+    var html = clone.outerHTML;
+    var plain = clone.innerText || clone.textContent || '';
+    var copied = false;
+
+    if (navigator.clipboard && window.ClipboardItem) {
+        try {
+            await navigator.clipboard.write([
+                new ClipboardItem({
+                    'text/html': new Blob([html], { type: 'text/html' }),
+                    'text/plain': new Blob([plain], { type: 'text/plain' })
+                })
+            ]);
+            copied = true;
+        } catch (err) {
+            copied = false;
+        }
+    }
+
+    if (!copied) {
+        var range = document.createRange();
+        range.selectNode(clone);
+        var selection = window.getSelection();
+        selection.removeAllRanges();
+        selection.addRange(range);
+        try { copied = document.execCommand('copy'); }
+        catch (err) { copied = false; }
+        selection.removeAllRanges();
+    }
+
     document.body.removeChild(holder);
+    alert(copied ? 'Formatted report copied. Paste into Freshdesk/Ninja ticket notes.' : 'Copy failed. Select the report and copy manually.');
 }
 </script>
 </head>
