@@ -122,7 +122,7 @@ You can now upload `WinFixTool.exe` to Google Drive or a USB drive. It will run 
 ## Collect audit evidence for a polished report
 
 Run the standalone `Export-WinFixAudit.ps1` on the Windows computer in
-**Windows PowerShell 5.1 as Administrator**. It does not launch the WinFix GUI.
+**64-bit Windows PowerShell 4.0 or later as Administrator** (5.1 preferred). It does not launch the WinFix GUI.
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Export-WinFixAudit.ps1 -CopyToClipboard
@@ -231,3 +231,48 @@ vendor consoles, scrape private agent databases or scan external networks.
 
 References: [Entra device-state fields](https://learn.microsoft.com/en-us/entra/identity/devices/troubleshoot-device-dsregcmd),
 [Windows firewall policy](https://learn.microsoft.com/en-us/powershell/module/netsecurity/get-netfirewallrule).
+
+
+### Windows Server 2012 R2 / TLS download errors
+
+Collector 1.4 targets the PowerShell 4.0 included with Server 2012 R2 as well as
+newer Windows PowerShell. Local user and built-in Administrators membership queries
+fall back to CIM when the LocalAccounts module is absent. The fallback leaves
+unavailable account timestamps null and uses a separate boolean for password
+expiration policy. Clipboard copying falls back to Windows Forms in an STA session
+such as ISE; Notepad and the saved files remain available if clipboard copying fails.
+A RuntimeCapabilities check records missing optional commands. Unsupported OS
+features are recorded as Unavailable, not as a passing or failed security control.
+
+Open **64-bit PowerShell ISE as Administrator**, paste this entire block into the
+script pane, and press F5. Use the plain URL exactly as shown, without Markdown
+`[url](url)` syntax. TLS selection applies only to this process and is restored.
+
+```powershell
+& {
+    $previousTls = [Net.ServicePointManager]::SecurityProtocol
+    try {
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+        $auditUrl = 'https://raw.githubusercontent.com/jeremydbean/winfix/main/Export-WinFixAudit.ps1'
+        $auditScript = Invoke-RestMethod -Uri $auditUrl -TimeoutSec 60 -ErrorAction Stop
+        & ([scriptblock]::Create([string]$auditScript)) -CopyToClipboard
+    } finally {
+        [Net.ServicePointManager]::SecurityProtocol = $previousTls
+    }
+}
+```
+
+`Start-WinFixAudit.ps1` is a reusable launcher with the same TLS handling plus
+error guidance and optional `-SkipOnlineUpdateScan` / `-EvidenceFile` parameters.
+If TLS still fails, download `Export-WinFixAudit.ps1` on a working computer and
+transfer it to the server, then paste its contents into ISE or run the saved file.
+Investigate the server's cipher/TLS settings, certificate trust, clock and proxy;
+the launcher does not weaken certificate checks, alter the registry, or install WMF.
+
+Validation includes mocked legacy-provider and clipboard branches plus launcher
+TLS selection, option forwarding and failed-download behavior. A real Server 2012
+R2 / PowerShell 4.0 run has not yet been verified in this development environment.
+
+References: [Microsoft WMF/OS version table](https://learn.microsoft.com/en-us/powershell/scripting/windows-powershell/wmf-overview),
+[Microsoft TLS 1.2 session configuration](https://devblogs.microsoft.com/powershell/powershell-gallery-tls-support/),
+[Win32_UserAccount fields](https://learn.microsoft.com/en-us/windows/win32/cimwin32prov/win32-useraccount).

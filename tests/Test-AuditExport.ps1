@@ -148,3 +148,71 @@ $aclRows=@(& ([scriptblock]::Create($aclBlock.ScriptBlock.Extent.Text.Trim('{}')
 if ($aclRows.Count -ne 2 -or $aclRows[0].Rules[0].Identity -ne 'Users' -or $aclRows[1].Status -ne 'Unavailable') { throw 'Share ACL evidence or per-share failure handling was lost.' }
 Remove-Item Function:Get-SmbShare; Remove-Item Function:Get-Acl
 Write-Host 'PASS: external-evidence provenance/host validation, worker import, bounded scrubbed event details and per-share NTFS evidence.'
+
+# Simulate an older Windows host with no LocalAccounts module.
+if ($ast.ScriptRequirements.RequiredPSVersion -ne [version]'4.0') { throw 'The collector still requires a newer PowerShell.' }
+$userAssignment=$ast.Find({param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq '$checks.LocalUsers'},$true)
+$userBlock=$userAssignment.Find({param($n) $n -is [System.Management.Automation.Language.ScriptBlockExpressionAst]},$true)
+$adminAssignment=$ast.Find({param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq '$checks.Administrators'},$true)
+$adminBlock=$adminAssignment.Find({param($n) $n -is [System.Management.Automation.Language.ScriptBlockExpressionAst]},$true)
+function Get-Command { [CmdletBinding()]param($Name) return $null }
+function Get-CimInstance {
+    [CmdletBinding()]param($ClassName,$Filter)
+    switch ($ClassName) {
+        Win32_UserAccount {
+            if ($Filter -ne 'LocalAccount=True') { throw 'Unbounded domain account enumeration.' }
+            [pscustomobject]@{Name='test-admin';Disabled=$false;SID='S-1-5-21-1-1001';PasswordRequired=$true;PasswordChangeable=$false;PasswordExpires=$true;Lockout=$false}
+            [pscustomobject]@{Name='Guest';Disabled=$true;SID='S-1-5-21-1-501';PasswordRequired=$false;PasswordChangeable=$false;PasswordExpires=$false;Lockout=$false}
+        }
+        Win32_Group {
+            if ($Filter -ne "SID='S-1-5-32-544'") { throw 'Administrators lookup is not locale independent.' }
+            [pscustomobject]@{Name='Administrateurs';SID='S-1-5-32-544'}
+        }
+        default { throw 'Unexpected CIM query.' }
+    }
+}
+function Get-CimAssociatedInstance {
+    [CmdletBinding()]param([Parameter(ValueFromPipeline=$true)]$InputObject,$Association)
+    process {
+        if ($Association -ne 'Win32_GroupUser' -or $InputObject.SID -ne 'S-1-5-32-544') { throw 'Wrong group membership association.' }
+        [pscustomobject]@{Domain='HOST';Name='test-admin';SID='S-1-5-21-1-1001';CimClass=[pscustomobject]@{CimClassName='Win32_UserAccount'}}
+    }
+}
+$SystemEvidence=[pscustomobject]@{Status='Collected';Data=@([pscustomobject]@{DomainRole=2})}
+$legacyUsers=@(& ([scriptblock]::Create($userBlock.ScriptBlock.Extent.Text.Trim('{}'))))
+if ($legacyUsers.Count -ne 2 -or -not $legacyUsers[0].Enabled -or $legacyUsers[1].Enabled -or $null -ne $legacyUsers[0].PasswordExpires -or -not $legacyUsers[0].PasswordExpirationEnabled) { throw 'Legacy user evidence or unavailable timestamps were misrepresented.' }
+$legacyAdmins=@(& ([scriptblock]::Create($adminBlock.ScriptBlock.Extent.Text.Trim('{}'))))
+if ($legacyAdmins[0].Name -ne 'HOST\test-admin' -or $legacyAdmins[0].Source -ne 'Win32_GroupUser fallback') { throw 'Legacy Administrators membership failed.' }
+$SystemEvidence.Data[0].DomainRole=5
+try { $null=& ([scriptblock]::Create($userBlock.ScriptBlock.Extent.Text.Trim('{}'))); throw 'DC queried for local SAM' }
+catch { if ($_.Exception.Message -notlike 'Domain controller:*') { throw } }
+$script:clipboardTestText=$null
+function Set-LegacyAuditClipboard { param([string]$Text) $script:clipboardTestText=$Text }
+Copy-AuditText -Text 'Legacy clipboard text'
+if ($script:clipboardTestText -ne 'Legacy clipboard text') { throw 'Legacy clipboard fallback was not used.' }
+Remove-Item Function:Get-Command; Remove-Item Function:Get-CimInstance; Remove-Item Function:Get-CimAssociatedInstance
+Remove-Item Function:Set-LegacyAuditClipboard
+
+# Execute the actual launcher with mocked HTTP: verify TLS before download,
+# propagation of options, restoration, and no stale execution after failure.
+$launcherPath=Join-Path (Split-Path $PSScriptRoot) 'Start-WinFixAudit.ps1'
+$launcherTokens=$null; $launcherErrors=$null
+$launcherAst=[System.Management.Automation.Language.Parser]::ParseFile($launcherPath,[ref]$launcherTokens,[ref]$launcherErrors)
+if ($launcherErrors.Count -or $launcherAst.ScriptRequirements.RequiredPSVersion -ne [version]'4.0') { throw 'Launcher syntax or version requirement failed.' }
+$originalProtocol=[Net.ServicePointManager]::SecurityProtocol
+$global:winfixLauncherTestRan=$false
+function Invoke-RestMethod {
+    [CmdletBinding()]param($Uri,$TimeoutSec)
+    if ([Net.ServicePointManager]::SecurityProtocol -ne [Net.SecurityProtocolType]::Tls12) { throw 'TLS 1.2 not selected before download.' }
+    if ($Uri -ne 'https://raw.githubusercontent.com/jeremydbean/winfix/main/Export-WinFixAudit.ps1') { throw 'Download URL is not plain or expected.' }
+    'param([switch]$CopyToClipboard,[switch]$SkipOnlineUpdateScan,[string]$EvidenceFile) $global:winfixLauncherTestRan=($CopyToClipboard -and $SkipOnlineUpdateScan -and $EvidenceFile -eq "test.json")'
+}
+& $launcherPath -SkipOnlineUpdateScan -EvidenceFile 'test.json'
+if (-not $global:winfixLauncherTestRan -or [Net.ServicePointManager]::SecurityProtocol -ne $originalProtocol) { throw 'Launcher options or TLS restoration failed.' }
+$global:winfixLauncherTestRan=$false
+function Invoke-RestMethod { [CmdletBinding()]param($Uri,$TimeoutSec) throw 'Simulated TLS failure' }
+& $launcherPath -ErrorAction SilentlyContinue
+if ($global:winfixLauncherTestRan -or [Net.ServicePointManager]::SecurityProtocol -ne $originalProtocol) { throw 'A failed download ran stale code or leaked TLS settings.' }
+Remove-Item Function:Invoke-RestMethod
+Remove-Variable -Name winfixLauncherTestRan -Scope Global
+Write-Host 'PASS: PowerShell 4 requirements, legacy local accounts/admins/clipboard, DC guard, TLS launcher success/failure and protocol restoration.'

@@ -1,4 +1,4 @@
-#requires -Version 5.1
+#requires -Version 4.0
 <#
 .SYNOPSIS
 Collect local Windows audit evidence for a report, without changing configuration.
@@ -25,7 +25,7 @@ param(
 
 function Save-AuditCheckpoint {
     if ($script:checkpointPath) {
-        $snapshot = [ordered]@{ SchemaVersion='1.3'; AuditId=$script:auditId; Incomplete=$true
+        $snapshot = [ordered]@{ SchemaVersion='1.4'; AuditId=$script:auditId; Incomplete=$true
             SavedAt=(Get-Date).ToString('o'); ClientName=$ClientName; Location=$Location; Elevated=$elevated; Checks=$script:checks }
         $tempPath = $script:checkpointPath + '.tmp'
         [IO.File]::WriteAllText($tempPath, ($snapshot | ConvertTo-Json -Depth 14), (New-Object Text.UTF8Encoding($false)))
@@ -187,6 +187,20 @@ function Read-ExternalEvidence {
             Source=[string]$row.Source; ObservedAt=[string]$row.ObservedAt; ObservedBy=[string]$row.ObservedBy; Details=[string]$row.Details }
     }
 }
+function Set-LegacyAuditClipboard {
+    param([string]$Text)
+    # Server 2012 R2 / PowerShell 4 has no Set-Clipboard. ISE runs in STA.
+    if ([Threading.Thread]::CurrentThread.GetApartmentState() -ne 'STA') {
+        throw 'Legacy clipboard requires an STA session such as PowerShell ISE. Use the saved text file instead.'
+    }
+    Add-Type -AssemblyName System.Windows.Forms -ErrorAction Stop
+    [System.Windows.Forms.Clipboard]::SetText($Text)
+}
+function Copy-AuditText {
+    param([string]$Text)
+    if (Get-Command Set-Clipboard -ErrorAction SilentlyContinue) { Set-Clipboard -Value $Text -ErrorAction Stop }
+    else { Set-LegacyAuditClipboard -Text $Text }
+}
 function New-PasteBlocks {
     param([string]$Json, [int]$Size, [string]$Id)
     $total = [int][math]::Ceiling($Json.Length / $Size)
@@ -196,6 +210,7 @@ function New-PasteBlocks {
     }
 }
 
+if ($PSVersionTable.PSVersion.Major -lt 4) { throw 'Windows PowerShell 4.0 or later is required.' }
 if ($env:OS -ne 'Windows_NT') { throw 'Run this collector on the Windows computer being audited.' }
 $ErrorActionPreference = 'Stop'
 $started = Get-Date
@@ -215,7 +230,7 @@ $OutputDirectory = (Resolve-Path -LiteralPath $OutputDirectory).Path
 $prefix = 'WinFixAudit-' + $env:COMPUTERNAME + '-' + $started.ToString('yyyyMMdd-HHmmss')
 $script:checkpointPath = Join-Path $OutputDirectory "$prefix-PARTIAL.json"
 $BackupPattern = 'Veeam|Acronis|Macrium|Datto|Carbonite|Veritas|CrashPlan|\bCove\b|Axcient|Rubrik|Backup|StorageCraft|ShadowProtect|Arcserve|MSP360|CloudBerry|Druva|Commvault|NAKIVO|Retrospect|UrBackup'
-Write-Host "WinFix audit 1.3. Completed checks are saved to $script:checkpointPath"
+Write-Host "WinFix audit 1.4. Completed checks are saved to $script:checkpointPath"
 if (-not $elevated) { Write-Warning 'Run ISE as Administrator for the fullest audit.' }
 Save-AuditCheckpoint
 $checks.System = Invoke-AuditCheck System {
@@ -230,9 +245,18 @@ $checks.System = Invoke-AuditCheck System {
         LastBoot = $os.LastBootUpTime; UptimeDays = [math]::Round(((Get-Date) - $os.LastBootUpTime).TotalDays, 2)
     }
 }
+$checks.RuntimeCapabilities = Invoke-AuditCheck RuntimeCapabilities {
+    [pscustomobject]@{ PowerShellVersion=$PSVersionTable.PSVersion.ToString()
+        Is64BitProcess=[Environment]::Is64BitProcess
+        OptionalCommands=@(foreach ($name in @('Get-LocalUser','Get-LocalGroupMember','Get-MpComputerStatus',
+            'Get-BitLockerVolume','Get-Tpm','Confirm-SecureBootUEFI','Get-NetNatStaticMapping','dsregcmd.exe','Set-Clipboard')) {
+            [pscustomobject]@{ Name=$name; Available=[bool](Get-Command $name -ErrorAction SilentlyContinue) }
+        })
+        Coverage='Missing OS features remain Unavailable in their checks; absence is not proof of a failed security control.' }
+}
 $checks.OSRelease = Invoke-AuditCheck OSRelease {
     Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion' |
-        Select-Object ProductName, EditionID, DisplayVersion, CurrentBuild, UBR, InstallationType
+        Select-Object ProductName, EditionID, DisplayVersion, ReleaseId, CurrentVersion, CurrentBuild, UBR, InstallationType
 }
 $checks.Hardware = Invoke-AuditCheck Hardware {
     Get-CimInstance Win32_Processor | Select-Object Name, NumberOfCores, NumberOfLogicalProcessors
@@ -287,10 +311,34 @@ $checks.PhysicalDisks = Invoke-AuditCheck PhysicalDisks { Get-PhysicalDisk | Sel
 $checks.LocalUsers = Invoke-AuditCheck LocalUsers {
     if ($SystemEvidence.Status -ne 'Collected') { throw 'System role unavailable; local account scope cannot be determined.' }
     if ($SystemEvidence.Data[0].DomainRole -ge 4) { throw 'Domain controller: local SAM accounts are not applicable; domain account review required.' }
-    Get-LocalUser | Select-Object Name, Enabled, SID, LastLogon, PasswordLastSet, PasswordExpires, PasswordRequired, UserMayChangePassword
+    if (Get-Command Get-LocalUser -ErrorAction SilentlyContinue) {
+        Get-LocalUser | Select-Object Name, Enabled, SID, LastLogon, PasswordLastSet, PasswordExpires, PasswordRequired, UserMayChangePassword
+    } else {
+        # Win32_UserAccount is available on Server 2012 R2 without LocalAccounts.
+        # PasswordExpires here is a boolean, not a timestamp; keep it separate.
+        Get-CimInstance Win32_UserAccount -Filter 'LocalAccount=True' | ForEach-Object {
+            [pscustomobject]@{ Name=$_.Name; Enabled=(-not $_.Disabled); SID=$_.SID
+                LastLogon=$null; PasswordLastSet=$null; PasswordExpires=$null
+                PasswordRequired=$_.PasswordRequired; UserMayChangePassword=$_.PasswordChangeable
+                PasswordExpirationEnabled=$_.PasswordExpires; Lockout=$_.Lockout
+                Source='Win32_UserAccount fallback'
+                Coverage='Local accounts only. Last-logon, password-set and expiration timestamps are unavailable from this provider.' }
+        }
+    }
 }
 $checks.Administrators = Invoke-AuditCheck Administrators {
-    Get-LocalGroupMember -SID 'S-1-5-32-544' | Select-Object Name, SID, ObjectClass, PrincipalSource
+    if (Get-Command Get-LocalGroupMember -ErrorAction SilentlyContinue) {
+        Get-LocalGroupMember -SID 'S-1-5-32-544' | Select-Object Name, SID, ObjectClass, PrincipalSource
+    } else {
+        # Use the well-known SID rather than an English group name.
+        $group = Get-CimInstance Win32_Group -Filter "SID='S-1-5-32-544'"
+        if ($null -eq $group) { throw 'The built-in Administrators group could not be resolved.' }
+        $group | Get-CimAssociatedInstance -Association Win32_GroupUser | ForEach-Object {
+            [pscustomobject]@{ Name=($_.Domain + '\' + $_.Name); SID=$_.SID
+                ObjectClass=$_.CimClass.CimClassName; PrincipalSource=$null
+                Source='Win32_GroupUser fallback'; Coverage='Direct members only; nested groups and unresolved identities need separate review.' }
+        }
+    }
 }
 $checks.PasswordPolicy = Invoke-AuditCheck PasswordPolicy {
     $result = & net.exe accounts 2>&1
@@ -527,9 +575,9 @@ $checks.DefaultRoutes = Invoke-AuditCheck DefaultRoutes {
         Select-Object InterfaceAlias,DestinationPrefix,NextHop,RouteMetric,InterfaceMetric,State
 }
 $checks.TimeConfiguration = Invoke-AuditCheck TimeConfiguration {
-    $service = Get-Service W32Time
+    $service = Get-CimInstance Win32_Service -Filter "Name='W32Time'"
     $config = Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Services\W32Time\Parameters'
-    [pscustomobject]@{ ServiceStatus=[string]$service.Status; StartupType=[string]$service.StartType
+    [pscustomobject]@{ ServiceStatus=[string]$service.State; StartupType=[string]$service.StartMode
         ConfiguredType=$config.Type; ConfiguredNtpServer=$config.NtpServer
         Coverage='Configuration only. TimeService check reports measured synchronization status when available.' }
 }
@@ -569,13 +617,14 @@ $checks.ExternalEvidence = Invoke-AuditCheck ExternalEvidence -Context @{
     Read-ExternalEvidence -Path $EvidencePath -Template $Template
 }
 $report = [ordered]@{
-    SchemaVersion = '1.3'; AuditId = $script:auditId; Incomplete = $false; ClientName = $ClientName; Location = $Location
+    SchemaVersion = '1.4'; AuditId = $script:auditId; Incomplete = $false; ClientName = $ClientName; Location = $Location
     StartedAt = $started.ToString('o'); CompletedAt = (Get-Date).ToString('o'); Elevated = $elevated
     PowerShellVersion = $PSVersionTable.PSVersion.ToString(); Checks = $checks
     OnlineUpdateScanRequested = (-not $SkipOnlineUpdateScan)
     ExternalEvidenceTemplate = $evidenceTemplatePath
     BackupLogsNotQueried = @($backupLogs | Select-Object -Skip 12)
     InterpretationNotes = @(
+        'Windows PowerShell 4.0 and later are targeted. On Server 2012 R2, local-account and administrator membership queries use CIM fallbacks when LocalAccounts is absent. Missing provider timestamps remain unknown.'
         'Collected means the query completed, not that the control passed. Unavailable, TimedOut, Partial and null values require follow-up; returned partial evidence is incomplete.'
         'Event queries inspect only the newest EventScanLimit records per log, then filter by time/provider/severity. Scan limits, oldest record time and output truncation are recorded. Event metadata is exported; BackupErrorDetails and VSSErrorDetails also include bounded message text with best-effort labelled-secret scrubbing. Failed logons include all logon types, not just RDP.'
         'Software inventory covers machine-wide uninstall registrations; the general scheduled task list excludes Microsoft tasks, but backup task discovery includes them.'
@@ -607,7 +656,7 @@ for ($i = 0; $i -lt $blocks.Count; $i++) {
     [IO.File]::WriteAllText($partPath, ($intro + "`r`n`r`n" + $blocks[$i]), $encoding)
 }
 if ($CopyToClipboard) {
-    try { Set-Clipboard -Value $paste; Write-Host 'Paste text copied to clipboard.' }
+    try { Copy-AuditText -Text $paste; Write-Host 'Paste text copied to clipboard.' }
     catch { Write-Warning "Clipboard unavailable. Open $textPath instead." }
 }
 Remove-Item -LiteralPath $script:checkpointPath -ErrorAction SilentlyContinue
