@@ -134,7 +134,9 @@ Optional labels and output location:
 .\Export-WinFixAudit.ps1 -ClientName "Example Clinic" -Location "Main office" -OutputDirectory C:\Temp\WinFixAudit
 ```
 
-Results go into `Desktop\WinFixAudit` by default. Paste the `*-PASTE.txt`
+Results go into `Desktop\WinFixAudit` by default. The complete `*-PASTE.txt` file
+opens automatically in Notepad when collection finishes. Press Ctrl+A, Ctrl+C to
+copy it. Use `-NoOpen` for unattended runs. Paste the `*-PASTE.txt`
 contents into your conversation. For a large audit, send the numbered `*-PART-*.txt`
 files in order. The JSON file contains the same evidence in an indented format.
 Ask for an executive summary, prioritized findings, remediation plan and a polished

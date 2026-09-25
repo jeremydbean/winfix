@@ -63,3 +63,31 @@ try { $null = Get-AuditEvents -LogName Denied; throw 'Denied log incorrectly suc
 catch { if ($_.Exception.Message -ne 'Access denied') { throw } }
 Remove-Item Function:Get-WinEvent
 Write-Host 'PASS: real worker timeout, continuation, scalar/partial evidence, checkpoint persistence, job cleanup and bounded event sampling.'
+
+# Regression: the vendor name Cove must not match Discovery or Recovery.
+$patternAssignment = $ast.Find({param($n)
+    $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq '$BackupPattern'
+}, $true)
+$pattern = $patternAssignment.Right.Find({param($n) $n -is [System.Management.Automation.Language.StringConstantExpressionAst]}, $true).Value
+foreach ($name in @('Discovery Provider Host','SSDP Discovery','Dell Recovery Plugin','OobeDiscovery')) {
+    if ($name -match $pattern) { throw "False backup vendor match: $name" }
+}
+foreach ($name in @('Cove Data Protection','Synology Active Backup for Business','Veeam Agent','Acronis','Macrium Reflect')) {
+    if ($name -notmatch $pattern) { throw "Missed backup vendor: $name" }
+}
+# Run the actual shadow-storage collector with a fake nested CIM reference.
+$shadowAssignment = $ast.Find({param($n)
+    $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq '$checks.ShadowStorage'
+}, $true)
+$shadowBlock = $shadowAssignment.Find({param($n) $n -is [System.Management.Automation.Language.ScriptBlockExpressionAst]}, $true)
+function Get-CimInstance {
+    param($ClassName)
+    [pscustomobject]@{ Volume=[pscustomobject]@{DeviceID='volume-one';Metadata=('noise'*1000)}
+        DiffVolume=[pscustomobject]@{DeviceID='volume-two';Metadata=('noise'*1000)}
+        UsedSpace=123; AllocatedSpace=456; MaxSpace=789 }
+}
+$shadow = & ([scriptblock]::Create($shadowBlock.ScriptBlock.Extent.Text.Trim('{}')))
+$shadowJson = $shadow | ConvertTo-Json -Depth 12
+if ($shadow.Volume -ne 'volume-one' -or $shadow.DiffVolume -ne 'volume-two' -or $shadowJson.Length -gt 300 -or $shadow.UsedSpace -ne 123) { throw 'Shadow storage lost facts or exported nested metadata.' }
+Remove-Item Function:Get-CimInstance
+Write-Host 'PASS: backup vendor boundaries and compact shadow-storage evidence.'

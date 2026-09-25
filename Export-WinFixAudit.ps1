@@ -17,12 +17,13 @@ param(
     [ValidateRange(4000,24000)][int]$PasteBlockCharacters = 12000,
     [ValidateRange(5,300)][int]$CheckTimeoutSeconds = 25,
     [ValidateRange(100,10000)][int]$EventScanLimit = 1000,
+    [switch]$NoOpen,
     [switch]$CopyToClipboard
 )
 
 function Save-AuditCheckpoint {
     if ($script:checkpointPath) {
-        $snapshot = [ordered]@{ SchemaVersion='1.1'; AuditId=$script:auditId; Incomplete=$true
+        $snapshot = [ordered]@{ SchemaVersion='1.2'; AuditId=$script:auditId; Incomplete=$true
             SavedAt=(Get-Date).ToString('o'); ClientName=$ClientName; Location=$Location; Elevated=$elevated; Checks=$script:checks }
         $tempPath = $script:checkpointPath + '.tmp'
         [IO.File]::WriteAllText($tempPath, ($snapshot | ConvertTo-Json -Depth 14), (New-Object Text.UTF8Encoding($false)))
@@ -134,8 +135,8 @@ New-Item -ItemType Directory -Path $OutputDirectory -Force | Out-Null
 $OutputDirectory = (Resolve-Path -LiteralPath $OutputDirectory).Path
 $prefix = 'WinFixAudit-' + $env:COMPUTERNAME + '-' + $started.ToString('yyyyMMdd-HHmmss')
 $script:checkpointPath = Join-Path $OutputDirectory "$prefix-PARTIAL.json"
-$BackupPattern = 'Veeam|Acronis|Macrium|Datto|Carbonite|Veritas|CrashPlan|Cove|Axcient|Rubrik|Backup|StorageCraft|ShadowProtect|Arcserve|MSP360|CloudBerry|Druva|Commvault|NAKIVO|Retrospect|UrBackup'
-Write-Host "WinFix audit 1.1. Completed checks are saved to $script:checkpointPath"
+$BackupPattern = 'Veeam|Acronis|Macrium|Datto|Carbonite|Veritas|CrashPlan|\bCove\b|Axcient|Rubrik|Backup|StorageCraft|ShadowProtect|Arcserve|MSP360|CloudBerry|Druva|Commvault|NAKIVO|Retrospect|UrBackup'
+Write-Host "WinFix audit 1.2. Completed checks are saved to $script:checkpointPath"
 if (-not $elevated) { Write-Warning 'Run ISE as Administrator for the fullest audit.' }
 Save-AuditCheckpoint
 $checks.System = Invoke-AuditCheck System {
@@ -174,7 +175,7 @@ $checks.Software = Invoke-AuditCheck Software {
 }
 $checks.AgentServices = Invoke-AuditCheck AgentServices {
     Get-CimInstance Win32_Service |
-        Where-Object { "$($_.Name) $($_.DisplayName)" -match 'Ninja|Huntress|GoTo|LogMeIn|ScreenConnect|ConnectWise|TeamViewer|AnyDesk|Splashtop|RustDesk|VNC|BeyondTrust|Veeam|Acronis|Macrium|Datto|Carbonite|Veritas|CrashPlan|Cove|Axcient|Rubrik|Backup|Sentinel|Sophos|CrowdStrike|Webroot|ESET|Bitdefender' } |
+        Where-Object { "$($_.Name) $($_.DisplayName)" -match 'Ninja|Huntress|GoTo|LogMeIn|ScreenConnect|ConnectWise|TeamViewer|AnyDesk|Splashtop|RustDesk|VNC|BeyondTrust|Veeam|Acronis|Macrium|Datto|Carbonite|Veritas|CrashPlan|\bCove\b|Axcient|Rubrik|Backup|Sentinel|Sophos|CrowdStrike|Webroot|ESET|Bitdefender' } |
         Select-Object Name, DisplayName, State, StartMode
 }
 $checks.Antivirus = Invoke-AuditCheck Antivirus {
@@ -222,7 +223,11 @@ $checks.SecurityPolicy = Invoke-AuditCheck SecurityPolicy {
     try {
         $result = & secedit.exe /export /cfg $tempFile /areas SECURITYPOLICY /quiet 2>&1
         if ($LASTEXITCODE -ne 0) { throw ($result -join "`n") }
-        Get-Content $tempFile | Where-Object { $_ -match '^(MinimumPasswordAge|MaximumPasswordAge|MinimumPasswordLength|PasswordComplexity|PasswordHistorySize|LockoutBadCount|ResetLockoutCount|LockoutDuration|ClearTextPassword)\s*=' }
+        Get-Content $tempFile | Where-Object { $_ -match '^(MinimumPasswordAge|MaximumPasswordAge|MinimumPasswordLength|PasswordComplexity|PasswordHistorySize|LockoutBadCount|ResetLockoutCount|LockoutDuration|ClearTextPassword)\s*=' } |
+            ForEach-Object {
+                $pair = ([string]$_) -split '=', 2
+                [pscustomobject]@{ Name=$pair[0].Trim(); Value=$pair[1].Trim() }
+            }
     } finally { if (Test-Path $tempFile) { Remove-Item $tempFile -Force } }
 }
 $checks.AuditPolicy = Invoke-AuditCheck AuditPolicy {
@@ -265,7 +270,7 @@ $checks.CachedMissingUpdates = Invoke-AuditCheck CachedMissingUpdates -TimeoutSe
     $searcher.Online = $false
     $result = $searcher.Search('IsInstalled=0 and IsHidden=0')
     [pscustomobject]@{ ResultCode = [int]$result.ResultCode; Source = 'Local Windows Update cache; may be stale'
-        Updates = @($result.Updates | Select-Object Title, MsrcSeverity, KBArticleIDs, RebootRequired) }
+        Updates = @($result.Updates | Select-Object Title, MsrcSeverity, @{n='KBArticleIDs';e={@($_.KBArticleIDs | ForEach-Object { [string]$_ })}}, RebootRequired) }
 }
 $checks.TimeService = Invoke-AuditCheck TimeService {
     $result = & w32tm.exe /query /status 2>&1
@@ -347,13 +352,18 @@ $checks.ShadowCopies = Invoke-AuditCheck ShadowCopies {
     Get-CimInstance Win32_ShadowCopy | Select-Object ID, InstallDate, VolumeName, State, Persistent, ClientAccessible, NoAutoRelease
 }
 $checks.ShadowStorage = Invoke-AuditCheck ShadowStorage {
-    Get-CimInstance Win32_ShadowStorage | Select-Object Volume, DiffVolume, UsedSpace, AllocatedSpace, MaxSpace
+    # Export only reference IDs, not the recursive CIM class/property metadata.
+    Get-CimInstance Win32_ShadowStorage | Select-Object @{n='Volume';e={[string]$_.Volume.DeviceID}},
+        @{n='DiffVolume';e={[string]$_.DiffVolume.DeviceID}}, UsedSpace, AllocatedSpace, MaxSpace
 }
 $checks.BackupLogDiscovery = Invoke-AuditCheck BackupLogDiscovery {
     # Discover registered names without opening every event log on the machine.
     $names = @(
-        foreach ($path in @('HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WINEVT\Channels', 'HKLM:\SYSTEM\CurrentControlSet\Services\EventLog')) {
-            if (Test-Path $path) { Get-ChildItem $path | Where-Object { $_.PSChildName -match $BackupPattern } | Select-Object -ExpandProperty PSChildName }
+        foreach ($path in @('SOFTWARE\Microsoft\Windows\CurrentVersion\WINEVT\Channels', 'SYSTEM\CurrentControlSet\Services\EventLog')) {
+            $key = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey($path)
+            if ($null -eq $key) { continue }
+            try { $key.GetSubKeyNames() | Where-Object { $_ -match $BackupPattern } }
+            finally { $key.Dispose() }
         }
     )
     $names | Sort-Object -Unique | ForEach-Object { [pscustomobject]@{LogName=$_} }
@@ -375,7 +385,7 @@ $checks.ClinicalApplication = Invoke-AuditCheck ClinicalApplication {
 }
 $checks.VSSSystemEvents = Invoke-AuditCheck VSSSystemEvents { Get-AuditEvents -LogName System -ProviderPattern 'VSS|VolSnap|SPP|disk|Ntfs' -Levels 1,2,3 }
 $report = [ordered]@{
-    SchemaVersion = '1.1'; AuditId = $script:auditId; Incomplete = $false; ClientName = $ClientName; Location = $Location
+    SchemaVersion = '1.2'; AuditId = $script:auditId; Incomplete = $false; ClientName = $ClientName; Location = $Location
     StartedAt = $started.ToString('o'); CompletedAt = (Get-Date).ToString('o'); Elevated = $elevated
     PowerShellVersion = $PSVersionTable.PSVersion.ToString(); Checks = $checks
     BackupLogsNotQueried = @($backupLogs | Select-Object -Skip 12)
@@ -418,3 +428,10 @@ Write-Host "Audit saved: $jsonPath"
 Write-Host "Paste report: $textPath ($($blocks.Count) numbered parts)"
 Write-Host 'Review identifying information before sharing. Paste all parts here to generate your report.'
 if (-not $elevated) { Write-Warning 'Not elevated: rerun as Administrator for the fullest audit.' }
+
+if (-not $NoOpen) {
+    try {
+        # Quote paths containing spaces, including redirected OneDrive desktops.
+        Start-Process -FilePath 'notepad.exe' -ArgumentList ('"' + $textPath + '"') -ErrorAction Stop | Out-Null
+    } catch { Write-Warning "Could not open Notepad automatically. Open this file manually: $textPath" }
+}
