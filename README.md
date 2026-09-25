@@ -118,3 +118,74 @@ You can now upload `WinFixTool.exe` to Google Drive or a USB drive. It will run 
 *   Windows 10, Windows 11, or Windows Server 2012+.
 *   Windows PowerShell 5.1 preferred; the audit engine keeps compatibility fallbacks for older Server builds.
 *   **Administrator Privileges** are required for most fixes.
+
+## Collect audit evidence for a polished report
+
+Run the standalone `Export-WinFixAudit.ps1` on the Windows computer in
+**Windows PowerShell 5.1 as Administrator**. It does not launch the WinFix GUI.
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Export-WinFixAudit.ps1 -CopyToClipboard
+```
+
+Optional labels and output location:
+
+```powershell
+.\Export-WinFixAudit.ps1 -ClientName "Example Clinic" -Location "Main office" -OutputDirectory C:\Temp\WinFixAudit
+```
+
+Results go into `Desktop\WinFixAudit` by default. Paste the `*-PASTE.txt`
+contents into your conversation. For a large audit, send the numbered `*-PART-*.txt`
+files in order. The JSON file contains the same evidence in an indented format.
+Ask for an executive summary, prioritized findings, remediation plan and a polished
+HTML or PDF report. The collector includes this request in its paste output.
+
+Collection covers hardware/OS, installed software, management/security/backup
+services, Defender/antivirus, firewall, BitLocker, TPM, Secure Boot, accounts,
+password/audit policy, disks, RDP, networking, SMB shares and permissions,
+printers, non-Microsoft scheduled tasks, update history, cached missing updates,
+reboot indicators, time service and recent event metadata. Cached update checks
+have a 60-second timeout and do not contact Windows Update. Every other check runs
+in its own background job with a default 25-second timeout. The ISE progress display
+shows the active check. Timed-out checks are marked `TimedOut`; failures with some
+returned evidence are marked `Partial`; unsupported or denied checks are marked
+`Unavailable`. Collection continues, and completed checks are saved after every
+step in a `*-PARTIAL.json` checkpoint. The checkpoint is removed after final output
+is written successfully. It remains usable if you stop the script early.
+
+For ISE: open a new script tab, paste the entire script into the upper pane, and
+press F5. No saved script path is required. Use 64-bit ISE as Administrator.
+If the Desktop path is absent, output defaults to the temporary folder.
+
+Expanded backup evidence includes installed products and services, backup scheduled
+tasks (including Microsoft tasks) with last/next run and result codes, Windows
+Server Backup summary/policy/schedule/targets/inclusions, the latest 20 local catalog
+versions, a `wbadmin get versions` fallback, VSS writer output, shadow copies and
+shadow storage. Registered backup event channels are discovered locally; up to 12
+are queried separately, with any omitted channels listed in the report. The
+Application log is also sampled for backup providers. VSS/storage warnings,
+database errors, volume capacity, and PSChiro directory presence add local evidence.
+No vendor console authentication or remote repository browsing is attempted.
+
+Event queries first read up to 1,000 newest records per log, then apply lookback,
+provider and severity filters. Each result records the scan limit, oldest scanned
+time and output truncation. This trades exhaustive history for bounded work on
+large logs; zero matches never establishes a clean 30-day history. Change the
+`$EventScanLimit` and `$CheckTimeoutSeconds` defaults at the top when pasting into
+ISE, or pass `-EventScanLimit 5000 -CheckTimeoutSeconds 45` when running a saved file.
+
+Windows backup implementation references: [Get-WBSummary](https://learn.microsoft.com/en-us/powershell/module/windowsserverbackup/get-wbsummary),
+[Get-WBPolicy](https://learn.microsoft.com/en-us/powershell/module/windowsserverbackup/get-wbpolicy),
+and [Get-WBBackupSet](https://learn.microsoft.com/en-us/powershell/module/windowsserverbackup/get-wbbackupset).
+
+This is local evidence collection, not a compliance certification. Backup restore
+success, vendor-console health, MFA, public exposure and OS lifecycle entitlements
+need separate verification. Samples and coverage limits are recorded in the JSON.
+No configuration repairs or uploads are performed. A temporary security policy
+export is normally removed after collection (forced cancellation may leave its temporary file). Review machine/domain names, account names,
+network addresses and paths before sharing. Passwords, BitLocker recovery keys,
+event message bodies and task action arguments are not intentionally collected.
+
+Developer check (also runs on non-Windows PowerShell):
+`pwsh -NoProfile -File tests/Test-AuditExport.ps1`. Live collection requires Windows;
+tests cover syntax, real background-job timeout/continuation, partial/scalar results, checkpoint persistence, job cleanup, event sampling and paste reassembly. They do not validate Windows providers or permissions.
