@@ -17,6 +17,7 @@ param(
     [ValidateRange(4000,24000)][int]$PasteBlockCharacters = 12000,
     [ValidateRange(5,300)][int]$CheckTimeoutSeconds = 25,
     [ValidateRange(100,10000)][int]$EventScanLimit = 1000,
+    [ValidateRange(1,500)][int]$MaxHyperVVMs = 50,
     [string]$EvidenceFile = '',
     [switch]$SkipOnlineUpdateScan,
     [switch]$NoOpen,
@@ -34,7 +35,7 @@ function Save-AuditCheckpoint {
     if ($script:checkpointPath) {
         $tempPath = $script:checkpointPath + '.tmp'
         try {
-            $snapshot = [ordered]@{ SchemaVersion='1.5'; AuditId=$script:auditId; Incomplete=$true
+            $snapshot = [ordered]@{ SchemaVersion='1.6'; AuditId=$script:auditId; Incomplete=$true
                 SavedAt=(Get-Date).ToString('o'); ClientName=$ClientName; Location=$Location; Elevated=$elevated
                 Checks=$script:checks; ExportWarnings=@($script:checkpointWarnings) }
             $checkpointJson = ConvertTo-AuditJson -InputObject $snapshot
@@ -145,11 +146,56 @@ function Get-AuditEvents {
         Events=$events
     }
 }
+function Get-AuditHyperVDetail {
+    param([string]$VMId, [ValidateSet('Disks','Integration','Checkpoints')][string]$Kind)
+    Import-Module Hyper-V -ErrorAction Stop
+    $vm = Get-VM -Id ([guid]$VMId) -ErrorAction Stop
+    if ($Kind -eq 'Disks') {
+        # Stream each attachment so a later blocked VHD preserves earlier evidence.
+        foreach ($disk in @(Get-VMHardDiskDrive -VM $vm -ErrorAction Stop)) {
+            $metadata=$null; $metadataStatus='Unavailable'; $metadataError=$null
+            if ([string]::IsNullOrWhiteSpace([string]$disk.Path)) {
+                $metadataError='No VHD path; inspect DiskNumber for pass-through storage.'
+            } elseif ([string]$disk.Path -notmatch '^[A-Za-z]:\\') {
+                $metadataError='Non-local path recorded only; no network repository or VHD was opened.'
+            } else {
+                try {
+                    $metadata = Get-VHD -Path $disk.Path -ErrorAction Stop |
+                        Select-Object Path,@{n='VhdFormat';e={[string]$_.VhdFormat}},@{n='VhdType';e={[string]$_.VhdType}},
+                            FileSize,Size,ParentPath,Attached
+                    $metadataStatus='Collected'
+                } catch { $metadataError=$_.Exception.Message }
+            }
+            [pscustomobject]@{ VMId=[string]$vm.Id; VMName=$vm.Name; Path=$disk.Path
+                ControllerType=[string]$disk.ControllerType; ControllerNumber=$disk.ControllerNumber
+                ControllerLocation=$disk.ControllerLocation; DiskNumber=$disk.DiskNumber
+                VHDStatus=$metadataStatus; VHD=$metadata; VHDError=$metadataError
+                Coverage='Attachment path and immediate parent only; no parent-chain traversal, guest disks or vendor backup mapping. VHD errors do not erase attachment evidence.' }
+        }
+    } elseif ($Kind -eq 'Integration') {
+        # Keep all names/IDs: the backup (VSS) component name is localized.
+        Get-VMIntegrationService -VM $vm -ErrorAction Stop |
+            Select-Object @{n='VMId';e={[string]$vm.Id}},@{n='VMName';e={$vm.Name}},Name,
+                @{n='Id';e={[string]$_.Id}},Enabled,
+                @{n='PrimaryStatusDescription';e={[string]$_.PrimaryStatusDescription}},
+                @{n='SecondaryStatusDescription';e={[string]$_.SecondaryStatusDescription}}
+    } else {
+        $snapshots=@(Get-VMSnapshot -VM $vm -ErrorAction Stop | Sort-Object CreationTime -Descending)
+        [pscustomobject]@{ VMId=[string]$vm.Id; VMName=$vm.Name; TotalCount=$snapshots.Count
+            OutputTruncated=($snapshots.Count -gt 50)
+            Checkpoints=@($snapshots | Select-Object -First 50 | Select-Object Name,
+                @{n='Id';e={[string]$_.Id}},CreationTime,@{n='SnapshotType';e={[string]$_.SnapshotType}},
+                @{n='ParentSnapshotId';e={[string]$_.ParentSnapshotId}})
+            Coverage='Checkpoints are local state, not independent backups or proof of a successful vendor job. Missing newer properties remain null in older Hyper-V versions.' }
+    }
+}
 function New-ExternalEvidenceTemplate {
     param([string]$ComputerName)
     $questions = @{
         BackupLastSuccess='Product, task/device, last successful completion, latest failure and console status.'
         BackupProtectedScope='Protected volumes/folders, exclusions, schedule and destination capacity.'
+        HyperVBackupCoverage='For each VM ID/name: vendor task, included/excluded disks, host-volume versus VM-aware protection, application consistency, schedule, latest usable restore point and recent failures.'
+        HyperVRestoreTest='For each critical VM: isolated restore/boot and application test, restore point, result, elapsed time, date and tester. Checkpoint/replication health is not a restore test.'
         BackupRetention='Retention policy, oldest/newest available restore points and recovery point objective.'
         BackupEncryption='Encryption at rest and in transit, confirmed configuration; no keys or credentials.'
         BackupOffsiteProtection='Independent/offsite copy, immutability or isolation and last replication result.'
@@ -166,7 +212,7 @@ function New-ExternalEvidenceTemplate {
         Controls=@(
             foreach ($name in @('BackupLastSuccess','BackupProtectedScope','BackupRetention','BackupEncryption',
                 'BackupOffsiteProtection','BackupRestoreTest','MFAEnforcement','PublicExposure',
-                'RMMEDRConsoleHealth','CentralLogRetention','OSSupportEntitlement','ApprovedSecurityPolicy')) {
+                'RMMEDRConsoleHealth','CentralLogRetention','OSSupportEntitlement','ApprovedSecurityPolicy','HyperVBackupCoverage','HyperVRestoreTest')) {
                 [pscustomobject]@{ Name=$name; Status='Unknown'; Source=''; ObservedAt=''; ObservedBy=''; Details=''; RequestedEvidence=$questions[$name] }
             }
         ) }
@@ -249,7 +295,7 @@ $OutputDirectory = (Resolve-Path -LiteralPath $OutputDirectory).Path
 $prefix = 'WinFixAudit-' + $env:COMPUTERNAME + '-' + $started.ToString('yyyyMMdd-HHmmss')
 $script:checkpointPath = Join-Path $OutputDirectory "$prefix-PARTIAL.json"
 $BackupPattern = 'Veeam|Acronis|Macrium|Datto|Carbonite|Veritas|CrashPlan|\bCove\b|Axcient|Rubrik|Backup|StorageCraft|ShadowProtect|Arcserve|MSP360|CloudBerry|Druva|Commvault|NAKIVO|Retrospect|UrBackup'
-Write-Host "WinFix audit 1.5. Completed checks are saved to $script:checkpointPath"
+Write-Host "WinFix audit 1.6. Completed checks are saved to $script:checkpointPath"
 if (-not $elevated) { Write-Warning 'Run ISE as Administrator for the fullest audit.' }
 Save-AuditCheckpoint
 $checks.System = Invoke-AuditCheck System {
@@ -459,6 +505,46 @@ $checks.BackupTasks = Invoke-AuditCheck BackupTasks {
         } catch { [pscustomobject]@{ TaskName=$task.TaskName; TaskPath=$task.TaskPath; Error=$_.Exception.Message } }
     }
 }
+$checks.HyperVInventory = Invoke-AuditCheck HyperVInventory -Context @{ VMLimit=$MaxHyperVVMs } -Collect {
+    Import-Module Hyper-V -ErrorAction Stop
+    $vms=@(Get-VM -ErrorAction Stop | Sort-Object Name,Id)
+    [pscustomobject]@{ RegisteredVMCount=$vms.Count; VMLimit=$VMLimit; OutputTruncated=($vms.Count -gt $VMLimit)
+        VMs=@($vms | Select-Object -First $VMLimit | Select-Object Name,@{n='Id';e={[string]$_.Id}},
+            @{n='State';e={[string]$_.State}},Status,Generation,Version,Path,ConfigurationLocation,
+            SnapshotFileLocation,SmartPagingFilePath,ProcessorCount,MemoryAssigned,MemoryStartup,
+            @{n='UptimeSeconds';e={$_.Uptime.TotalSeconds}},CheckpointType,AutomaticCheckpointsEnabled,
+            AutomaticStartAction,AutomaticStopAction)
+        OmittedVMs=@($vms | Select-Object -Skip $VMLimit | Select-Object Name,@{n='Id';e={[string]$_.Id}})
+        Coverage='Local registered VMs only, including stopped VMs. Not a cluster-wide or guest-OS audit. VM inventory and checkpoints do not establish backup coverage. Missing newer properties remain null.' }
+}
+# Three separate bounded checks per VM: a blocked disk provider does not prevent
+# integration/checkpoint checks or collection from other VMs. IDs avoid wildcards.
+foreach ($vm in @($checks.HyperVInventory.Data | ForEach-Object { $_.VMs })) {
+    if (-not $vm.Id) { continue }
+    foreach ($kind in @('Disks','Integration','Checkpoints')) {
+        $checkName="HyperV${kind}:$($vm.Id)"
+        $checks[$checkName] = Invoke-AuditCheck $checkName -Context @{
+            VMId=$vm.Id; DetailKind=$kind; DetailCode=${function:Get-AuditHyperVDetail}.ToString()
+        } -Collect {
+            Set-Item Function:Get-AuditHyperVDetail ([scriptblock]::Create($DetailCode))
+            Get-AuditHyperVDetail -VMId $VMId -Kind $DetailKind
+        }
+    }
+}
+if ($checks.HyperVInventory.Status -eq 'Collected') {
+    $checks.HyperVReplication = Invoke-AuditCheck HyperVReplication {
+        Import-Module Hyper-V -ErrorAction Stop
+        Get-VMReplication -ErrorAction Stop | Select-Object VMName,@{n='VMId';e={[string]$_.VMId}},
+            State,Health,Mode,PrimaryServer,ReplicaServer,LastReplicationTime,LastApplyTime,
+            @{n='Coverage';e={'Replication health is not backup success, retention or a restore test.'}}
+    }
+    foreach ($log in @('Microsoft-Windows-Hyper-V-VMMS-Admin','Microsoft-Windows-Hyper-V-Worker-Admin','Microsoft-Windows-Hyper-V-Integration-Admin')) {
+        $checkName="HyperVLog:$log"
+        $checks[$checkName] = Invoke-AuditCheck $checkName -Context @{ Log=$log } -Collect {
+            Get-AuditEvents -LogName $Log -IncludeMessage
+        }
+    }
+}
 $checks.WindowsBackupSummary = Invoke-AuditCheck WindowsBackupSummary {
     Import-Module WindowsServerBackup -ErrorAction Stop
     Get-WBSummary | Select-Object LastBackupTime, LastBackupResultHR, LastSuccessfulBackupTime, NextBackupTime,
@@ -636,7 +722,7 @@ $checks.ExternalEvidence = Invoke-AuditCheck ExternalEvidence -Context @{
     Read-ExternalEvidence -Path $EvidencePath -Template $Template
 }
 $report = [ordered]@{
-    SchemaVersion = '1.5'; AuditId = $script:auditId; Incomplete = $false; ClientName = $ClientName; Location = $Location
+    SchemaVersion = '1.6'; AuditId = $script:auditId; Incomplete = $false; ClientName = $ClientName; Location = $Location
     StartedAt = $started.ToString('o'); CompletedAt = (Get-Date).ToString('o'); Elevated = $elevated
     PowerShellVersion = $PSVersionTable.PSVersion.ToString(); Checks = $checks
     ExportWarnings = @($script:checkpointWarnings)
@@ -649,6 +735,7 @@ $report = [ordered]@{
         'Event queries inspect only the newest EventScanLimit records per log, then filter by time/provider/severity. Scan limits, oldest record time and output truncation are recorded. Event metadata is exported; BackupErrorDetails and VSSErrorDetails also include bounded message text with best-effort labelled-secret scrubbing. Failed logons include all logon types, not just RDP.'
         'Software inventory covers machine-wide uninstall registrations; the general scheduled task list excludes Microsoft tasks, but backup task discovery includes them.'
         'Update history is capped at 100. Missing updates use a potentially stale local cache only; ResultCode 2 means success, 3 means success with errors. LiveMissingUpdates performs a current scan unless explicitly skipped; its status and result code must be checked. Hotfix inventory is not proof of patch compliance.'
+        'HyperVInventory covers local registered VMs up to MaxHyperVVMs (default 50); omitted IDs/names are explicit. Per-VM disk/integration/checkpoint checks have independent timeouts. Only local VHD metadata and immediate parent paths are read. Hyper-V event messages are bounded and scrubbed like backup messages. Checkpoints, integration status and replication are not vendor job success or tested recovery.'
         'Windows backup catalogs and shadow copies are local evidence, not proof of offsite copies or a successful restore. Task exit codes need vendor interpretation.'
         'Service or software detection does not establish agent health, backup success, encryption, or restore readiness.'
         'Listening ports and RDP settings do not establish internet exposure.'
@@ -657,6 +744,7 @@ $report = [ordered]@{
         'ExternalEvidence is user-supplied and not independently verified. Unknown controls remain unknown; device registration, local firewall rules and service presence do not prove MFA, public exposure or backup success.'
     )
     ManualEvidenceRequired = @('Backup last success and failures from vendor console', 'Backup encryption, offsite retention and restore test',
+        'Per-VM vendor backup mapping, application consistency and isolated VM restore test',
         'RMM and EDR console health', 'MFA and VPN enforcement', 'External firewall/NAT exposure',
         'OS support lifecycle including edition, servicing channel and ESU entitlement', 'Organizational policies and compliance review')
 }

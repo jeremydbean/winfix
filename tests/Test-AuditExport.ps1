@@ -94,7 +94,7 @@ Write-Host 'PASS: backup vendor boundaries and compact shadow-storage evidence.'
 
 $template = New-ExternalEvidenceTemplate -ComputerName 'TESTHOST'
 $unknown = @(Read-ExternalEvidence -Path '' -Template $template)
-if ($unknown.Count -ne 12 -or @($unknown | Where-Object Status -ne 'Unknown').Count) { throw 'Missing external evidence was not kept unknown.' }
+if ($unknown.Count -ne 14 -or @($unknown | Where-Object Status -ne 'Unknown').Count) { throw 'Missing external evidence was not kept unknown.' }
 $evidenceTestPath = Join-Path ([IO.Path]::GetTempPath()) ('WinFix-evidence-' + [guid]::NewGuid().ToString('N') + '.json')
 try {
     $template.Controls[0].Status='Reported'
@@ -112,7 +112,7 @@ try {
         Set-Item Function:Read-ExternalEvidence ([scriptblock]::Create($ReaderCode))
         Read-ExternalEvidence -Path $EvidencePath -Template $Template
     }
-    if ($check.Status -ne 'Collected' -or $check.Count -ne 12) { throw 'External evidence did not survive the worker boundary.' }
+    if ($check.Status -ne 'Collected' -or $check.Count -ne 14) { throw 'External evidence did not survive the worker boundary.' }
     $template.ComputerName='WRONGHOST'
     $template | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $evidenceTestPath
     $expectedTemplate=New-ExternalEvidenceTemplate -ComputerName 'TESTHOST'
@@ -235,7 +235,7 @@ $fixtureBlocks=@(New-PasteBlocks -Json $roundTripJson -Size 50 -Id 'json-regress
 $rebuilt=($fixtureBlocks | ForEach-Object { ($_ -split "`r`n")[1] }) -join ''
 if ($rebuilt -cne $roundTripJson) { throw 'JSON paste blocks changed escaped path data.' }
 $templateRoundTrip=ConvertTo-AuditJson -InputObject (New-ExternalEvidenceTemplate -ComputerName 'SERVER') -Depth 6 | ConvertFrom-Json
-if ($templateRoundTrip.Controls.Count -ne 12) { throw 'The template was not serialized through the compatible path.' }
+if ($templateRoundTrip.Controls.Count -ne 14) { throw 'The template was not serialized through the compatible path.' }
 $script:checks=$fixture.Checks
 $script:checkpointWarnings=@()
 $script:checkpointPath=Join-Path ([IO.Path]::GetTempPath()) ('WinFix-json-' + [guid]::NewGuid().ToString('N') + '.json')
@@ -260,3 +260,81 @@ try {
     $script:checkpointPath=$null
 }
 Write-Host 'PASS: legacy formatter bypass, exact path/data preservation, paste reassembly and checkpoint failure/recovery.'
+
+# Hyper-V fixtures execute the production inventory and detail code. No Hyper-V
+# module is needed on this test machine; jobs/serialization are still real below.
+$hyperMocks = @'
+function Import-Module { [CmdletBinding()]param($Name) if ($Name -ne 'Hyper-V') { throw 'Unexpected module' } }
+function Get-VM {
+    [CmdletBinding()]param([guid]$Id)
+    if ($Id -eq [guid]'22222222-2222-2222-2222-222222222222') { throw 'VM removed during collection' }
+    $first=[pscustomobject]@{Name='VM [one]';Id=[guid]'11111111-1111-1111-1111-111111111111';State='Off';Path='D:\VMs\one';Uptime=[timespan]::Zero}
+    if ($PSBoundParameters.ContainsKey('Id')) { $first; return }
+    $first
+    [pscustomobject]@{Name='VM two';Id=[guid]'22222222-2222-2222-2222-222222222222';State='Running';Uptime=[timespan]::FromDays(1)}
+}
+function Get-VMHardDiskDrive {
+    [CmdletBinding()]param($VM)
+    [pscustomobject]@{Path='D:\VMs\one\disk.avhdx';ControllerType='SCSI';ControllerNumber=0;ControllerLocation=0}
+    [pscustomobject]@{Path='D:\VMs\denied.vhdx';ControllerType='SCSI';ControllerLocation=1}
+    [pscustomobject]@{Path='\\nas\VMs\remote.vhdx';ControllerType='SCSI';ControllerLocation=2}
+    [pscustomobject]@{Path=$null;DiskNumber=4;ControllerType='SCSI';ControllerLocation=3}
+}
+function Get-VHD {
+    [CmdletBinding()]param($Path)
+    if ($Path -like '\\*') { throw 'Network path should never be opened' }
+    if ($Path -like '*denied*') { throw 'VHD access denied' }
+    [pscustomobject]@{Path=$Path;VhdFormat='VHDX';VhdType='Differencing';FileSize=1024;Size=4096;ParentPath='D:\VMs\base.vhdx';Attached=$true;ExtraMetadata=('noise'*10000)}
+}
+function Get-VMIntegrationService {
+    [CmdletBinding()]param($VM)
+    [pscustomobject]@{Name='Sicherung (Volumesnapshot)';Id='backup-id';Enabled=$false;PrimaryStatusDescription='OK'}
+}
+function Get-VMSnapshot {
+    [CmdletBinding()]param($VM)
+    1..52 | ForEach-Object { [pscustomobject]@{Name="checkpoint $_";Id="id$_";CreationTime=(Get-Date).AddDays(-$_);SnapshotType='Recovery'} }
+}
+'@
+. ([scriptblock]::Create($hyperMocks))
+$inventoryAssignment=$ast.Find({param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq '$checks.HyperVInventory'},$true)
+$inventoryBlock=@($inventoryAssignment.FindAll({param($n) $n -is [System.Management.Automation.Language.ScriptBlockExpressionAst]},$true))[0]
+$inventoryCode=$inventoryBlock.ScriptBlock.Extent.Text.Trim('{}')
+$VMLimit=1
+$inventory=& ([scriptblock]::Create($inventoryCode))
+if ($inventory.RegisteredVMCount -ne 2 -or $inventory.VMs.Count -ne 1 -or -not $inventory.OutputTruncated -or $inventory.OmittedVMs[0].Name -ne 'VM two' -or $inventory.VMs[0].State -ne 'Off' -or $null -ne $inventory.VMs[0].CheckpointType) { throw 'Hyper-V inventory cap, stopped VM or legacy null evidence failed.' }
+$id='11111111-1111-1111-1111-111111111111'
+$disks=@(Get-AuditHyperVDetail -VMId $id -Kind Disks)
+if ($disks.Count -ne 4 -or $disks[0].VHD.ParentPath -ne 'D:\VMs\base.vhdx' -or $disks[1].VHDError -ne 'VHD access denied' -or $disks[2].VHDError -notlike 'Non-local*' -or $disks[3].DiskNumber -ne 4) { throw 'Disk attachment/parent or failed/remote/pass-through evidence lost.' }
+if ((ConvertTo-AuditJson -InputObject $disks).Length -gt 5000) { throw 'VHD object metadata leaked into export.' }
+$integration=@(Get-AuditHyperVDetail -VMId $id -Kind Integration)
+if ($integration.Count -ne 1 -or $integration[0].Enabled -ne $false -or $integration[0].Name -ne 'Sicherung (Volumesnapshot)') { throw 'Localized/disabled backup integration was lost.' }
+$snap=Get-AuditHyperVDetail -VMId $id -Kind Checkpoints
+if ($snap.TotalCount -ne 52 -or -not $snap.OutputTruncated -or $snap.Checkpoints.Count -ne 50 -or $snap.Checkpoints[0].Name -ne 'checkpoint 1') { throw 'Checkpoint ordering or coverage limits lost.' }
+try { $null=Get-AuditHyperVDetail -VMId '22222222-2222-2222-2222-222222222222' -Kind Disks; throw 'Missing VM accepted' }
+catch { if ($_.Exception.Message -ne 'VM removed during collection') { throw } }
+function Get-VM { [CmdletBinding()]param([guid]$Id) @() }
+$inventory=& ([scriptblock]::Create($inventoryCode))
+if ($inventory.RegisteredVMCount -ne 0 -or $inventory.VMs.Count -ne 0 -or $inventory.OutputTruncated) { throw 'Empty Hyper-V host is not distinct from unavailable.' }
+function Import-Module { [CmdletBinding()]param($Name) throw 'Hyper-V module unavailable' }
+try { $null=& ([scriptblock]::Create($inventoryCode)); throw 'Unsupported Hyper-V host accepted' }
+catch { if ($_.Exception.Message -ne 'Hyper-V module unavailable') { throw } }
+foreach ($name in @('Import-Module','Get-VM','Get-VMHardDiskDrive','Get-VHD','Get-VMIntegrationService','Get-VMSnapshot')) { Remove-Item "Function:$name" }
+$hyperJob=Invoke-AuditCheck HyperVWorkerTest -Context @{
+    MockCode=$hyperMocks; DetailCode=${function:Get-AuditHyperVDetail}.ToString(); VMId=$id
+} -Collect {
+    . ([scriptblock]::Create($MockCode))
+    Set-Item Function:Get-AuditHyperVDetail ([scriptblock]::Create($DetailCode))
+    Get-AuditHyperVDetail -VMId $VMId -Kind Disks
+}
+$hyperRoundTrip=ConvertTo-AuditJson -InputObject $hyperJob | ConvertFrom-Json
+if ($hyperJob.Status -ne 'Collected' -or $hyperRoundTrip.Count -ne 4 -or $hyperRoundTrip.Data[0].VMName -ne 'VM [one]' -or $hyperRoundTrip.Data[0].VHD.Path -ne 'D:\VMs\one\disk.avhdx') { throw 'Hyper-V helper/job/JSON boundary failed.' }
+# Older evidence templates stay importable: new VM controls must remain Unknown.
+$oldTemplate=New-ExternalEvidenceTemplate -ComputerName TESTHOST
+$oldTemplate.Controls=@($oldTemplate.Controls | Select-Object -First 12)
+$oldPath=Join-Path ([IO.Path]::GetTempPath()) ('WinFix-old-' + [guid]::NewGuid().ToString('N') + '.json')
+try {
+    [IO.File]::WriteAllText($oldPath,(ConvertTo-AuditJson -InputObject $oldTemplate))
+    $imported=@(Read-ExternalEvidence -Path $oldPath -Template (New-ExternalEvidenceTemplate -ComputerName TESTHOST))
+    if ($imported.Count -ne 14 -or @($imported | Where-Object { $_.Name -like 'HyperV*' -and $_.Status -eq 'Unknown' }).Count -ne 2) { throw 'Legacy evidence template compatibility failed.' }
+} finally { Remove-Item -LiteralPath $oldPath }
+Write-Host 'PASS: Hyper-V inventory/limits/legacy properties, per-VM evidence, VHD failures and non-local paths, localized integration, checkpoints, worker JSON and legacy template compatibility.'

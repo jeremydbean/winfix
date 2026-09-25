@@ -294,3 +294,28 @@ paste-part reassembly, simulated legacy formatter failure and checkpoint recover
 The exact native PowerShell 4 behavior still needs confirmation on the server.
 
 Reference: [PowerShell 4 compact JSON workaround reported by env-exporter](https://github.com/ForNeVeR/env-exporter/issues/3).
+
+### Hyper-V backup evidence (collector 1.6)
+
+The collector inventories local registered VMs, including stopped VMs, and records
+VM IDs, configuration paths, checkpoint settings, attached disk paths, available
+local VHD metadata (including the immediate parent), integration-service status,
+and up to 50 checkpoints per VM. Each VM's disk, integration and checkpoint query
+has its own timeout; a blocked query does not stop the other VMs. By default the
+first 50 VMs are inspected; `-MaxHyperVVMs` raises that limit up to 500, and omitted
+VM names/IDs are listed. Large hosts can take longer because each VM adds checks.
+Non-local VHD paths are recorded without opening a network repository; VHD metadata
+errors preserve the disk attachment. Parent chains are not traversed.
+
+Hyper-V replication state and three Admin event channels (VMMS, Worker and
+Integration) add bounded local evidence and scrubbed message excerpts. Empty or
+unavailable results, checkpoint presence, healthy integration services and replica
+health never establish vendor backup success. Older Hyper-V versions may lack
+newer properties; those remain null. Server 2012 R2 / PowerShell 4 remains targeted.
+
+The external evidence template now also requests `HyperVBackupCoverage` and
+`HyperVRestoreTest`: map every VM to a Synology/vendor task and usable recovery
+point, confirm disks and application consistency, and record an isolated restore
+and application test. Existing 12-control evidence files remain accepted; omitted
+new controls stay Unknown. This is local-host collection only: it does not query
+guest operating systems, other cluster nodes, or authenticate to the Synology NAS.
