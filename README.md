@@ -138,7 +138,7 @@ Results go into `Desktop\WinFixAudit` by default. The complete `*-PASTE.txt` fil
 opens automatically in Notepad when collection finishes. Press Ctrl+A, Ctrl+C to
 copy it. Use `-NoOpen` for unattended runs. Paste the `*-PASTE.txt`
 contents into your conversation. For a large audit, send the numbered `*-PART-*.txt`
-files in order. The JSON file contains the same evidence in an indented format.
+files in order. The JSON file contains the same evidence in compact format for PowerShell 4 compatibility.
 Ask for an executive summary, prioritized findings, remediation plan and a polished
 HTML or PDF report. The collector includes this request in its paste output.
 
@@ -276,3 +276,21 @@ R2 / PowerShell 4.0 run has not yet been verified in this development environmen
 References: [Microsoft WMF/OS version table](https://learn.microsoft.com/en-us/powershell/scripting/windows-powershell/wmf-overview),
 [Microsoft TLS 1.2 session configuration](https://devblogs.microsoft.com/powershell/powershell-gallery-tls-support/),
 [Win32_UserAccount fields](https://learn.microsoft.com/en-us/windows/win32/cimwin32prov/win32-useraccount).
+
+
+### PowerShell 4 JSON export fix (collector 1.5)
+
+PowerShell 4 can report `JsonStringInBadFormat` when its JSON formatter encounters
+strings ending in a backslash, such as a share path of `C:\`. All exports now use
+one compact JSON serializer, including checkpoints, evidence templates and final
+reports. No trailing slashes or other evidence values are stripped to avoid the
+error. Compact JSON changes whitespace, not the data.
+
+A failed checkpoint now logs a warning and leaves collection running with the
+results in memory. The previous successful checkpoint is retained and export
+warnings appear in the final report. Final output still requires a writable output
+folder. Regression tests cover trailing-slash/quoted paths, Unicode, JSON parse-back,
+paste-part reassembly, simulated legacy formatter failure and checkpoint recovery.
+The exact native PowerShell 4 behavior still needs confirmation on the server.
+
+Reference: [PowerShell 4 compact JSON workaround reported by env-exporter](https://github.com/ForNeVeR/env-exporter/issues/3).

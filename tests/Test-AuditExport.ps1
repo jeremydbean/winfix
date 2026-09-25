@@ -216,3 +216,47 @@ if ($global:winfixLauncherTestRan -or [Net.ServicePointManager]::SecurityProtoco
 Remove-Item Function:Invoke-RestMethod
 Remove-Variable -Name winfixLauncherTestRan -Scope Global
 Write-Host 'PASS: PowerShell 4 requirements, legacy local accounts/admins/clipboard, DC guard, TLS launcher success/failure and protocol restoration.'
+
+# Reproduce the legacy formatter failure at the serializer boundary. Every
+# production export must bypass formatting without altering the source strings.
+function ConvertTo-Json {
+    [CmdletBinding()]param([Parameter(Mandatory=$true)][AllowNull()]$InputObject,[int]$Depth,[switch]$Compress)
+    if (-not $Compress) { throw 'The converted JSON string is in bad format.' }
+    Microsoft.PowerShell.Utility\ConvertTo-Json -InputObject $InputObject -Depth $Depth -Compress
+}
+$fixture = [ordered]@{ Checks=[ordered]@{Shares=[pscustomobject]@{Status='Collected';Data=@(
+    [pscustomobject]@{Name='C$';Path='C:\';Description='Root "share"';EncryptData=$false},
+    [pscustomobject]@{Name='Backup';Path='\\nas\backups\';Description=('Unicode ' + [char]0x00e9);EncryptData=$null}
+)}}; Empty=@(); Single=@('one'); Text="Tab`tNewline`nTrailing slash\\" }
+$roundTripJson=ConvertTo-AuditJson -InputObject $fixture
+$roundTrip=$roundTripJson | ConvertFrom-Json
+if ($roundTrip.Checks.Shares.Data[0].Path -cne 'C:\' -or $roundTrip.Checks.Shares.Data[1].Path -cne '\\nas\backups\' -or $roundTrip.Checks.Shares.Data[0].Description -cne 'Root "share"' -or $roundTrip.Text -cne $fixture.Text -or $roundTrip.Empty.Count -ne 0 -or $roundTrip.Single.Count -ne 1 -or $roundTrip.Checks.Shares.Data[0].EncryptData -ne $false -or $null -ne $roundTrip.Checks.Shares.Data[1].EncryptData) { throw 'Compact JSON changed audit evidence.' }
+$fixtureBlocks=@(New-PasteBlocks -Json $roundTripJson -Size 50 -Id 'json-regression')
+$rebuilt=($fixtureBlocks | ForEach-Object { ($_ -split "`r`n")[1] }) -join ''
+if ($rebuilt -cne $roundTripJson) { throw 'JSON paste blocks changed escaped path data.' }
+$templateRoundTrip=ConvertTo-AuditJson -InputObject (New-ExternalEvidenceTemplate -ComputerName 'SERVER') -Depth 6 | ConvertFrom-Json
+if ($templateRoundTrip.Controls.Count -ne 12) { throw 'The template was not serialized through the compatible path.' }
+$script:checks=$fixture.Checks
+$script:checkpointWarnings=@()
+$script:checkpointPath=Join-Path ([IO.Path]::GetTempPath()) ('WinFix-json-' + [guid]::NewGuid().ToString('N') + '.json')
+try {
+    Save-AuditCheckpoint
+    $saved=Get-Content -LiteralPath $script:checkpointPath -Raw
+    if (($saved | ConvertFrom-Json).Checks.Shares.Data[0].Path -cne 'C:\') { throw 'Share path did not survive checkpoint export.' }
+    # Simulate a separate export failure with a prior good checkpoint on disk.
+    function ConvertTo-Json { [CmdletBinding()]param($InputObject,[int]$Depth,[switch]$Compress) throw 'Simulated checkpoint serialization failure' }
+    $continued=Invoke-AuditCheck 'AfterCheckpointFailure' { [pscustomobject]@{Value='still collected'} }
+    if ($continued.Status -ne 'Collected' -or $script:checkpointWarnings.Count -ne 1 -or $script:checkpointWarnings[0].Error -notlike '*Simulated*') { throw 'Checkpoint failure stopped collection or was hidden.' }
+    if ((Get-Content -LiteralPath $script:checkpointPath -Raw) -cne $saved) { throw 'The previous good checkpoint was lost.' }
+    Remove-Item Function:ConvertTo-Json
+    Save-AuditCheckpoint
+    $recovered=Get-Content -LiteralPath $script:checkpointPath -Raw | ConvertFrom-Json
+    if ($recovered.Checks.AfterCheckpointFailure.Status -ne 'Collected' -or $recovered.ExportWarnings.Count -ne 1) { throw 'Checkpoint recovery lost results or warnings.' }
+    $final=ConvertTo-AuditJson -InputObject @{Incomplete=$false;Checks=$script:checks;ExportWarnings=@($script:checkpointWarnings)} | ConvertFrom-Json
+    if ($final.Incomplete -or $final.Checks.Shares.Data[0].Path -cne 'C:\' -or $final.ExportWarnings.Count -ne 1) { throw 'Final export lost retained evidence.' }
+} finally {
+    Remove-Item Function:ConvertTo-Json -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $script:checkpointPath -ErrorAction SilentlyContinue
+    $script:checkpointPath=$null
+}
+Write-Host 'PASS: legacy formatter bypass, exact path/data preservation, paste reassembly and checkpoint failure/recovery.'

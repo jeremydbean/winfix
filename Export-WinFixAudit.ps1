@@ -23,13 +23,31 @@ param(
     [switch]$CopyToClipboard
 )
 
+function ConvertTo-AuditJson {
+    param([Parameter(Mandatory=$true)][AllowNull()]$InputObject, [ValidateRange(1,100)][int]$Depth = 14)
+    # PowerShell 4's pretty formatter can reject valid strings ending in a
+    # backslash (for example C:\). Compact JSON avoids that formatting bug.
+    # Keep the evidence unchanged; use this for every JSON export.
+    ConvertTo-Json -InputObject $InputObject -Depth $Depth -Compress -ErrorAction Stop
+}
 function Save-AuditCheckpoint {
     if ($script:checkpointPath) {
-        $snapshot = [ordered]@{ SchemaVersion='1.4'; AuditId=$script:auditId; Incomplete=$true
-            SavedAt=(Get-Date).ToString('o'); ClientName=$ClientName; Location=$Location; Elevated=$elevated; Checks=$script:checks }
         $tempPath = $script:checkpointPath + '.tmp'
-        [IO.File]::WriteAllText($tempPath, ($snapshot | ConvertTo-Json -Depth 14), (New-Object Text.UTF8Encoding($false)))
-        Move-Item -LiteralPath $tempPath -Destination $script:checkpointPath -Force
+        try {
+            $snapshot = [ordered]@{ SchemaVersion='1.5'; AuditId=$script:auditId; Incomplete=$true
+                SavedAt=(Get-Date).ToString('o'); ClientName=$ClientName; Location=$Location; Elevated=$elevated
+                Checks=$script:checks; ExportWarnings=@($script:checkpointWarnings) }
+            $checkpointJson = ConvertTo-AuditJson -InputObject $snapshot
+            [IO.File]::WriteAllText($tempPath, $checkpointJson, (New-Object Text.UTF8Encoding($false)))
+            Move-Item -LiteralPath $tempPath -Destination $script:checkpointPath -Force -ErrorAction Stop
+        } catch {
+            $script:checkpointWarnings += [pscustomobject]@{
+                Stage='Checkpoint'; Time=(Get-Date).ToString('o'); Path=$script:checkpointPath; Error=$_.Exception.Message
+            }
+            # Preserve the previous good checkpoint and all in-memory results.
+            Remove-Item -LiteralPath $tempPath -Force -ErrorAction SilentlyContinue
+            Write-Warning -Message 'Checkpoint could not be saved; continuing with results in memory. The final report will include the export warning.' -WarningAction Continue
+        }
     }
 }
 function Invoke-AuditCheck {
@@ -219,6 +237,7 @@ $principal = New-Object Security.Principal.WindowsPrincipal($identity)
 $elevated = $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 $since = (Get-Date).AddDays(-$LookbackDays)
 $script:checks = [ordered]@{}
+$script:checkpointWarnings = @()
 $script:auditId = [guid]::NewGuid().ToString('N')
 if ([string]::IsNullOrWhiteSpace($OutputDirectory)) {
     $desktop = [Environment]::GetFolderPath('Desktop')
@@ -230,7 +249,7 @@ $OutputDirectory = (Resolve-Path -LiteralPath $OutputDirectory).Path
 $prefix = 'WinFixAudit-' + $env:COMPUTERNAME + '-' + $started.ToString('yyyyMMdd-HHmmss')
 $script:checkpointPath = Join-Path $OutputDirectory "$prefix-PARTIAL.json"
 $BackupPattern = 'Veeam|Acronis|Macrium|Datto|Carbonite|Veritas|CrashPlan|\bCove\b|Axcient|Rubrik|Backup|StorageCraft|ShadowProtect|Arcserve|MSP360|CloudBerry|Druva|Commvault|NAKIVO|Retrospect|UrBackup'
-Write-Host "WinFix audit 1.4. Completed checks are saved to $script:checkpointPath"
+Write-Host "WinFix audit 1.5. Completed checks are saved to $script:checkpointPath"
 if (-not $elevated) { Write-Warning 'Run ISE as Administrator for the fullest audit.' }
 Save-AuditCheckpoint
 $checks.System = Invoke-AuditCheck System {
@@ -609,7 +628,7 @@ $checks.VSSErrorDetails = Invoke-AuditCheck VSSErrorDetails {
 }
 $evidenceTemplate = New-ExternalEvidenceTemplate -ComputerName $env:COMPUTERNAME
 $evidenceTemplatePath = Join-Path $OutputDirectory "$prefix-EVIDENCE-TEMPLATE.json"
-[IO.File]::WriteAllText($evidenceTemplatePath, ($evidenceTemplate | ConvertTo-Json -Depth 6), (New-Object Text.UTF8Encoding($false)))
+[IO.File]::WriteAllText($evidenceTemplatePath, (ConvertTo-AuditJson -InputObject $evidenceTemplate -Depth 6), (New-Object Text.UTF8Encoding($false)))
 $checks.ExternalEvidence = Invoke-AuditCheck ExternalEvidence -Context @{
     EvidencePath=$EvidenceFile; Template=$evidenceTemplate; ReaderCode=${function:Read-ExternalEvidence}.ToString()
 } -Collect {
@@ -617,9 +636,10 @@ $checks.ExternalEvidence = Invoke-AuditCheck ExternalEvidence -Context @{
     Read-ExternalEvidence -Path $EvidencePath -Template $Template
 }
 $report = [ordered]@{
-    SchemaVersion = '1.4'; AuditId = $script:auditId; Incomplete = $false; ClientName = $ClientName; Location = $Location
+    SchemaVersion = '1.5'; AuditId = $script:auditId; Incomplete = $false; ClientName = $ClientName; Location = $Location
     StartedAt = $started.ToString('o'); CompletedAt = (Get-Date).ToString('o'); Elevated = $elevated
     PowerShellVersion = $PSVersionTable.PSVersion.ToString(); Checks = $checks
+    ExportWarnings = @($script:checkpointWarnings)
     OnlineUpdateScanRequested = (-not $SkipOnlineUpdateScan)
     ExternalEvidenceTemplate = $evidenceTemplatePath
     BackupLogsNotQueried = @($backupLogs | Select-Object -Skip 12)
@@ -641,8 +661,8 @@ $report = [ordered]@{
         'OS support lifecycle including edition, servicing channel and ESU entitlement', 'Organizational policies and compliance review')
 }
 New-Item -ItemType Directory -Path $OutputDirectory -Force | Out-Null
-$json = $report | ConvertTo-Json -Depth 12
-$compact = $report | ConvertTo-Json -Depth 12 -Compress
+$compact = ConvertTo-AuditJson -InputObject $report -Depth 14
+$json = $compact
 $encoding = New-Object System.Text.UTF8Encoding($false)
 $jsonPath = Join-Path $OutputDirectory "$prefix.json"
 [IO.File]::WriteAllText($jsonPath, $json, $encoding)
