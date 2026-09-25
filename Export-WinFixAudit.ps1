@@ -5,7 +5,7 @@ Collect local Windows audit evidence for a report, without changing configuratio
 .DESCRIPTION
 Writes full JSON and numbered paste blocks. No upload is performed. Inventory can
 contain machine/domain names, usernames, IPs and paths. Review before sharing.
-Backup verification, MFA, external exposure and compliance require manual evidence.
+Some backup, identity and perimeter controls require supplied console or test evidence.
 #>
 [CmdletBinding()]
 param(
@@ -17,13 +17,15 @@ param(
     [ValidateRange(4000,24000)][int]$PasteBlockCharacters = 12000,
     [ValidateRange(5,300)][int]$CheckTimeoutSeconds = 25,
     [ValidateRange(100,10000)][int]$EventScanLimit = 1000,
+    [string]$EvidenceFile = '',
+    [switch]$SkipOnlineUpdateScan,
     [switch]$NoOpen,
     [switch]$CopyToClipboard
 )
 
 function Save-AuditCheckpoint {
     if ($script:checkpointPath) {
-        $snapshot = [ordered]@{ SchemaVersion='1.2'; AuditId=$script:auditId; Incomplete=$true
+        $snapshot = [ordered]@{ SchemaVersion='1.3'; AuditId=$script:auditId; Incomplete=$true
             SavedAt=(Get-Date).ToString('o'); ClientName=$ClientName; Location=$Location; Elevated=$elevated; Checks=$script:checks }
         $tempPath = $script:checkpointPath + '.tmp'
         [IO.File]::WriteAllText($tempPath, ($snapshot | ConvertTo-Json -Depth 14), (New-Object Text.UTF8Encoding($false)))
@@ -85,7 +87,7 @@ function Invoke-AuditCheck {
     return $result
 }
 function Get-AuditEvents {
-    param([string]$LogName, [int[]]$Levels = @(), [int[]]$Ids = @(), [string]$ProviderPattern = '')
+    param([string]$LogName, [int[]]$Levels = @(), [int[]]$Ids = @(), [string]$ProviderPattern = '', [switch]$IncludeMessage)
     # Bound records read BEFORE filtering; MaxEvents on a sparse filtered query
     # alone can still walk a huge log. The outer job also limits elapsed time.
     $info = Get-WinEvent -ListLog $LogName -ErrorAction Stop
@@ -98,6 +100,23 @@ function Get-AuditEvents {
         $_.TimeCreated -ge $since -and (-not $Levels.Count -or $_.Level -in $Levels) -and
         (-not $Ids.Count -or $_.Id -in $Ids) -and (-not $ProviderPattern -or $_.ProviderName -match $ProviderPattern)
     })
+    $events = @($matched | Select-Object -First $MaxEvents | ForEach-Object {
+        $entry = $_ | Select-Object TimeCreated, Id, RecordId, ProviderName, Level, LevelDisplayName, LogName
+        if ($IncludeMessage) {
+            $message = $null; $messageError = $null; $messageTruncated = $false
+            try {
+                $message = [string]$_.Message
+                # Best-effort scrubbing of labelled secrets; review before sharing.
+                $message = $message -replace '(?i)((?:password|passwd|pwd|token|secret|authorization|api[_-]?key)\s*[:=]\s*)("[^"]*"|[^\s;,]+)', '$1[REDACTED]'
+                $message = $message -replace '(?i)(https?://)[^\s/@]+:[^\s/@]+@', '$1[REDACTED]@'
+                if ($message.Length -gt 2000) { $message=$message.Substring(0,2000); $messageTruncated=$true }
+            } catch { $messageError=$_.Exception.Message }
+            $entry | Add-Member NoteProperty Message $message
+            $entry | Add-Member NoteProperty MessageTruncated $messageTruncated
+            $entry | Add-Member NoteProperty MessageError $messageError
+        }
+        $entry
+    })
     [pscustomobject]@{
         LogName=$LogName; Enabled=$info.IsEnabled; RecordsInLog=$info.RecordCount
         RecordsScanned=$records.Count; ScanLimit=$EventScanLimit; Since=$since
@@ -105,7 +124,67 @@ function Get-AuditEvents {
         ScanLimitReached=($records.Count -ge $EventScanLimit)
         MatchedInSample=$matched.Count; OutputTruncated=($matched.Count -gt $MaxEvents)
         Coverage='Recent-record sample only; zero matches is not proof of no incidents or no backups.'
-        Events=@($matched | Select-Object -First $MaxEvents | Select-Object TimeCreated, Id, RecordId, ProviderName, Level, LevelDisplayName, LogName)
+        Events=$events
+    }
+}
+function New-ExternalEvidenceTemplate {
+    param([string]$ComputerName)
+    $questions = @{
+        BackupLastSuccess='Product, task/device, last successful completion, latest failure and console status.'
+        BackupProtectedScope='Protected volumes/folders, exclusions, schedule and destination capacity.'
+        BackupRetention='Retention policy, oldest/newest available restore points and recovery point objective.'
+        BackupEncryption='Encryption at rest and in transit, confirmed configuration; no keys or credentials.'
+        BackupOffsiteProtection='Independent/offsite copy, immutability or isolation and last replication result.'
+        BackupRestoreTest='Test date, restore point, alternate destination, files/workload checked, outcome, elapsed time and tester.'
+        MFAEnforcement='Identity/remote-support system, effective policy scope, exceptions and sign-in evidence.'
+        PublicExposure='Perimeter/cloud firewall or NAT rules, reviewed public endpoints, authorized external test scope/time/result.'
+        RMMEDRConsoleHealth='Ninja/Huntress/antivirus console last check-in, alerts, signatures and applied policy.'
+        CentralLogRetention='Logging destination, successful receipt, retention period and monitored event types.'
+        OSSupportEntitlement='Confirmed Windows edition/build/channel and support or ESU entitlement, if applicable.'
+        ApprovedSecurityPolicy='Approved password/access baseline, system owner and recovery time/point objectives.'
+    }
+    [pscustomobject]@{ SchemaVersion='1.0'; ComputerName=$ComputerName
+        Instructions='Complete only from an identified console, policy, or performed test. Use Reported or NotApplicable with Source, ObservedAt (ISO 8601 with offset), ObservedBy and Details. Leave unknown items Unknown. Never enter credentials or recovery keys. Import using -EvidenceFile.'
+        Controls=@(
+            foreach ($name in @('BackupLastSuccess','BackupProtectedScope','BackupRetention','BackupEncryption',
+                'BackupOffsiteProtection','BackupRestoreTest','MFAEnforcement','PublicExposure',
+                'RMMEDRConsoleHealth','CentralLogRetention','OSSupportEntitlement','ApprovedSecurityPolicy')) {
+                [pscustomobject]@{ Name=$name; Status='Unknown'; Source=''; ObservedAt=''; ObservedBy=''; Details=''; RequestedEvidence=$questions[$name] }
+            }
+        ) }
+}
+function Read-ExternalEvidence {
+    param([string]$Path, $Template)
+    if ([string]::IsNullOrWhiteSpace($Path)) {
+        foreach ($row in $Template.Controls) {
+            [pscustomobject]@{ Name=$row.Name; Status='Unknown'; Origin='ExternalEvidenceRequired'; Source=''; ObservedAt=''; ObservedBy=''; Details='' }
+        }
+        return
+    }
+    $file = Get-Item -LiteralPath $Path -ErrorAction Stop
+    if ($file.Length -gt 262144) { throw 'Evidence file exceeds the 256 KiB limit.' }
+    $inputData = Get-Content -LiteralPath $Path -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+    if ($inputData.SchemaVersion -ne '1.0' -or $inputData.ComputerName -ne $Template.ComputerName) { throw 'Evidence schema or computer name does not match this host.' }
+    $allowed = @($Template.Controls | ForEach-Object { $_.Name })
+    $seen = @{}
+    foreach ($row in @($inputData.Controls)) {
+        if ($row.Name -notin $allowed -or $seen.ContainsKey([string]$row.Name)) { throw 'Unknown or duplicate evidence control name.' }
+        $seen[$row.Name] = $row
+        if ($row.Status -notin @('Unknown','Reported','NotApplicable')) { throw 'Evidence status must be Unknown, Reported or NotApplicable.' }
+        if ($row.Status -ne 'Unknown') {
+            foreach ($key in @('Source','ObservedAt','ObservedBy','Details')) {
+                if ([string]::IsNullOrWhiteSpace([string]$row.$key)) { throw "Evidence $($row.Name) requires $key." }
+            }
+            if ($row.ObservedAt -is [datetime] -or $row.ObservedAt -is [datetimeoffset]) { $row.ObservedAt=$row.ObservedAt.ToString('o') }
+            if ([string]$row.ObservedAt -notmatch '^\d{4}-\d{2}-\d{2}T.*(Z|[+-]\d{2}:\d{2})$') { throw 'ObservedAt must be an ISO 8601 timestamp with timezone.' }
+            $null = [datetimeoffset]::Parse([string]$row.ObservedAt)
+        }
+    }
+    foreach ($name in $allowed) {
+        $row=$seen[$name]
+        if ($null -eq $row) { $row=[pscustomobject]@{Status='Unknown'} }
+        [pscustomobject]@{ Name=$name; Status=[string]$row.Status; Origin='UserSuppliedNotIndependentlyVerified'
+            Source=[string]$row.Source; ObservedAt=[string]$row.ObservedAt; ObservedBy=[string]$row.ObservedBy; Details=[string]$row.Details }
     }
 }
 function New-PasteBlocks {
@@ -136,7 +215,7 @@ $OutputDirectory = (Resolve-Path -LiteralPath $OutputDirectory).Path
 $prefix = 'WinFixAudit-' + $env:COMPUTERNAME + '-' + $started.ToString('yyyyMMdd-HHmmss')
 $script:checkpointPath = Join-Path $OutputDirectory "$prefix-PARTIAL.json"
 $BackupPattern = 'Veeam|Acronis|Macrium|Datto|Carbonite|Veritas|CrashPlan|\bCove\b|Axcient|Rubrik|Backup|StorageCraft|ShadowProtect|Arcserve|MSP360|CloudBerry|Druva|Commvault|NAKIVO|Retrospect|UrBackup'
-Write-Host "WinFix audit 1.2. Completed checks are saved to $script:checkpointPath"
+Write-Host "WinFix audit 1.3. Completed checks are saved to $script:checkpointPath"
 if (-not $elevated) { Write-Warning 'Run ISE as Administrator for the fullest audit.' }
 Save-AuditCheckpoint
 $checks.System = Invoke-AuditCheck System {
@@ -384,21 +463,129 @@ $checks.ClinicalApplication = Invoke-AuditCheck ClinicalApplication {
         Note='Directory presence only; does not establish application encryption or configuration.' }
 }
 $checks.VSSSystemEvents = Invoke-AuditCheck VSSSystemEvents { Get-AuditEvents -LogName System -ProviderPattern 'VSS|VolSnap|SPP|disk|Ntfs' -Levels 1,2,3 }
+$checks.ShareNTFSPermissions = Invoke-AuditCheck ShareNTFSPermissions {
+    Get-SmbShare | Where-Object { -not $_.Special -and $_.Path } | ForEach-Object {
+        $share = $_
+        try {
+            $acl = Get-Acl -LiteralPath $share.Path -ErrorAction Stop
+            [pscustomobject]@{ ShareName=$share.Name; Path=$share.Path; Status='Collected'; Owner=$acl.Owner
+                InheritanceDisabled=$acl.AreAccessRulesProtected
+                Rules=@($acl.Access | ForEach-Object { [pscustomobject]@{
+                    Identity=[string]$_.IdentityReference; Rights=[string]$_.FileSystemRights
+                    Type=[string]$_.AccessControlType; Inherited=$_.IsInherited
+                    Inheritance=[string]$_.InheritanceFlags; Propagation=[string]$_.PropagationFlags } })
+                Coverage='Share root only; child ACLs and effective user access are not evaluated.'; Error=$null }
+        } catch { [pscustomobject]@{ ShareName=$share.Name; Path=$share.Path; Status='Unavailable'; Error=$_.Exception.Message } }
+    }
+}
+$checks.DeviceRegistration = Invoke-AuditCheck DeviceRegistration {
+    $output = & dsregcmd.exe /status 2>&1
+    if ($LASTEXITCODE -ne 0) { throw ($output -join "`n") }
+    $fields = [ordered]@{}
+    foreach ($line in $output) {
+        if ([string]$line -match '^\s*(AzureAdJoined|EnterpriseJoined|DomainJoined|DomainName|DeviceAuthStatus|WorkplaceJoined|TenantName|TenantId|AzureAdPrt|EnterprisePrt)\s*:\s*(.*?)\s*$') {
+            $fields[$matches[1]]=$matches[2]
+        }
+    }
+    if (-not $fields.Count) { throw 'No recognized device-registration fields returned.' }
+    [pscustomobject]@{ Fields=[pscustomobject]$fields; Coverage='Current elevated user context only. Registration and PRT presence do not prove MFA enforcement.' }
+}
+$checks.RemoteAccessFirewall = Invoke-AuditCheck RemoteAccessFirewall {
+    # ActiveStore merges local and applied policy. Include Any and numeric port
+    # ranges covering SMB, RDP, WinRM or SSH; dynamic port tokens stay visible.
+    $ports = @(22,445,3389,5985,5986)
+    $rdp = Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -ErrorAction SilentlyContinue
+    if ($rdp.PortNumber) { $ports += [int]$rdp.PortNumber }
+    Get-NetFirewallRule -PolicyStore ActiveStore -Enabled True -Direction Inbound -Action Allow | ForEach-Object {
+        $rule = $_
+        $filters = @($rule | Get-NetFirewallPortFilter)
+        $relevant = $false
+        foreach ($filter in $filters) {
+            foreach ($token in @($filter.LocalPort)) {
+                if ($token -eq 'Any') { $relevant=$true }
+                elseif ($token -match '^(\d+)-(\d+)$') {
+                    $lo=[int]$matches[1]; $hi=[int]$matches[2]
+                    if (@($ports | Where-Object { $_ -ge $lo -and $_ -le $hi }).Count) { $relevant=$true }
+                } elseif ($token -match '^\d+$') { if ([int]$token -in $ports) { $relevant=$true } }
+                else { $relevant=$true }
+            }
+        }
+        if ($relevant) {
+            [pscustomobject]@{ Name=$rule.Name; DisplayName=$rule.DisplayName; Profile=[string]$rule.Profile
+                Ports=@($filters | Select-Object @{n='Protocol';e={[string]$_.Protocol}},LocalPort,RemotePort)
+                Addresses=@($rule | Get-NetFirewallAddressFilter | Select-Object LocalAddress,RemoteAddress)
+                Applications=@($rule | Get-NetFirewallApplicationFilter | Select-Object Program,Package)
+                Coverage='Enabled inbound allow rules only. Blocking rules, application/service restrictions and upstream firewalls affect reachability.' }
+        }
+    }
+}
+$checks.LocalNATMappings = Invoke-AuditCheck LocalNATMappings {
+    Get-NetNatStaticMapping | Select-Object NatName, Protocol, ExternalIPAddress, ExternalPort, InternalIPAddress, InternalPort
+}
+$checks.DefaultRoutes = Invoke-AuditCheck DefaultRoutes {
+    Get-NetRoute | Where-Object { $_.DestinationPrefix -in @('0.0.0.0/0','::/0') } |
+        Select-Object InterfaceAlias,DestinationPrefix,NextHop,RouteMetric,InterfaceMetric,State
+}
+$checks.TimeConfiguration = Invoke-AuditCheck TimeConfiguration {
+    $service = Get-Service W32Time
+    $config = Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Services\W32Time\Parameters'
+    [pscustomobject]@{ ServiceStatus=[string]$service.Status; StartupType=[string]$service.StartType
+        ConfiguredType=$config.Type; ConfiguredNtpServer=$config.NtpServer
+        Coverage='Configuration only. TimeService check reports measured synchronization status when available.' }
+}
+$checks.EventForwarding = Invoke-AuditCheck EventForwarding {
+    $path='HKLM:\SOFTWARE\Policies\Microsoft\Windows\EventLog\EventForwarding\SubscriptionManager'
+    $values=@()
+    if (Test-Path $path) {
+        $item=Get-ItemProperty $path
+        $values=@($item.PSObject.Properties | Where-Object { $_.Name -notmatch '^PS' } | ForEach-Object { [string]$_.Value })
+    }
+    [pscustomobject]@{ SubscriptionManagers=$values
+        Coverage='Local policy only; third-party forwarding, receipt at the collector and central retention need console evidence.' }
+}
+if (-not $SkipOnlineUpdateScan) {
+    $checks.LiveMissingUpdates = Invoke-AuditCheck LiveMissingUpdates -TimeoutSeconds 90 -Collect {
+        $session=New-Object -ComObject Microsoft.Update.Session
+        $searcher=$session.CreateUpdateSearcher(); $searcher.Online=$true
+        $result=$searcher.Search('IsInstalled=0 and IsHidden=0')
+        [pscustomobject]@{ ResultCode=[int]$result.ResultCode; Source='Current scan against the configured Windows Update service'
+            CheckedAt=(Get-Date).ToString('o'); ServerSelection=[string]$searcher.ServerSelection
+            Updates=@($result.Updates | Select-Object Title,MsrcSeverity,@{n='KBArticleIDs';e={@($_.KBArticleIDs | ForEach-Object { [string]$_ })}},RebootRequired) }
+    }
+}
+$checks.BackupErrorDetails = Invoke-AuditCheck BackupErrorDetails {
+    Get-AuditEvents -LogName Application -Levels 1,2,3 -ProviderPattern $BackupPattern -IncludeMessage
+}
+$checks.VSSErrorDetails = Invoke-AuditCheck VSSErrorDetails {
+    Get-AuditEvents -LogName System -Levels 1,2,3 -ProviderPattern 'VSS|VolSnap' -IncludeMessage
+}
+$evidenceTemplate = New-ExternalEvidenceTemplate -ComputerName $env:COMPUTERNAME
+$evidenceTemplatePath = Join-Path $OutputDirectory "$prefix-EVIDENCE-TEMPLATE.json"
+[IO.File]::WriteAllText($evidenceTemplatePath, ($evidenceTemplate | ConvertTo-Json -Depth 6), (New-Object Text.UTF8Encoding($false)))
+$checks.ExternalEvidence = Invoke-AuditCheck ExternalEvidence -Context @{
+    EvidencePath=$EvidenceFile; Template=$evidenceTemplate; ReaderCode=${function:Read-ExternalEvidence}.ToString()
+} -Collect {
+    Set-Item Function:Read-ExternalEvidence ([scriptblock]::Create($ReaderCode))
+    Read-ExternalEvidence -Path $EvidencePath -Template $Template
+}
 $report = [ordered]@{
-    SchemaVersion = '1.2'; AuditId = $script:auditId; Incomplete = $false; ClientName = $ClientName; Location = $Location
+    SchemaVersion = '1.3'; AuditId = $script:auditId; Incomplete = $false; ClientName = $ClientName; Location = $Location
     StartedAt = $started.ToString('o'); CompletedAt = (Get-Date).ToString('o'); Elevated = $elevated
     PowerShellVersion = $PSVersionTable.PSVersion.ToString(); Checks = $checks
+    OnlineUpdateScanRequested = (-not $SkipOnlineUpdateScan)
+    ExternalEvidenceTemplate = $evidenceTemplatePath
     BackupLogsNotQueried = @($backupLogs | Select-Object -Skip 12)
     InterpretationNotes = @(
         'Collected means the query completed, not that the control passed. Unavailable, TimedOut, Partial and null values require follow-up; returned partial evidence is incomplete.'
-        'Event queries inspect only the newest EventScanLimit records per log, then filter by time/provider/severity. Scan limits, oldest record time and output truncation are recorded. Event metadata only is exported. Failed logons include all logon types, not just RDP.'
+        'Event queries inspect only the newest EventScanLimit records per log, then filter by time/provider/severity. Scan limits, oldest record time and output truncation are recorded. Event metadata is exported; BackupErrorDetails and VSSErrorDetails also include bounded message text with best-effort labelled-secret scrubbing. Failed logons include all logon types, not just RDP.'
         'Software inventory covers machine-wide uninstall registrations; the general scheduled task list excludes Microsoft tasks, but backup task discovery includes them.'
-        'Update history is capped at 100. Missing updates use a potentially stale local cache only; ResultCode 2 means success, 3 means success with errors. No online scan was performed; hotfix inventory is not proof of patch compliance.'
+        'Update history is capped at 100. Missing updates use a potentially stale local cache only; ResultCode 2 means success, 3 means success with errors. LiveMissingUpdates performs a current scan unless explicitly skipped; its status and result code must be checked. Hotfix inventory is not proof of patch compliance.'
         'Windows backup catalogs and shadow copies are local evidence, not proof of offsite copies or a successful restore. Task exit codes need vendor interpretation.'
         'Service or software detection does not establish agent health, backup success, encryption, or restore readiness.'
         'Listening ports and RDP settings do not establish internet exposure.'
-        'Share permissions exclude NTFS permissions. Password policy is local evidence and may be overridden by domain policy.'
-        'No passwords, recovery keys, event message bodies or scheduled task action arguments are intentionally collected.'
+        'ShareNTFSPermissions covers custom share roots only; inherited/child exceptions and effective user access need validation. Password policy is local evidence and may be overridden by domain policy.'
+        'No passwords, recovery keys or scheduled task action arguments are intentionally collected. Backup/VSS event messages may include filenames, accounts or other sensitive details; review before sharing.'
+        'ExternalEvidence is user-supplied and not independently verified. Unknown controls remain unknown; device registration, local firewall rules and service presence do not prove MFA, public exposure or backup success.'
     )
     ManualEvidenceRequired = @('Backup last success and failures from vendor console', 'Backup encryption, offsite retention and restore test',
         'RMM and EDR console health', 'MFA and VPN enforcement', 'External firewall/NAT exposure',
@@ -425,6 +612,7 @@ if ($CopyToClipboard) {
 }
 Remove-Item -LiteralPath $script:checkpointPath -ErrorAction SilentlyContinue
 Write-Host "Audit saved: $jsonPath"
+Write-Host "External evidence template: $evidenceTemplatePath (fill from consoles/tests, then rerun with -EvidenceFile)."
 Write-Host "Paste report: $textPath ($($blocks.Count) numbered parts)"
 Write-Host 'Review identifying information before sharing. Paste all parts here to generate your report.'
 if (-not $elevated) { Write-Warning 'Not elevated: rerun as Administrator for the fullest audit.' }

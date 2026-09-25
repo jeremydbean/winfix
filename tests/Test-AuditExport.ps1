@@ -91,3 +91,60 @@ $shadowJson = $shadow | ConvertTo-Json -Depth 12
 if ($shadow.Volume -ne 'volume-one' -or $shadow.DiffVolume -ne 'volume-two' -or $shadowJson.Length -gt 300 -or $shadow.UsedSpace -ne 123) { throw 'Shadow storage lost facts or exported nested metadata.' }
 Remove-Item Function:Get-CimInstance
 Write-Host 'PASS: backup vendor boundaries and compact shadow-storage evidence.'
+
+$template = New-ExternalEvidenceTemplate -ComputerName 'TESTHOST'
+$unknown = @(Read-ExternalEvidence -Path '' -Template $template)
+if ($unknown.Count -ne 12 -or @($unknown | Where-Object Status -ne 'Unknown').Count) { throw 'Missing external evidence was not kept unknown.' }
+$evidenceTestPath = Join-Path ([IO.Path]::GetTempPath()) ('WinFix-evidence-' + [guid]::NewGuid().ToString('N') + '.json')
+try {
+    $template.Controls[0].Status='Reported'
+    $template.Controls[0].Source='Synology task history'
+    $template.Controls[0].ObservedAt='2026-09-25T15:00:00-04:00'
+    $template.Controls[0].ObservedBy='Test operator'
+    $template.Controls[0].Details='Last successful job and protected volumes reviewed.'
+    $template | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $evidenceTestPath
+    $supplied = @(Read-ExternalEvidence -Path $evidenceTestPath -Template $template)
+    if ($supplied[0].Status -ne 'Reported' -or $supplied[0].Origin -ne 'UserSuppliedNotIndependentlyVerified') { throw 'Supplied evidence was incorrectly promoted to verified.' }
+    # Also exercise deserialization and helper injection in the real worker.
+    $check = Invoke-AuditCheck 'ExternalEvidenceTest' -Context @{
+        EvidencePath=$evidenceTestPath; Template=$template; ReaderCode=${function:Read-ExternalEvidence}.ToString()
+    } -Collect {
+        Set-Item Function:Read-ExternalEvidence ([scriptblock]::Create($ReaderCode))
+        Read-ExternalEvidence -Path $EvidencePath -Template $Template
+    }
+    if ($check.Status -ne 'Collected' -or $check.Count -ne 12) { throw 'External evidence did not survive the worker boundary.' }
+    $template.ComputerName='WRONGHOST'
+    $template | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $evidenceTestPath
+    $expectedTemplate=New-ExternalEvidenceTemplate -ComputerName 'TESTHOST'
+    try { $null=Read-ExternalEvidence -Path $evidenceTestPath -Template $expectedTemplate; throw 'Wrong host accepted' }
+    catch { if ($_.Exception.Message -notlike '*does not match this host*') { throw } }
+    $template.ComputerName='TESTHOST'; $template.Controls[0].Source=''
+    $template | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $evidenceTestPath
+    try { $null=Read-ExternalEvidence -Path $evidenceTestPath -Template $expectedTemplate; throw 'Missing provenance accepted' }
+    catch { if ($_.Exception.Message -notlike '*requires Source*') { throw } }
+} finally { Remove-Item -LiteralPath $evidenceTestPath -ErrorAction SilentlyContinue }
+
+function Get-WinEvent {
+    [CmdletBinding()]param([string]$ListLog,[string]$LogName,[int]$MaxEvents)
+    if ($ListLog) { [pscustomobject]@{IsEnabled=$true;RecordCount=1}; return }
+    [pscustomobject]@{TimeCreated=Get-Date;Id=4103;RecordId=77;ProviderName='Windows Backup';Level=2;LogName=$LogName
+        Message='password="do not share" token=secretvalue https://user:pass@example.com '+('x'*2500)}
+}
+$details = Get-AuditEvents -LogName Application -IncludeMessage
+if ($details.Events[0].Message.Length -gt 2000 -or -not $details.Events[0].MessageTruncated -or $details.Events[0].Message -match 'do not share|secretvalue|user:pass') { throw 'Event detail limit or labelled-secret scrub failed.' }
+Remove-Item Function:Get-WinEvent
+
+$aclAssignment=$ast.Find({param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq '$checks.ShareNTFSPermissions'},$true)
+$aclBlock=$aclAssignment.Find({param($n) $n -is [System.Management.Automation.Language.ScriptBlockExpressionAst]},$true)
+function Get-SmbShare { [pscustomobject]@{Name='Allowed';Path='C:\Data';Special=$false}; [pscustomobject]@{Name='Denied';Path='C:\Denied';Special=$false} }
+function Get-Acl {
+    [CmdletBinding()]param($LiteralPath)
+    if ($LiteralPath -eq 'C:\Denied') { throw 'Access denied' }
+    [pscustomobject]@{Owner='Administrators';AreAccessRulesProtected=$false;Access=@([pscustomobject]@{
+        IdentityReference='Users';FileSystemRights='ReadAndExecute';AccessControlType='Allow';IsInherited=$true;InheritanceFlags='ContainerInherit';PropagationFlags='None'
+    })}
+}
+$aclRows=@(& ([scriptblock]::Create($aclBlock.ScriptBlock.Extent.Text.Trim('{}'))))
+if ($aclRows.Count -ne 2 -or $aclRows[0].Rules[0].Identity -ne 'Users' -or $aclRows[1].Status -ne 'Unavailable') { throw 'Share ACL evidence or per-share failure handling was lost.' }
+Remove-Item Function:Get-SmbShare; Remove-Item Function:Get-Acl
+Write-Host 'PASS: external-evidence provenance/host validation, worker import, bounded scrubbed event details and per-share NTFS evidence.'

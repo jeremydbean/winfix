@@ -147,7 +147,9 @@ services, Defender/antivirus, firewall, BitLocker, TPM, Secure Boot, accounts,
 password/audit policy, disks, RDP, networking, SMB shares and permissions,
 printers, non-Microsoft scheduled tasks, update history, cached missing updates,
 reboot indicators, time service and recent event metadata. Cached update checks
-have a 60-second timeout and do not contact Windows Update. Every other check runs
+have a 60-second timeout. A separate live scan contacts the configured Windows
+Update service with a 90-second timeout; use `-SkipOnlineUpdateScan` to stay offline.
+Neither scan installs updates. Every other check runs
 in its own background job with a default 25-second timeout. The ISE progress display
 shows the active check. Timed-out checks are marked `TimedOut`; failures with some
 returned evidence are marked `Partial`; unsupported or denied checks are marked
@@ -186,8 +188,46 @@ need separate verification. Samples and coverage limits are recorded in the JSON
 No configuration repairs or uploads are performed. A temporary security policy
 export is normally removed after collection (forced cancellation may leave its temporary file). Review machine/domain names, account names,
 network addresses and paths before sharing. Passwords, BitLocker recovery keys,
-event message bodies and task action arguments are not intentionally collected.
+task action arguments are not intentionally collected. Backup/VSS warning and error
+messages are included (at most 2,000 characters each) with best-effort labelled-secret
+scrubbing; review these for filenames, account names and other sensitive text.
 
 Developer check (also runs on non-Windows PowerShell):
 `pwsh -NoProfile -File tests/Test-AuditExport.ps1`. Live collection requires Windows;
 tests cover syntax, real background-job timeout/continuation, partial/scalar results, checkpoint persistence, job cleanup, event sampling and paste reassembly. They do not validate Windows providers or permissions.
+
+
+### Fill the remaining report evidence gaps (collector 1.3)
+
+The collector now reads custom share-root NTFS permissions (including inheritance
+and per-share access errors), selected Entra device-registration fields, candidate
+remote-access firewall allow rules from ActiveStore, local NAT mappings, default
+routes, time-service settings, event-forwarding policy and current missing updates.
+Backup and VSS error-message excerpts are included for troubleshooting. Share-root
+ACLs do not evaluate child-folder overrides or effective access; local firewall and
+NAT data do not establish internet reachability. Device registration does not prove
+MFA enforcement. The default live update scan may refresh the local update cache.
+
+Backup console results, retention, destination encryption, independent copies,
+restore-test outcomes, MFA policy coverage, perimeter exposure, RMM/EDR console
+health, central retention and support entitlement cannot be confirmed solely by a
+local Windows script. No credentials or vendor API access were supplied, and the
+collector does not guess these controls from agent presence. Each run writes an
+`*-EVIDENCE-TEMPLATE.json` with the exact remaining fields and instructions. Fill it
+from the relevant console or performed test, preserving the computer name; leave
+anything unknown as `Unknown`. A `Reported` or `NotApplicable` entry requires its
+source, observation timestamp (ISO 8601 with timezone), observer and details.
+
+Import the completed template on the next run:
+
+```powershell
+.\Export-WinFixAudit.ps1 -EvidenceFile 'C:\Temp\Completed-Evidence.json'
+```
+
+When pasting into ISE, set the `$EvidenceFile` parameter default at the top instead.
+Supplied evidence appears in the paste output as `UserSuppliedNotIndependentlyVerified`;
+unknown fields stay unknown. The script does not run a restore, authenticate to
+vendor consoles, scrape private agent databases or scan external networks.
+
+References: [Entra device-state fields](https://learn.microsoft.com/en-us/entra/identity/devices/troubleshoot-device-dsregcmd),
+[Windows firewall policy](https://learn.microsoft.com/en-us/powershell/module/netsecurity/get-netfirewallrule).
