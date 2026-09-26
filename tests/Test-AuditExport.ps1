@@ -338,3 +338,35 @@ try {
     if ($imported.Count -ne 14 -or @($imported | Where-Object { $_.Name -like 'HyperV*' -and $_.Status -eq 'Unknown' }).Count -ne 2) { throw 'Legacy evidence template compatibility failed.' }
 } finally { Remove-Item -LiteralPath $oldPath }
 Write-Host 'PASS: Hyper-V inventory/limits/legacy properties, per-VM evidence, VHD failures and non-local paths, localized integration, checkpoints, worker JSON and legacy template compatibility.'
+
+# Redirected Desktop regression: provider-qualified paths must become native
+# paths usable by .NET. Exercise real exports, including PSDrive resolution.
+$pathTestRoot = Join-Path ([IO.Path]::GetTempPath()) ('WinFix-path-' + [guid]::NewGuid().ToString('N'))
+try {
+    $qualified = 'Microsoft.PowerShell.Core\FileSystem::' + (Join-Path $pathTestRoot 'audit [literal]')
+    $native = Initialize-AuditOutputDirectory -Path $qualified
+    if ($native -match '::' -or -not [IO.Directory]::Exists($native)) { throw 'Provider-qualified output was not normalized.' }
+    New-PSDrive -Name WinFixPathTest -PSProvider FileSystem -Root $pathTestRoot | Out-Null
+    $mapped = Initialize-AuditOutputDirectory -Path 'WinFixPathTest:/mapped'
+    if ($mapped -like 'WinFixPathTest:*' -or -not [IO.Directory]::Exists($mapped)) { throw 'PSDrive output was not normalized.' }
+    $script:checkpointPath = Join-Path $native 'PARTIAL.json'
+    $script:checkpointWarnings = @()
+    Save-AuditCheckpoint
+    if (-not [IO.File]::Exists($script:checkpointPath) -or $script:checkpointWarnings.Count) { throw 'Native-path checkpoint export failed.' }
+    foreach ($name in @('audit.json','audit-PASTE.txt','audit-PART-01.txt','audit-EVIDENCE-TEMPLATE.json')) {
+        $file = Join-Path $native $name
+        [IO.File]::WriteAllText($file, 'evidence')
+        if ([IO.File]::ReadAllText($file) -cne 'evidence') { throw 'Native-path final export failed.' }
+    }
+    if (@(Get-ChildItem -LiteralPath $native -Force -Filter '.winfix-write-test-*').Count) { throw 'Output preflight left temporary files.' }
+    [IO.File]::WriteAllText((Join-Path $pathTestRoot 'blocked'), 'existing file')
+    try { $null = Initialize-AuditOutputDirectory -Path (Join-Path $pathTestRoot 'blocked/child'); throw 'Unwritable output accepted' }
+    catch { if ($_.Exception.Message -notlike '*Cannot write audit output*') { throw } }
+    try { $null = Initialize-AuditOutputDirectory -Path 'Env:/WinFixTest'; throw 'Non-filesystem output accepted' }
+    catch { if ($_.Exception.Message -notlike '*FileSystem directory*') { throw } }
+} finally {
+    $script:checkpointPath = $null
+    Remove-PSDrive WinFixPathTest -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $pathTestRoot -Recurse -Force -ErrorAction SilentlyContinue
+}
+Write-Host 'PASS: provider-qualified and PSDrive output, real checkpoint/final writes, literal paths and early output failure.'

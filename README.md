@@ -319,3 +319,22 @@ point, confirm disks and application consistency, and record an isolated restore
 and application test. Existing 12-control evidence files remain accepted; omitted
 new controls stay Unknown. This is local-host collection only: it does not query
 guest operating systems, other cluster nodes, or authenticate to the Synology NAS.
+
+### Redirected Desktop export fix (collector 1.7)
+
+Output folders now resolve to native filesystem paths before .NET file writes.
+This fixes checkpoint and final-export failures when a redirected Desktop resolves
+to `Microsoft.PowerShell.Core\FileSystem::\\server\share\...`. A temporary write
+probe checks the destination before inventory starts, so an inaccessible output
+folder fails early with an actionable error. Local folders, UNC shares and
+filesystem PSDrives remain supported; other providers are rejected.
+
+If a redirected Desktop is unavailable, select a writable local folder explicitly:
+
+```powershell
+.\Export-WinFixAudit.ps1 -OutputDirectory "$env:TEMP\WinFixAudit" -CopyToClipboard
+```
+
+The regression suite exercises provider-qualified paths, filesystem PSDrives,
+literal bracket characters, real checkpoint/final writes and early failure. A
+live Windows redirected UNC share still requires verification on that host.

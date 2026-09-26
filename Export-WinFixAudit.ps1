@@ -31,11 +31,34 @@ function ConvertTo-AuditJson {
     # Keep the evidence unchanged; use this for every JSON export.
     ConvertTo-Json -InputObject $InputObject -Depth $Depth -Compress -ErrorAction Stop
 }
+function Initialize-AuditOutputDirectory {
+    param([Parameter(Mandatory=$true)][string]$Path)
+    # Resolve PowerShell paths/PSDrives to native paths before any .NET I/O.
+    # PathInfo.Path can include FileSystem:: for a redirected UNC Desktop.
+    $provider = $null; $drive = $null
+    $nativePath = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath(
+        $Path, [ref]$provider, [ref]$drive)
+    if ($provider.Name -ne 'FileSystem') { throw 'Audit output must use a FileSystem directory.' }
+    $probePath = $null
+    try {
+        [IO.Directory]::CreateDirectory($nativePath) | Out-Null
+        $probePath = [IO.Path]::Combine($nativePath, ('.winfix-write-test-' + [guid]::NewGuid().ToString('N')))
+        [IO.File]::WriteAllText($probePath, 'WinFix output write test', (New-Object Text.UTF8Encoding($false)))
+        [IO.File]::Delete($probePath)
+    } catch {
+        throw "Cannot write audit output to '$nativePath': $($_.Exception.Message) Use -OutputDirectory with a writable local folder."
+    } finally {
+        if ($probePath -and [IO.File]::Exists($probePath)) {
+            Remove-Item -LiteralPath $probePath -Force -ErrorAction SilentlyContinue
+        }
+    }
+    return $nativePath
+}
 function Save-AuditCheckpoint {
     if ($script:checkpointPath) {
         $tempPath = $script:checkpointPath + '.tmp'
         try {
-            $snapshot = [ordered]@{ SchemaVersion='1.6'; AuditId=$script:auditId; Incomplete=$true
+            $snapshot = [ordered]@{ SchemaVersion='1.7'; AuditId=$script:auditId; Incomplete=$true
                 SavedAt=(Get-Date).ToString('o'); ClientName=$ClientName; Location=$Location; Elevated=$elevated
                 Checks=$script:checks; ExportWarnings=@($script:checkpointWarnings) }
             $checkpointJson = ConvertTo-AuditJson -InputObject $snapshot
@@ -290,12 +313,11 @@ if ([string]::IsNullOrWhiteSpace($OutputDirectory)) {
     if ([string]::IsNullOrWhiteSpace($desktop)) { $desktop = $env:TEMP }
     $OutputDirectory = Join-Path $desktop 'WinFixAudit'
 }
-New-Item -ItemType Directory -Path $OutputDirectory -Force | Out-Null
-$OutputDirectory = (Resolve-Path -LiteralPath $OutputDirectory).Path
+$OutputDirectory = Initialize-AuditOutputDirectory -Path $OutputDirectory
 $prefix = 'WinFixAudit-' + $env:COMPUTERNAME + '-' + $started.ToString('yyyyMMdd-HHmmss')
 $script:checkpointPath = Join-Path $OutputDirectory "$prefix-PARTIAL.json"
 $BackupPattern = 'Veeam|Acronis|Macrium|Datto|Carbonite|Veritas|CrashPlan|\bCove\b|Axcient|Rubrik|Backup|StorageCraft|ShadowProtect|Arcserve|MSP360|CloudBerry|Druva|Commvault|NAKIVO|Retrospect|UrBackup'
-Write-Host "WinFix audit 1.6. Completed checks are saved to $script:checkpointPath"
+Write-Host "WinFix audit 1.7. Completed checks are saved to $script:checkpointPath"
 if (-not $elevated) { Write-Warning 'Run ISE as Administrator for the fullest audit.' }
 Save-AuditCheckpoint
 $checks.System = Invoke-AuditCheck System {
@@ -722,7 +744,7 @@ $checks.ExternalEvidence = Invoke-AuditCheck ExternalEvidence -Context @{
     Read-ExternalEvidence -Path $EvidencePath -Template $Template
 }
 $report = [ordered]@{
-    SchemaVersion = '1.6'; AuditId = $script:auditId; Incomplete = $false; ClientName = $ClientName; Location = $Location
+    SchemaVersion = '1.7'; AuditId = $script:auditId; Incomplete = $false; ClientName = $ClientName; Location = $Location
     StartedAt = $started.ToString('o'); CompletedAt = (Get-Date).ToString('o'); Elevated = $elevated
     PowerShellVersion = $PSVersionTable.PSVersion.ToString(); Checks = $checks
     ExportWarnings = @($script:checkpointWarnings)
