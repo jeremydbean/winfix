@@ -338,3 +338,43 @@ If a redirected Desktop is unavailable, select a writable local folder explicitl
 The regression suite exercises provider-qualified paths, filesystem PSDrives,
 literal bracket characters, real checkpoint/final writes and early failure. A
 live Windows redirected UNC share still requires verification on that host.
+
+### Veeam log evidence (collector 1.8)
+
+Detected Veeam installations now add local text-log excerpts alongside Windows
+event evidence. Queried Veeam event channels include rendered messages and up to
+24 EventData fields (500 characters each), so useful job names and error details
+can survive missing message-rendering resources. A separate warning/error sample
+keeps informational events from consuming the result limit. Veeam providers in
+the Application log also include messages and EventData. Event reads retain the
+existing scan, output and timeout limits; an empty sample is not proof of success.
+
+The collector reads the configured `LogDirectory` from the Veeam Backup &
+Replication registry key, falling back to `C:\ProgramData\Veeam\Backup`.
+See [Veeam's log-location documentation](https://www.veeam.com/kb1832).
+For another local folder, pass `-VeeamLogDirectory 'D:\VeeamLogs'`; this also
+enables collection when installed-product detection misses Veeam.
+
+Discovery inspects at most 2,000 filesystem entries in the root and two directory
+levels beneath it, then selects the 10 most recently modified `.log` files found
+within the audit lookback. `-MaxVeeamLogFiles 20` raises the file count (maximum 30).
+Each file contributes at most a 128 KiB tail and the last 40 keyword-matching lines,
+capped at 1,000 characters per line. UTF-8 and BOM-marked UTF-16 are supported.
+Files may remain open by Veeam; read failures are recorded per file. Discovery has
+the normal check timeout, and the file-reading check has a 60-second timeout that
+preserves already returned file results. Network folders, reparse points and
+compressed archives are excluded.
+
+`VeeamLogDiscovery` records discovery limits, omissions and access errors;
+`VeeamFileLogDetails` records byte/line truncation and raw warning, error and
+completion excerpts. Individual line timestamps are not parsed, so excerpts may
+predate the lookback even when the file was recently modified. Excerpts are not
+verified job results, complete history, per-VM protection or restore-test evidence.
+Labelled secrets, bearer tokens and URL credentials are scrubbed best-effort;
+review the paste output before sharing. Collection does not run backup jobs or
+connect to Veeam servers or repositories.
+
+Regression checks cover sparse errors, missing messages, XML failures, redaction,
+bounded discovery, large UTF-8 logs, UTF-16 logs, missing files and background-worker
+serialization. Server 2012 R2 / PowerShell 4 remains targeted; live Veeam validation
+must be performed on a Windows host.

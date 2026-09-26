@@ -370,3 +370,54 @@ try {
     Remove-Item -LiteralPath $pathTestRoot -Recurse -Force -ErrorAction SilentlyContinue
 }
 Write-Host 'PASS: provider-qualified and PSDrive output, real checkpoint/final writes, literal paths and early output failure.'
+
+# Veeam event messages and XML data survive missing render resources; separate
+# error filtering must not lose older errors behind a busy informational sample.
+$EventScanLimit=4; $MaxEvents=1; $since=(Get-Date).AddDays(-30)
+function Get-WinEvent {
+    [CmdletBinding()]param($ListLog,$LogName,$MaxEvents)
+    if ($ListLog) { [pscustomobject]@{IsEnabled=$true;RecordCount=4}; return }
+    1..4 | ForEach-Object {
+        $level=if ($_ -eq 4) { 2 } else { 4 }
+        $event=[pscustomobject]@{TimeCreated=Get-Date;Id=190;RecordId=$_;ProviderName='Veeam MP';Level=$level;LogName=$LogName;Message='Job nightly failed: password=''two words'' token=abc Authorization: Bearer abc.def'}
+        $event | Add-Member ScriptMethod ToXml { '<Event><EventData><Data Name="JobName">nightly</Data><Data Name="Password">sensitive</Data><Data Name="Detail">token=xyz</Data></EventData></Event>' }
+        if ($LogName -eq 'MissingMessage') { $event.Message=$null }
+        if ($LogName -eq 'BadXml') { $event | Add-Member ScriptMethod ToXml { throw 'Event XML unavailable' } -Force }
+        $event
+    }
+}
+$veeam=Get-AuditEvents -LogName 'Veeam Backup' -Levels 1,2,3 -IncludeMessage -IncludeEventData
+if ($veeam.Events.Count -ne 1 -or $veeam.Events[0].RecordId -ne 4 -or $veeam.Events[0].Message -match 'two words|abc' -or $veeam.Events[0].EventData[0].Value -ne 'nightly' -or $veeam.Events[0].EventData[1].Value -ne '[REDACTED]' -or $veeam.Events[0].EventData[2].Value -match 'xyz') { throw 'Veeam event details/filtering/redaction failed.' }
+$unrendered=Get-AuditEvents -LogName MissingMessage -Levels 2 -IncludeMessage -IncludeEventData
+if (-not $unrendered.Events[0].MessageError -or $unrendered.Events[0].EventData[0].Value -ne 'nightly') { throw 'Missing message lost XML evidence or coverage warning.' }
+$badXml=Get-AuditEvents -LogName BadXml -Levels 2 -IncludeMessage -IncludeEventData
+if (-not $badXml.Events[0].EventDataError -or $badXml.Events[0].Message -notmatch 'Job nightly failed') { throw 'XML failure lost rendered message or error.' }
+Remove-Item Function:Get-WinEvent
+$logRoot=Join-Path ([IO.Path]::GetTempPath()) ('WinFix-veeam-' + [guid]::NewGuid().ToString('N'))
+# macOS /var is a symlink; production discovery deliberately rejects links.
+if ($logRoot.StartsWith('/var/')) { $logRoot='/private' + $logRoot }
+try {
+    [IO.Directory]::CreateDirectory((Join-Path $logRoot 'job/child/deep')) | Out-Null
+    $utf8=Join-Path $logRoot 'Job.nightly.log'
+    $utf16=Join-Path $logRoot 'job/Task.server.log'
+    [IO.File]::WriteAllText($utf8, (('noise'*1000)+"`n")*100 + "`n[Error] Job nightly failed password='two words'`nJob nightly completed success`n", (New-Object Text.UTF8Encoding($false)))
+    [IO.File]::WriteAllText($utf16, "Job server failed token=abc`r`nSession completed success`r`n", [Text.Encoding]::Unicode)
+    [IO.File]::WriteAllText((Join-Path $logRoot 'job/child/deep/hidden.log'), 'Error too deep')
+    [IO.File]::WriteAllText((Join-Path $logRoot 'archive.zip'), 'ignored')
+    $discovery=Find-AuditVeeamLogs -Root $logRoot -Since (Get-Date).AddDays(-1) -FileLimit 1
+    if ($discovery.RecentLogCandidates -ne 2 -or $discovery.Files.Count -ne 1 -or -not $discovery.OutputTruncated -or $discovery.DeeperFoldersSkipped -ne 1) { throw 'Veeam file discovery caps/depth failed.' }
+    $bounded=Find-AuditVeeamLogs -Root $logRoot -Since (Get-Date).AddDays(-1) -EntryLimit 1
+    if ($bounded.EntriesScanned -ne 1 -or -not $bounded.ScanLimitReached) { throw 'Veeam discovery entry limit failed.' }
+    $tail=Read-AuditVeeamLog -Path $utf8 -MaxBytes 4096 -MaxLines 1
+    if ($tail.BytesRead -gt 4096 -or -not $tail.TailTruncated -or -not $tail.OutputTruncated -or $tail.Lines.Count -ne 1 -or $tail.Lines[0].Text -notmatch 'completed success') { throw 'Veeam byte/line tail limits failed.' }
+    $wide=Read-AuditVeeamLog -Path $utf16
+    if ($wide.Encoding -ne 'utf-16' -or $wide.Lines.Count -ne 2 -or $wide.Lines[0].Text -match 'abc') { throw 'Veeam UTF16/redaction failed.' }
+    $failedRead=Read-AuditVeeamLog -Path (Join-Path $logRoot 'missing.log')
+    if ($failedRead.Status -ne 'Unavailable') { throw 'Veeam missing file failure hidden.' }
+    $worker=Invoke-AuditCheck 'VeeamTailWorkerTest' -Context @{Path=$utf8;ReaderCode=${function:Read-AuditVeeamLog}.ToString()} -Collect {
+        Set-Item Function:Read-AuditVeeamLog ([scriptblock]::Create($ReaderCode))
+        Read-AuditVeeamLog -Path $Path
+    }
+    if ($worker.Status -ne 'Collected' -or $worker.Data[0].Lines.Count -ne 2 -or ($worker | ConvertTo-Json -Depth 10) -match 'two words') { throw 'Veeam tail worker serialization or redaction failed.' }
+} finally { Remove-Item -LiteralPath $logRoot -Recurse -Force -ErrorAction SilentlyContinue }
+Write-Host 'PASS: Veeam warning/error isolation, event/XML redaction, local discovery bounds, UTF8/UTF16 byte tails, missing files and worker serialization.'
