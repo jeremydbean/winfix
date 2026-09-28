@@ -1,5 +1,8 @@
 # Changelog
 
+## 2026-09-28 — disk diagnostic 1.1
+- Fixes mounted virtual-disk discovery when Windows exposes BusType as text (such as SATA or RAID), with a regression covering the production block.
+
 ## 2026-09-28 — targeted disk diagnostic
 - Adds a separate read-only ISE diagnostic for disk identity, kernel-device mappings, retained PnP entries, storage drivers/health and backup activity.
 - Captures bounded Event 51 XML/binary details and optional incident-window events, with worker timeouts, per-section checkpoints and pasteable Notepad/clipboard output.

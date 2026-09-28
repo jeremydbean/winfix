@@ -44,3 +44,26 @@ if (-not $definition) { throw 'Missing device mapping interop definition.' }
 Add-Type -TypeDefinition $definition.Value
 if (-not ('WinFixDiskNative' -as [type])) { throw 'Device mapping interop did not compile.' }
 Write-Host 'PASS: PS4 syntax requirement, worker errors/partial/timeout/cleanup, output caps, Event51 XML, incident bounds, disabled logs, serialization and native definition compilation. Windows APIs still require a live Windows run.'
+
+# Windows can return BusType as text rather than a numeric enum. Exercise the
+# production virtual-disk block with both forms, including ordinary SATA/RAID.
+$mounted=$ast.Find({param($n) $n -is [Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq '$sections.MountedVirtualDisks'},$true)
+$block=$mounted.Find({param($n) $n -is [Management.Automation.Language.ScriptBlockExpressionAst]},$true)
+function Get-Disk {
+    [pscustomobject]@{Number=0;BusType='RAID'}
+    [pscustomobject]@{Number=1;BusType='SATA'}
+    [pscustomobject]@{Number=2;BusType='File Backed Virtual'}
+    [pscustomobject]@{Number=3;BusType=15}
+    [pscustomobject]@{Number=4;BusType='FileBackedVirtual'}
+}
+function Get-DiskImage {
+    [CmdletBinding()]param($DevicePath)
+    if ($DevicePath -notmatch 'PhysicalDrive[234]$') { throw 'Queried a non-image disk.' }
+    [pscustomobject]@{DevicePath=$DevicePath;ImagePath='C:\Fixture\backup.vhdx';Attached=$true}
+}
+try {
+    $result=@(& $block.ScriptBlock.GetScriptBlock())
+    $images=@($result | Where-Object {$_ -isnot [string]})
+    if ($images.Count -ne 3 -or @($images | Where-Object {$_.Error}).Count) { throw 'String/numeric virtual bus selection failed.' }
+} finally { Remove-Item Function:Get-Disk,Function:Get-DiskImage }
+Write-Host 'PASS: actual mounted-image collector accepts string SATA/RAID and numeric/named virtual buses without conversion errors.'

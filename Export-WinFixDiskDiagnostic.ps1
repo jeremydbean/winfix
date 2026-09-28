@@ -82,7 +82,7 @@ if (-not $OutputDirectory) { $OutputDirectory=Join-Path $env:TEMP 'WinFixDiskDia
 $null=[IO.Directory]::CreateDirectory($OutputDirectory)
 $output=Join-Path $OutputDirectory ('WinFixDisk-'+$env:COMPUTERNAME+'-'+(Get-Date -Format 'yyyyMMdd-HHmmss')+'.txt')
 $encoding=New-Object Text.UTF8Encoding($false)
-$header="WINFIX DISK DIAGNOSTIC 1.0`r`nComputer: $env:COMPUTERNAME`r`nCollected: $((Get-Date).ToString('o'))`r`nTimezone: $([TimeZoneInfo]::Local.Id)`r`nPowerShell: $($PSVersionTable.PSVersion)`r`nIncident local time: $IncidentLocalTime`r`nRead-only collection. No disk repairs, scans, mounts or backup interruption.`r`nDevice numbers/mappings describe NOW and can differ from the incident. Current health is not proof of historical health.`r`nResults can contain hardware identifiers, local/backup paths and event messages. No passwords or recovery keys intentionally queried.`r`n"
+$header="WINFIX DISK DIAGNOSTIC 1.1`r`nComputer: $env:COMPUTERNAME`r`nCollected: $((Get-Date).ToString('o'))`r`nTimezone: $([TimeZoneInfo]::Local.Id)`r`nPowerShell: $($PSVersionTable.PSVersion)`r`nIncident local time: $IncidentLocalTime`r`nRead-only collection. No disk repairs, scans, mounts or backup interruption.`r`nDevice numbers/mappings describe NOW and can differ from the incident. Current health is not proof of historical health.`r`nResults can contain hardware identifiers, local/backup paths and event messages. No passwords or recovery keys intentionally queried.`r`n"
 [IO.File]::WriteAllText($output,$header,$encoding)
 $sections=[ordered]@{}
 $sections.DiskIdentity={
@@ -131,7 +131,7 @@ $sections.PresentAndRetainedDiskDevices={
 $sections.StorageControllers={ Get-CimInstance Win32_SCSIController | Select-Object -First 32 Name,Manufacturer,DeviceID,PNPDeviceID,DriverName,Status }
 $sections.StorageDrivers={ Get-CimInstance Win32_PnPSignedDriver | Where-Object {$_.DeviceClass -in @('SCSIADAPTER','HDC','DISKDRIVE')} | Select-Object -First 64 DeviceName,DeviceID,Manufacturer,DriverProviderName,DriverVersion,DriverDate,InfName,IsSigned }
 $sections.MountedVirtualDisks={
-    foreach ($disk in @(Get-Disk | Where-Object { [string]$_.BusType -eq 'File Backed Virtual' -or [int]$_.BusType -eq 15 } | Select-Object -First 16)) {
+    foreach ($disk in @(Get-Disk | Where-Object { [string]$_.BusType -in @('File Backed Virtual','FileBackedVirtual','15') } | Select-Object -First 16)) {
         try { Get-DiskImage -DevicePath ('\\.\PhysicalDrive'+$disk.Number) -ErrorAction Stop | Select-Object DevicePath,ImagePath,Attached,Size,StorageType }
         catch { [pscustomobject]@{DiskNumber=$disk.Number;Error=$_.Exception.Message} }
     }
