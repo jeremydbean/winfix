@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-09-28
+- Collector 1.9 adds bounded per-user Synology Drive Client log and allowlisted task-setting evidence, with explicit database/manual-evidence limits.
+- Expands scheduled backup discovery to script and copy/export wrappers, including read-only local script clues, schedules, run accounts and per-task errors.
+- Preserves ISE/PowerShell 4 compatibility and adds regression fixtures for privacy, discovery bounds and candidate classification.
+
 ## 2026-04-29
 - Fixed `WinFixTool_v2.ps1` v5.2 → v5.3: glob mismatch (report never auto-opened), nav button crash for stub pages, locale-dependent Administrators group lookup (now uses SID S-1-5-32-544), caption-regex EOS detection replaced with build→date table, `Out-File -Encoding UTF8` BOM replaced with `WriteAllText`, `Get-HotFix` replaced with `QueryHistory(0,50)` + HotFix fallback, RDP failure count now filters LogonType=10, `copyForFreshdesk` rewritten with data-key snapshot + modern `navigator.clipboard.write()` + fallback, Defender signature age grading, elevation check + in-app warning, DC detection before local user enumeration, broader VM fingerprint, `$ErrorActionPreference` corrected to `Continue`.
 

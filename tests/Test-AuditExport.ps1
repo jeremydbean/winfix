@@ -72,7 +72,7 @@ $pattern = $patternAssignment.Right.Find({param($n) $n -is [System.Management.Au
 foreach ($name in @('Discovery Provider Host','SSDP Discovery','Dell Recovery Plugin','OobeDiscovery')) {
     if ($name -match $pattern) { throw "False backup vendor match: $name" }
 }
-foreach ($name in @('Cove Data Protection','Synology Active Backup for Business','Veeam Agent','Acronis','Macrium Reflect')) {
+foreach ($name in @('Cove Data Protection','Synology Drive Client (remove only)','Synology Active Backup for Business','Veeam Agent','Acronis','Macrium Reflect')) {
     if ($name -notmatch $pattern) { throw "Missed backup vendor: $name" }
 }
 # Run the actual shadow-storage collector with a fake nested CIM reference.
@@ -421,3 +421,94 @@ try {
     if ($worker.Status -ne 'Collected' -or $worker.Data[0].Lines.Count -ne 2 -or ($worker | ConvertTo-Json -Depth 10) -match 'two words') { throw 'Veeam tail worker serialization or redaction failed.' }
 } finally { Remove-Item -LiteralPath $logRoot -Recurse -Force -ErrorAction SilentlyContinue }
 Write-Host 'PASS: Veeam warning/error isolation, event/XML redaction, local discovery bounds, UTF8/UTF16 byte tails, missing files and worker serialization.'
+
+# Drive Client evidence: per-user artifacts, rotated logs, safe config fields,
+# bounded files and isolated task heuristics without running any backup tool.
+$driveTestBase=[IO.Path]::GetTempPath()
+if ([Environment]::OSVersion.Platform -eq [PlatformID]::Unix -and [IO.Directory]::Exists('/private/tmp')) { $driveTestBase='/private/tmp' }
+$driveRoot=Join-Path $driveTestBase ('WinFixDrive-'+[guid]::NewGuid().ToString('N'))
+$null=[IO.Directory]::CreateDirectory((Join-Path $driveRoot 'log'))
+$null=[IO.Directory]::CreateDirectory((Join-Path $driveRoot 'data/db'))
+$null=[IO.Directory]::CreateDirectory((Join-Path $driveRoot 'SynologyDrive.app'))
+try {
+    $log=Join-Path $driveRoot 'log/client.log.1'
+    [IO.File]::WriteAllText($log,"backup completed at 05:46`nbackup password=TOPSECRET`nbackup destination /home/Backup/TEST`nsync success file one`n")
+    [IO.File]::WriteAllText((Join-Path $driveRoot 'log/old.log'),'backup old')
+    [IO.File]::SetLastWriteTime((Join-Path $driveRoot 'log/old.log'),(Get-Date).AddDays(-60))
+    [IO.File]::WriteAllText((Join-Path $driveRoot 'SynologyDrive.app/ignored.log'),'backup ignored')
+    [IO.File]::WriteAllText((Join-Path $driveRoot 'data/db/sys.sqlite'),'database secret must not be read')
+    $settingsPath=Join-Path $driveRoot 'data/task.json'
+    [IO.File]::WriteAllText($settingsPath,'{"connections":[{"server_address":"nas.example","password":"TOPSECRET","token":"TOKENVALUE","enable_ssl":false,"backup_task":{"backup_mode":2,"backup_source":["C:\\Data","C:\\Projects"],"backup_days":"1111111","backup_destination":{"sharefolder":"home","remote_path":"/Backup/TEST"}},"sync_sessions":[{"local_path":"C:\\Sync","sync_direction":0}],"unrecognized":{"password":"TOPSECRET"}}]}')
+    $found=Find-AuditDriveFiles -Root $driveRoot -Since (Get-Date).AddDays(-30)
+    if ($found.Files.Count -ne 3 -or $found.OldLogsSkipped -ne 1 -or $found.FoldersSkipped -ne 1 -or @($found.Files | Where-Object {$_.Kind -eq 'DatabaseMetadata'}).Count -ne 1) {throw 'Drive artifact discovery/rotation/resource exclusion failed.'}
+    $cap=Find-AuditDriveFiles -Root $driveRoot -Since (Get-Date).AddDays(-30) -EntryLimit 2
+    if (-not $cap.ScanLimitReached -or $cap.EntriesScanned -ne 2) {throw 'Drive scan cap failed.'}
+    $settings=Read-AuditDriveSettings $settingsPath
+    $safe=$settings | ConvertTo-Json -Depth 10
+    if ($settings.Status -ne 'Collected' -or $safe -match 'TOPSECRET|TOKENVALUE|password|unrecognized' -or $safe -notmatch 'backup_days|backup_source|sync_direction' -or $safe -notmatch 'False') {throw 'Drive settings allowlist/types/task separation failed.'}
+    if (@($settings.Fields | Where-Object {$_.Field -like '*backup_source'}).Count -ne 2) {throw 'Drive source paths lost.'}
+    $ini=Join-Path $driveRoot 'data/schedule.ini'
+    [IO.File]::WriteAllText($ini,"backup_mode=2`nbackup_days=1111111`npassword=TOPSECRET`nserver_address=nas.example`n")
+    if ((Read-AuditDriveSettings $ini | ConvertTo-Json -Depth 10) -match 'TOPSECRET') {throw 'INI credential leak.'}
+    [IO.File]::WriteAllText($ini,'{"password":"TOPSECRET", invalid')
+    $bad=Read-AuditDriveSettings $ini
+    if ($bad.Status -ne 'Unavailable' -or ($bad | ConvertTo-Json) -match 'TOPSECRET') {throw 'JSON parser leaked raw settings.'}
+    [IO.File]::WriteAllText($ini,('x'*262145))
+    if ((Read-AuditDriveSettings $ini).Status -ne 'Unavailable') {throw 'Drive settings size cap failed.'}
+    $tail=Read-AuditDriveLog $log
+    if ($tail.Status -ne 'Collected' -or $tail.Lines.Count -ne 3 -or $tail.SensitiveLinesOmitted -ne 1 -or ($tail | ConvertTo-Json -Depth 10) -match 'TOPSECRET') {throw 'Drive log extraction/redaction failed.'}
+    $rejected=$false
+    try {Resolve-AuditLocalPath '\\nas\share\client.log'} catch {$rejected=$true}
+    if (-not $rejected) {throw 'Drive UNC path accepted.'}
+    $deep=[pscustomobject]@{backup_task=[pscustomobject]@{backup_source=@(1..150 | ForEach-Object {"C:\Folder$_"})}}
+    $budget=@{Remaining=100;Truncated=$false}
+    $bounded=@(Select-AuditDriveSettings -Object $deep -Budget $budget)
+    if ($bounded.Count -ne 30 -or -not $budget.Truncated) {throw 'Drive settings array bound failed.'}
+    $worker=Invoke-AuditCheck 'DriveWorkerTest' -Context @{Path=$settingsPath;LocalCode=${function:Resolve-AuditLocalPath}.ToString();SelectCode=${function:Select-AuditDriveSettings}.ToString();ReadCode=${function:Read-AuditDriveSettings}.ToString()} -Collect {
+        Set-Item Function:Resolve-AuditLocalPath ([scriptblock]::Create($LocalCode))
+        Set-Item Function:Select-AuditDriveSettings ([scriptblock]::Create($SelectCode))
+        Set-Item Function:Read-AuditDriveSettings ([scriptblock]::Create($ReadCode))
+        Read-AuditDriveSettings $Path
+    }
+    if ($worker.Status -ne 'Collected' -or $worker.Data[0].Fields.Count -lt 8 -or (ConvertTo-AuditJson $worker) -match 'TOPSECRET') {throw 'Drive worker context/JSON roundtrip failed.'}
+
+    $scriptPath=Join-Path $driveRoot 'nightly.ps1'
+    [IO.File]::WriteAllText($scriptPath,'# Do not execute. Copy-Item C:\Data D:\Copy; $password="TOPSECRET"; throw "EXECUTED"')
+    function Get-ScheduledTask {
+        foreach ($name in @('Nightly','Disabled Backup','Unrelated','Denied Backup')) {
+            $exec=if ($name -eq 'Nightly') {'powershell.exe'} else {'app.exe'}
+            [pscustomobject]@{TaskName=$name;TaskPath='\';State=if ($name -like 'Disabled*') {'Disabled'} else {'Ready'}
+                Actions=@([pscustomobject]@{Execute=$exec;Arguments=if ($name -eq 'Nightly') {('-File "'+$scriptPath+'" -password TOPSECRET')} else {''};WorkingDirectory=$driveRoot})
+                Triggers=@([pscustomobject]@{CimClass=[pscustomobject]@{CimClassName='MSFT_TaskDailyTrigger'};Enabled=$true;StartBoundary='2026-09-28T01:00:00';DaysInterval=1;Repetition=[pscustomobject]@{Interval='PT1H'}})
+                Principal=[pscustomobject]@{UserId='TEST\backup';RunLevel='Highest'};Settings=[pscustomobject]@{Enabled=($name -notlike 'Disabled*');StartWhenAvailable=$true}}
+        }
+    }
+    function Get-ScheduledTaskInfo {
+        [CmdletBinding()]param([Parameter(ValueFromPipeline=$true)]$InputObject)
+        process {if ($InputObject.TaskName -eq 'Denied Backup') {throw 'Access denied'}; [pscustomobject]@{LastTaskResult=0;LastRunTime=Get-Date;NextRunTime=(Get-Date).AddDays(1);NumberOfMissedRuns=0}}
+    }
+    $taskResults=@(Get-AuditBackupTaskInventory)
+    $inventory=[pscustomobject]@{Tasks=@($taskResults | Where-Object {$_.RecordType -eq 'Task'})}
+    if ($inventory.Tasks.Count -ne 3 -or $inventory.Tasks[0].CandidateReasons -notcontains 'ReferencedScriptIndicator' -or $inventory.Tasks[1].State -ne 'Disabled' -or -not $inventory.Tasks[2].InfoError) {throw 'Scheduled backup candidates/disabled/error handling failed.'}
+    if ($inventory.Tasks[0].ScriptInspections[0].Indicators -notcontains 'Copy-Item' -or $inventory.Tasks[0].Triggers[0].DaysInterval -ne 1 -or $inventory.Tasks[0].RunAs -ne 'TEST\backup') {throw 'Task script/schedule/principal evidence missing.'}
+    if ((ConvertTo-AuditJson $inventory) -match 'TOPSECRET|EXECUTED') {throw 'Task arguments or script content leaked.'}
+    $capResults=@(Get-AuditBackupTaskInventory -ScanLimit 2 -TaskLimit 1)
+    $cap=$capResults | Where-Object {$_.RecordType -eq 'Coverage'}
+    if (-not $cap.ScanLimitReached -or -not $cap.OutputTruncated -or @($capResults | Where-Object {$_.RecordType -eq 'Task'}).Count -ne 1) {throw 'Task scan/output caps failed.'}
+    $streamed=Invoke-AuditCheck 'ScheduledTaskTimeoutTest' -TimeoutSeconds 3 -Context @{
+        driveRoot=$driveRoot;scriptPath=$scriptPath;TaskCode=${function:Get-AuditBackupTaskInventory}.ToString()
+        MockTasks=${function:Get-ScheduledTask}.ToString();LocalCode=${function:Resolve-AuditLocalPath}.ToString()
+    } -Collect {
+        Set-Item Function:Resolve-AuditLocalPath ([scriptblock]::Create($LocalCode))
+        Set-Item Function:Get-AuditBackupTaskInventory ([scriptblock]::Create($TaskCode))
+        Set-Item Function:Get-ScheduledTask ([scriptblock]::Create($MockTasks))
+        function Get-ScheduledTaskInfo {
+            [CmdletBinding()]param([Parameter(ValueFromPipeline=$true)]$InputObject)
+            process { if ($InputObject.TaskName -eq 'Denied Backup') {Start-Sleep -Seconds 30}; [pscustomobject]@{LastTaskResult=0} }
+        }
+        Get-AuditBackupTaskInventory
+    }
+    if ($streamed.Status -ne 'TimedOut' -or @($streamed.Data | Where-Object {$_.RecordType -eq 'Task'}).Count -ne 2 -or (ConvertTo-AuditJson $streamed) -match 'TOPSECRET') {throw 'Completed scheduled-task evidence lost on timeout or secrets leaked in worker.'}
+    Remove-Item Function:Get-ScheduledTask,Function:Get-ScheduledTaskInfo
+} finally { Remove-Item -LiteralPath $driveRoot -Recurse -Force -ErrorAction SilentlyContinue }
+Write-Host 'PASS: Drive rotated logs/config allowlists/secret omission/read caps/worker serialization; scheduled script discovery, disabled tasks, run identity/triggers, error isolation and task limits.'

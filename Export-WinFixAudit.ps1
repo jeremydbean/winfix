@@ -20,6 +20,8 @@ param(
     [ValidateRange(1,500)][int]$MaxHyperVVMs = 50,
     [string]$EvidenceFile = '',
     [string]$VeeamLogDirectory = '',
+    [string]$SynologyDriveDirectory = '',
+    [ValidateRange(1,30)][int]$MaxSynologyDriveLogFiles = 10,
     [ValidateRange(1,30)][int]$MaxVeeamLogFiles = 10,
     [switch]$SkipOnlineUpdateScan,
     [switch]$NoOpen,
@@ -77,7 +79,8 @@ function Find-AuditVeeamLogs {
         Coverage='Local .log files only, root plus two directory levels; newest within bounded discovery. File modification time is not an event timestamp. No archives, remote shares or reparse points are read.'}
 }
 function Read-AuditVeeamLog {
-    param([string]$Path, [int]$MaxBytes=131072, [int]$MaxLines=40)
+    param([string]$Path, [int]$MaxBytes=131072, [int]$MaxLines=40,
+        [string]$MatchPattern='(?i)\b(error|failed|failure|warning|success|succeeded)\b|\b(job|session|task|backup|restore)\b.*\b(finished|completed|result|status)\b')
     $stream=$null
     try {
         if ([IO.File]::GetAttributes($Path) -band [IO.FileAttributes]::ReparsePoint) { throw 'Log file became a reparse point.' }
@@ -99,7 +102,7 @@ function Read-AuditVeeamLog {
         }
         $lines=@($raw -split '\r?\n'); $matchedLines=@()
         for ($i=0; $i -lt $lines.Count; $i++) {
-            if ($lines[$i] -match '(?i)\b(error|failed|failure|warning|success|succeeded)\b|\b(job|session|task|backup|restore)\b.*\b(finished|completed|result|status)\b') {
+            if ($lines[$i] -match $MatchPattern) {
                 $safe=Protect-AuditText $lines[$i]
                 $matchedLines += [pscustomobject]@{TailLine=($i+1);Text=$safe.Substring(0,[math]::Min(1000,$safe.Length));Truncated=($safe.Length -gt 1000)}
             }
@@ -110,6 +113,219 @@ function Read-AuditVeeamLog {
             Coverage='Keyword excerpts from a bounded file tail, in file order; TailLine is relative to the retained tail. Raw text is not a verified job outcome or restore result. Individual line timestamps are not parsed; older lines may remain. Secrets are scrubbed best-effort.'}
     } catch { [pscustomobject]@{Path=$Path;Status='Unavailable';Error=$_.Exception.Message;Lines=@()} }
     finally { if ($stream) { $stream.Dispose() } }
+}
+
+function Resolve-AuditLocalPath {
+    param([string]$Path)
+    $provider=$null; $drive=$null
+    $native=$ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Path,[ref]$provider,[ref]$drive)
+    if ($provider.Name -ne 'FileSystem' -or $native.StartsWith('\\') -or $native.StartsWith('//')) { throw 'Only local filesystem paths are supported.' }
+    if ((New-Object IO.DriveInfo([IO.Path]::GetPathRoot($native))).DriveType -eq [IO.DriveType]::Network) { throw 'Mapped network paths are not read.' }
+    $item=New-Object IO.FileInfo($native)
+    if ($item.Exists -and ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'Reparse points are not read.' }
+    $ancestor=New-Object IO.DirectoryInfo($native)
+    while ($null -ne $ancestor) {
+        if ($ancestor.Exists -and ($ancestor.Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'Paths through reparse points are not read.' }
+        $ancestor=$ancestor.Parent
+    }
+    return $native
+}
+function Find-AuditDriveFiles {
+    param([string]$Root, [datetime]$Since, [int]$EntryLimit=1000, [int]$FileLimit=10)
+    $native=Resolve-AuditLocalPath $Root
+    if (-not [IO.Directory]::Exists($native)) { throw 'Drive Client data directory is missing or inaccessible.' }
+    $queue=New-Object Collections.Queue
+    $queue.Enqueue([pscustomobject]@{Path=$native;Depth=0})
+    $entries=0; $skipped=0; $links=0; $files=@(); $errors=@(); $oldLogs=0
+    while ($queue.Count -and $entries -lt $EntryLimit) {
+        $folder=$queue.Dequeue()
+        try {
+            $null=Resolve-AuditLocalPath $folder.Path
+            foreach ($path in [IO.Directory]::EnumerateFileSystemEntries($folder.Path)) {
+                if ($entries -ge $EntryLimit) { break }; $entries++
+                try {
+                    $attr=[IO.File]::GetAttributes($path); $leaf=[IO.Path]::GetFileName($path)
+                    if ($attr -band [IO.FileAttributes]::ReparsePoint) { $links++; continue }
+                    if ($attr -band [IO.FileAttributes]::Directory) {
+                        # Never walk the synchronized payload or bundled application/resources.
+                        if ($folder.Depth -ge 3 -or $leaf -match '^(SynologyDrive\.app|SystemFolders|cache|temp|tmp|download|upload|logs?\.archive)$') { $skipped++; continue }
+                        $queue.Enqueue([pscustomobject]@{Path=$path;Depth=$folder.Depth+1}); continue
+                    }
+                    $kind=$null
+                    if ($leaf -match '\.log(?:\.\d+)?$' -or ($folder.Path -match '[\\/]logs?$' -and $leaf -match '\.txt$')) { $kind='Log' }
+                    elseif ($leaf -match '\.(json|ini|conf|cfg)$') { $kind='Settings' }
+                    elseif ($leaf -match '\.(sqlite|sqlite3|db)$') { $kind='DatabaseMetadata' }
+                    if (-not $kind) { continue }
+                    $file=New-Object IO.FileInfo($path)
+                    if ($kind -eq 'Log' -and $file.LastWriteTime -lt $Since) { $oldLogs++; continue }
+                    $files += [pscustomobject]@{Path=$file.FullName;Kind=$kind;Length=$file.Length;LastWriteTime=$file.LastWriteTime}
+                } catch { if ($errors.Count -lt 10) { $errors += [pscustomobject]@{Path=$path;Error=Protect-AuditText $_.Exception.Message} } }
+            }
+        } catch { if ($errors.Count -lt 10) { $errors += [pscustomobject]@{Path=$folder.Path;Error=Protect-AuditText $_.Exception.Message} } }
+    }
+    # Separate limits keep busy logs from hiding task settings and database metadata.
+    $selected=@(foreach ($kind in @('Log','Settings','DatabaseMetadata')) {
+        $files | Where-Object { $_.Kind -eq $kind } | Sort-Object LastWriteTime -Descending | Select-Object -First $FileLimit
+    })
+    [pscustomobject]@{Root=$native;EntriesScanned=$entries;EntryLimit=$EntryLimit;ScanLimitReached=($entries -ge $EntryLimit)
+        DepthLimit=3;FoldersSkipped=$skipped;ReparsePointsSkipped=$links;OldLogsSkipped=$oldLogs;Candidates=$files.Count
+        PerKindFileLimit=$FileLimit;OutputTruncated=($files.Count -gt $selected.Count);Files=$selected;Errors=$errors
+        Coverage='Bounded local metadata discovery; no synced payloads, archives, application resources or database contents read. Old configuration can be returned; modification time is not task success.'}
+}
+function Select-AuditDriveSettings {
+    param($Object, [string]$Prefix='', [int]$Depth=0, [hashtable]$Budget=@{Remaining=100;Truncated=$false})
+    if ($null -eq $Object) { return }
+    if ($Depth -gt 8 -or $Budget.Remaining -le 0) { $Budget.Truncated=$true; return }
+    # Only known task/connection containers and non-secret scalar fields are exported.
+    $containers='^(connections|backup_task|backup_tasks|sync_sessions|tasks|sessions|backup_destination|schedule|settings|connection)$'
+    $fields='^(server_address|server_name|computer_name|enable_ssl|allow_untrusted_certificate|sharefolder|remote_path|local_path|backup_source|backup_mode|backup_start_time|backup_end_time|backup_days|backup_times|backup_period|do_missing_backup|ignore_local_remove|backup_temp_file|enable_backup_dot_prefix|enable_auto_shutdown|sync_direction|use_ondemand_sync|sync_temp_file|enable_sync_dot_prefix|task_name|task_type|last_backup_time|last_success_time|next_backup_time|last_result|last_error_code|backup_status|status)$'
+    foreach ($property in $Object.PSObject.Properties) {
+        if ($Budget.Remaining -le 0) { $Budget.Truncated=$true; break }
+        $name=[string]$property.Name; $value=$property.Value
+        if ($name -match $containers) {
+            $index=0
+            foreach ($child in @($value)) {
+                if ($index -ge 30 -or $Budget.Remaining -le 0) { $Budget.Truncated=$true; break }
+                Select-AuditDriveSettings -Object $child -Prefix "$Prefix$name[$index]." -Depth ($Depth+1) -Budget $Budget
+                $index++
+            }
+        } elseif ($name -match $fields) {
+            $index=0
+            foreach ($scalar in @($value)) {
+                if ($index -ge 30 -or $Budget.Remaining -le 0) { $Budget.Truncated=$true; break }
+                if ($null -eq $scalar -or $scalar -is [string] -or $scalar -is [ValueType]) {
+                    $text=Protect-AuditText ([string]$scalar)
+                    # Refuse embedded objects, multi-line credentials or credential-shaped values.
+                    if ($text -match '(?i)password|passwd|authorization|bearer|private.key|access.token|refresh.token|"\s*:' -or $text -match '[\r\n]') { $text='[OMITTED: sensitive or structured value]' }
+                    $Budget.Remaining--; $index++
+                    [pscustomobject]@{Field="$Prefix$name";Value=if ($null -eq $scalar) {$null} else {$text.Substring(0,[math]::Min(512,$text.Length))};Truncated=($text.Length -gt 512)}
+                }
+            }
+        }
+    }
+}
+function Read-AuditDriveSettings {
+    param([string]$Path, [int]$MaxBytes=262144)
+    $stream=$null; $reader=$null
+    try {
+        $native=Resolve-AuditLocalPath $Path
+        $stream=[IO.File]::Open($native,[IO.FileMode]::Open,[IO.FileAccess]::Read,([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete))
+        if ($stream.Length -gt $MaxBytes) { throw 'Settings file exceeds the 256 KiB read limit.' }
+        # Read at most MaxBytes even if an open client grows the file after the length check.
+        $bytes=New-Object byte[] ($MaxBytes+1); $read=0
+        while ($read -lt $bytes.Length) { $n=$stream.Read($bytes,$read,$bytes.Length-$read); if (-not $n) { break }; $read+=$n }
+        if ($read -gt $MaxBytes) { throw 'Settings file grew beyond its read limit.' }
+        $encoding=[Text.Encoding]::UTF8; $offset=0
+        if ($read -ge 2 -and $bytes[0] -eq 255 -and $bytes[1] -eq 254) { $encoding=[Text.Encoding]::Unicode; $offset=2 }
+        elseif ($read -ge 2 -and $bytes[0] -eq 254 -and $bytes[1] -eq 255) { $encoding=[Text.Encoding]::BigEndianUnicode; $offset=2 }
+        elseif ($read -ge 3 -and $bytes[0] -eq 239 -and $bytes[1] -eq 187 -and $bytes[2] -eq 191) { $offset=3 }
+        $raw=$encoding.GetString($bytes,$offset,$read-$offset); $budget=@{Remaining=100;Truncated=$false}; $fields=@()
+        if ([IO.Path]::GetExtension($native) -eq '.json' -or $raw.TrimStart().StartsWith('{')) {
+            # Parser errors may contain a raw credential; never export their message.
+            try { $obj=$raw | ConvertFrom-Json -ErrorAction Stop } catch { throw 'Settings JSON is invalid or unsupported; raw content and parser details omitted.' }
+            $fields=@(Select-AuditDriveSettings -Object $obj -Budget $budget)
+        } else {
+            $values=[ordered]@{}
+            foreach ($line in ($raw -split '\r?\n')) {
+                if ($line -match '^\s*([a-zA-Z_]+)\s*=\s*([^\r\n]*)$') {
+                    $values[$matches[1]]=$matches[2].Trim().Trim('"').Trim("'")
+                }
+            }
+            $fields=@(Select-AuditDriveSettings -Object ([pscustomobject]$values) -Budget $budget)
+        }
+        [pscustomobject]@{Path=$native;Status='Collected';BytesRead=$read;Fields=$fields;OutputTruncated=$budget.Truncated;Error=$null
+            Coverage='Allowlisted scalar task/connection settings only. May be a stale/deployment configuration, not active runtime state. Missing fields and numeric status meanings remain unknown; no credentials or raw configuration exported.'}
+    } catch { [pscustomobject]@{Path=$Path;Status='Unavailable';Fields=@();Error=Protect-AuditText $_.Exception.Message} }
+    finally { if ($stream) { $stream.Dispose() } }
+}
+function Read-AuditDriveLog {
+    param([string]$Path)
+    try {
+        $native=Resolve-AuditLocalPath $Path
+        $result=Read-AuditVeeamLog -Path $native -MaxLines 30 -MatchPattern '(?i)\b(backup|restore|sync|schedule|error|failed|failure|warning|conflict|skipped|denied|quota|disconnect|reconnect|server|destination|source|paused|completed|success)\b|backup[_ -](mode|time|source|destination|status)|server_address'
+        $omitted=0
+        $result.Lines=@(foreach ($line in $result.Lines) {
+            if ($line.Text -match '(?i)password|passwd|\bpwd\b|token|authorization|bearer|cookie|session[_-]?(id|key)|private.key|credential') { $omitted++; continue }
+            [pscustomobject]@{TailLine=$line.TailLine;Text=$line.Text;Truncated=$line.Truncated}
+        })
+        $result | Add-Member -NotePropertyName SensitiveLinesOmitted -NotePropertyValue $omitted
+        $result | Add-Member -NotePropertyName Product -NotePropertyValue 'Synology Drive Client'
+        $result.Coverage='Bounded Drive Client text excerpts; sync and file-level success are not whole-backup success. Sensitive labelled lines omitted; remaining text scrubbed best-effort. Timestamps are raw/unparsed and may predate lookback. Server retention, encryption at rest and tested recovery require console evidence.'
+        $result
+    } catch { [pscustomobject]@{Path=$Path;Status='Unavailable';Lines=@();Error=Protect-AuditText $_.Exception.Message} }
+}
+
+function Get-AuditBackupTaskInventory {
+    param([int]$ScanLimit=500, [int]$TaskLimit=100)
+    $tasks=@(Get-ScheduledTask | Select-Object -First ($ScanLimit+1))
+    $scanned=0; $matched=0; $rows=@(); $scriptsRead=0
+    $pattern='(?i)backup|back[ _-]?up|synology|cloud.?drive|veeam|acronis|macrium|datto|robocopy|xcopy|rsync|rclone|restic|borg|duplicati|winscp|vssadmin|diskshadow|wbadmin|7z(?:\.exe)?|tar\.exe|sqlcmd|mysqldump|pg_dump|export-vm|compress-archive|copy-item'
+    foreach ($task in ($tasks | Select-Object -First $ScanLimit)) {
+        $scanned++; $reasons=@(); $actions=@(); $inspections=@()
+        if ("$($task.TaskName) $($task.TaskPath)" -match $pattern) { $reasons+='TaskNameOrPath' }
+        foreach ($action in @($task.Actions | Select-Object -First 8)) {
+            $exe=[string]$action.Execute; $argsText=[string]$action.Arguments
+            if ($exe -match $pattern) { $reasons+='ActionExecutable' }
+            if ($argsText -match $pattern) { $reasons+='ActionArgumentIndicator' }
+            $wrapper=$exe -match '(?i)(^|[\\/])(powershell|pwsh|cmd|wscript|cscript|python(?:\d+)?)(?:\.exe)?$' -or $exe -match '(?i)\.(ps1|bat|cmd|vbs|py)$'
+            if ($wrapper) { $reasons+='ScriptOrCommandWrapperNeedsReview' }
+            if ($argsText -match '(?i)-(enc|encodedcommand)\b') { $reasons+='EncodedCommandNotDecoded' }
+            $actions += [pscustomobject]@{Execute=(Protect-AuditText $exe);WorkingDirectory=(Protect-AuditText ([string]$action.WorkingDirectory));ArgumentsOmitted=$true}
+            # Inspect literal local script references only; never expand/execute shell text.
+            $paths=@()
+            if ($exe -match '(?i)\.(ps1|bat|cmd|vbs|py)$') { $paths+=$exe }
+            foreach ($m in [regex]::Matches($argsText,'(?i)"([^"\r\n]+\.(?:ps1|bat|cmd|vbs|py))"|''([^''\r\n]+\.(?:ps1|bat|cmd|vbs|py))''|(?:^|\s)([A-Z]:\\[^\s"'']+\.(?:ps1|bat|cmd|vbs|py))(?=\s|$)')) {
+                $paths+=@($m.Groups | Select-Object -Skip 1 | Where-Object {$_.Success} | Select-Object -First 1 | ForEach-Object {$_.Value})
+            }
+            foreach ($scriptPath in @($paths | Select-Object -Unique | Select-Object -First 2)) {
+                if ($scriptsRead -ge 20) { $inspections += [pscustomobject]@{Path=(Protect-AuditText $scriptPath);Status='Skipped';Reason='Global 20-script read limit'}; continue }
+                $stream=$null
+                try {
+                    $scriptsRead++
+                    $expanded=[Environment]::ExpandEnvironmentVariables($scriptPath)
+                    if (-not [IO.Path]::IsPathRooted($expanded)) {
+                        if (-not $action.WorkingDirectory) { throw 'Relative script path has no explicit working directory.' }
+                        $expanded=Join-Path $action.WorkingDirectory $expanded
+                    }
+                    $native=Resolve-AuditLocalPath $expanded
+                    $stream=[IO.File]::Open($native,[IO.FileMode]::Open,[IO.FileAccess]::Read,([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete))
+                    $length=$stream.Length; $bytes=New-Object byte[] 65536; $read=0
+                    while ($read -lt $bytes.Length) { $n=$stream.Read($bytes,$read,$bytes.Length-$read); if (-not $n) {break}; $read+=$n }
+                    $encoding=[Text.Encoding]::UTF8
+                    if ($read -ge 2 -and $bytes[0] -eq 255 -and $bytes[1] -eq 254) {$encoding=[Text.Encoding]::Unicode}
+                    if ($read -ge 2 -and $bytes[0] -eq 254 -and $bytes[1] -eq 255) {$encoding=[Text.Encoding]::BigEndianUnicode}
+                    $content=$encoding.GetString($bytes,0,$read)
+                    # Export only fixed match categories; script text/arguments can contain secrets.
+                    $clues=@()
+                    foreach ($clue in @('backup','robocopy','xcopy','rclone','rsync','wbadmin','Export-VM','Copy-Item','Compress-Archive','sqlcmd','mysqldump','pg_dump','synology','veeam','restic','duplicati','diskshadow')) {
+                        if ($content -match [regex]::Escape($clue)) { $clues+=$clue }
+                    }
+                    if ($clues.Count) { $reasons+='ReferencedScriptIndicator' }
+                    $inspections += [pscustomobject]@{Path=(Protect-AuditText $native);Status='Collected';BytesRead=$read;Truncated=($length -gt $read);Indicators=$clues;ContentOmitted=$true}
+                } catch { $inspections += [pscustomobject]@{Path=(Protect-AuditText $scriptPath);Status='Unavailable';Reason='Local script could not be safely read; may be remote, missing, locked, redirected or relative.'} }
+                finally {if ($stream) {$stream.Dispose()}}
+            }
+        }
+        if (-not $reasons.Count) { continue }; $matched++
+        if ($rows.Count -ge $TaskLimit) {continue}
+        $info=$null; $infoError=$null
+        try { $info=$task | Get-ScheduledTaskInfo -ErrorAction Stop } catch { $infoError=Protect-AuditText $_.Exception.Message }
+        $triggers=@(foreach ($trigger in @($task.Triggers | Select-Object -First 8)) {
+            [pscustomobject]@{Type=[string]$trigger.CimClass.CimClassName;Enabled=$trigger.Enabled;StartBoundary=$trigger.StartBoundary;EndBoundary=$trigger.EndBoundary
+                DaysInterval=$trigger.DaysInterval;WeeksInterval=$trigger.WeeksInterval;DaysOfWeek=$trigger.DaysOfWeek;DaysOfMonth=$trigger.DaysOfMonth
+                RepetitionInterval=$trigger.Repetition.Interval;RepetitionDuration=$trigger.Repetition.Duration}
+        })
+        $row = [pscustomobject]@{RecordType='Task';TaskName=$task.TaskName;TaskPath=$task.TaskPath;State=[string]$task.State;CandidateReasons=@($reasons | Select-Object -Unique)
+            LastRunTime=$info.LastRunTime;NextRunTime=$info.NextRunTime;LastTaskResult=$info.LastTaskResult;NumberOfMissedRuns=$info.NumberOfMissedRuns;InfoError=$infoError
+            RunAs=$task.Principal.UserId;RunAsGroup=$task.Principal.GroupId;LogonType=[string]$task.Principal.LogonType;RunLevel=[string]$task.Principal.RunLevel
+            Enabled=$task.Settings.Enabled;StartWhenAvailable=$task.Settings.StartWhenAvailable;ExecutionTimeLimit=$task.Settings.ExecutionTimeLimit
+            Actions=$actions;ActionsTruncated=(@($task.Actions).Count -gt 8);Triggers=$triggers;TriggersTruncated=(@($task.Triggers).Count -gt 8);ScriptInspections=$inspections}
+        $rows += $row
+        $row # Stream completed candidates so the worker preserves them if a later call times out.
+    }
+    [pscustomobject]@{RecordType='Coverage';TasksScanned=$scanned;ScanLimit=$ScanLimit;ScanLimitReached=($tasks.Count -gt $ScanLimit);Candidates=$matched;TaskLimit=$TaskLimit
+        OutputTruncated=($matched -gt $TaskLimit);ScriptReadAttempts=$scriptsRead;ScriptReadLimit=20
+        Coverage='Backup candidates, not confirmed protection. Includes disabled tasks, copy/archive tools and generic script wrappers. Reads at most 20 literal local scripts, 64 KiB each; no execution or argument/script content export. Triggers are bounded configuration; result 0 does not prove backup success. COM/custom executors, nested scripts and obfuscated commands may require manual review.'}
 }
 
 function ConvertTo-AuditJson {
@@ -146,7 +362,7 @@ function Save-AuditCheckpoint {
     if ($script:checkpointPath) {
         $tempPath = $script:checkpointPath + '.tmp'
         try {
-            $snapshot = [ordered]@{ SchemaVersion='1.8'; AuditId=$script:auditId; Incomplete=$true
+            $snapshot = [ordered]@{ SchemaVersion='1.9'; AuditId=$script:auditId; Incomplete=$true
                 SavedAt=(Get-Date).ToString('o'); ClientName=$ClientName; Location=$Location; Elevated=$elevated
                 Checks=$script:checks; ExportWarnings=@($script:checkpointWarnings) }
             $checkpointJson = ConvertTo-AuditJson -InputObject $snapshot
@@ -319,8 +535,8 @@ function Get-AuditHyperVDetail {
 function New-ExternalEvidenceTemplate {
     param([string]$ComputerName)
     $questions = @{
-        BackupLastSuccess='Product, task/device, last successful completion, latest failure and console status.'
-        BackupProtectedScope='Protected volumes/folders, exclusions, schedule and destination capacity.'
+        BackupLastSuccess='Product (Drive Client, Active Backup for Business, Veeam, etc.), task/device, last completed backup with timezone, latest failure and console status. Drive sync/file success is not whole-backup success.'
+        BackupProtectedScope='Protected volumes/folders, exclusions, schedule, next run and destination capacity. For Drive Client: server, Backup Task versus Sync Tasks, backup mode, local sources, remote destination, cloud-only files and whether machine recovery is separately covered.'
         HyperVBackupCoverage='For each VM ID/name: vendor task, included/excluded disks, host-volume versus VM-aware protection, application consistency, schedule, latest usable restore point and recent failures.'
         HyperVRestoreTest='For each critical VM: isolated restore/boot and application test, restore point, result, elapsed time, date and tester. Checkpoint/replication health is not a restore test.'
         BackupRetention='Retention policy, oldest/newest available restore points and recovery point objective.'
@@ -420,8 +636,8 @@ if ([string]::IsNullOrWhiteSpace($OutputDirectory)) {
 $OutputDirectory = Initialize-AuditOutputDirectory -Path $OutputDirectory
 $prefix = 'WinFixAudit-' + $env:COMPUTERNAME + '-' + $started.ToString('yyyyMMdd-HHmmss')
 $script:checkpointPath = Join-Path $OutputDirectory "$prefix-PARTIAL.json"
-$BackupPattern = 'Veeam|Acronis|Macrium|Datto|Carbonite|Veritas|CrashPlan|\bCove\b|Axcient|Rubrik|Backup|StorageCraft|ShadowProtect|Arcserve|MSP360|CloudBerry|Druva|Commvault|NAKIVO|Retrospect|UrBackup'
-Write-Host "WinFix audit 1.8. Completed checks are saved to $script:checkpointPath"
+$BackupPattern = 'Synology (Drive|Active Backup)|cloud.?drive|Veeam|Acronis|Macrium|Datto|Carbonite|Veritas|CrashPlan|\bCove\b|Axcient|Rubrik|Backup|StorageCraft|ShadowProtect|Arcserve|MSP360|CloudBerry|Druva|Commvault|NAKIVO|Retrospect|UrBackup'
+Write-Host "WinFix audit 1.9. Completed checks are saved to $script:checkpointPath"
 if (-not $elevated) { Write-Warning 'Run ISE as Administrator for the fullest audit.' }
 Save-AuditCheckpoint
 $checks.System = Invoke-AuditCheck System {
@@ -469,7 +685,7 @@ $checks.Software = Invoke-AuditCheck Software {
 }
 $checks.AgentServices = Invoke-AuditCheck AgentServices {
     Get-CimInstance Win32_Service |
-        Where-Object { "$($_.Name) $($_.DisplayName)" -match 'Ninja|Huntress|GoTo|LogMeIn|ScreenConnect|ConnectWise|TeamViewer|AnyDesk|Splashtop|RustDesk|VNC|BeyondTrust|Veeam|Acronis|Macrium|Datto|Carbonite|Veritas|CrashPlan|\bCove\b|Axcient|Rubrik|Backup|Sentinel|Sophos|CrowdStrike|Webroot|ESET|Bitdefender' } |
+        Where-Object { "$($_.Name) $($_.DisplayName)" -match 'Synology|cloud.?drive|Ninja|Huntress|GoTo|LogMeIn|ScreenConnect|ConnectWise|TeamViewer|AnyDesk|Splashtop|RustDesk|VNC|BeyondTrust|Veeam|Acronis|Macrium|Datto|Carbonite|Veritas|CrashPlan|\bCove\b|Axcient|Rubrik|Backup|Sentinel|Sophos|CrowdStrike|Webroot|ESET|Bitdefender' } |
         Select-Object Name, DisplayName, State, StartMode
 }
 $checks.Antivirus = Invoke-AuditCheck Antivirus {
@@ -620,16 +836,12 @@ $checks.BackupServices = Invoke-AuditCheck BackupServices {
     Get-CimInstance Win32_Service | Where-Object { "$($_.Name) $($_.DisplayName)" -match $BackupPattern -or $_.Name -in @('VSS','swprv','wbengine','SDRSVC') } |
         Select-Object Name, DisplayName, State, StartMode, ExitCode
 }
-$checks.BackupTasks = Invoke-AuditCheck BackupTasks {
-    Get-ScheduledTask | Where-Object { "$($_.TaskPath) $($_.TaskName) $($_.Actions.Execute)" -match $BackupPattern } | ForEach-Object {
-        $task = $_
-        try {
-            $info = $task | Get-ScheduledTaskInfo
-            [pscustomobject]@{ TaskName=$task.TaskName; TaskPath=$task.TaskPath; State=[string]$task.State
-                LastRunTime=$info.LastRunTime; NextRunTime=$info.NextRunTime; LastTaskResult=$info.LastTaskResult
-                NumberOfMissedRuns=$info.NumberOfMissedRuns; Error=$null }
-        } catch { [pscustomobject]@{ TaskName=$task.TaskName; TaskPath=$task.TaskPath; Error=$_.Exception.Message } }
-    }
+$checks.BackupTasks = Invoke-AuditCheck BackupTasks -Context @{
+    TaskCode=${function:Get-AuditBackupTaskInventory}.ToString();LocalPathCode=${function:Resolve-AuditLocalPath}.ToString()
+} -Collect {
+    Set-Item Function:Resolve-AuditLocalPath ([scriptblock]::Create($LocalPathCode))
+    Set-Item Function:Get-AuditBackupTaskInventory ([scriptblock]::Create($TaskCode))
+    Get-AuditBackupTaskInventory
 }
 $checks.HyperVInventory = Invoke-AuditCheck HyperVInventory -Context @{ VMLimit=$MaxHyperVVMs } -Collect {
     Import-Module Hyper-V -ErrorAction Stop
@@ -772,6 +984,71 @@ if ($veeamDetected -or $VeeamLogDirectory) {
         }
     }
 }
+
+$checks.SynologyDriveInventory = Invoke-AuditCheck SynologyDriveInventory -Context @{
+    RequestedRoot=$SynologyDriveDirectory;LocalPathCode=${function:Resolve-AuditLocalPath}.ToString()
+} -Collect {
+    Set-Item Function:Resolve-AuditLocalPath ([scriptblock]::Create($LocalPathCode))
+    $candidates=@(); $errors=@(); $roots=@(); $seen=@{}
+    if ($RequestedRoot) { $candidates += [pscustomobject]@{Root=$RequestedRoot;Origin='ExplicitDirectory'} }
+    if ($env:LOCALAPPDATA) { $candidates += [pscustomobject]@{Root=(Join-Path $env:LOCALAPPDATA 'SynologyDrive');Origin='CurrentUser'} }
+    try {
+        $profiles=@(Get-CimInstance Win32_UserProfile | Where-Object { -not $_.Special -and $_.LocalPath } | Select-Object -First 21)
+        foreach ($profile in ($profiles | Select-Object -First 20)) {
+            $candidates += [pscustomobject]@{Root=(Join-Path $profile.LocalPath 'AppData\Local\SynologyDrive');Origin='LocalUserProfile'}
+        }
+    } catch { $errors += 'Local user-profile inventory unavailable; current/explicit roots still checked.' }
+    foreach ($candidate in $candidates) {
+        if ($seen.ContainsKey($candidate.Root)) {continue}; $seen[$candidate.Root]=$true
+        try {
+            $root=Resolve-AuditLocalPath $candidate.Root
+            $status=if ([IO.Directory]::Exists($root)) {'Present'} else {'MissingOrInaccessible'}
+            $roots += [pscustomobject]@{Root=$root;Origin=$candidate.Origin;Status=$status}
+        } catch { $roots += [pscustomobject]@{Root=$candidate.Root;Origin=$candidate.Origin;Status='Skipped';Reason=Protect-AuditText $_.Exception.Message} }
+    }
+    $processes=@()
+    try { $processes=@(Get-CimInstance Win32_Process -Filter "Name = 'cloud-drive-ui.exe' OR Name = 'cloud-drive-daemon.exe' OR Name = 'cloud-drive-connect.exe' OR Name = 'SynologyDrive.exe'" | Select-Object -First 30 | Select-Object Name,ProcessId,ExecutablePath) }
+    catch { $errors += 'Drive process inventory unavailable.' }
+    [pscustomobject]@{Product='Synology Drive Client';Roots=$roots;ProfileLimit=20;ProfilesTruncated=(@($profiles).Count -gt 20);Processes=$processes;Errors=$errors
+        Coverage='Per-user local directories plus current/explicit root; no unloaded registry hives, credentials or process command lines read. Missing directories can mean inaccessible or another profile/location. Drive file backup and sync are distinct from Active Backup for Business and whole-machine recovery.'}
+}
+$driveRoots=@($checks.SynologyDriveInventory.Data | ForEach-Object {$_.Roots} | Where-Object {$_.Status -eq 'Present'} | ForEach-Object {$_.Root})
+if ($driveRoots.Count) {
+    $checks.SynologyDriveDiscovery = Invoke-AuditCheck SynologyDriveDiscovery -Context @{
+        Roots=$driveRoots;FileLimit=$MaxSynologyDriveLogFiles;FinderCode=${function:Find-AuditDriveFiles}.ToString();LocalPathCode=${function:Resolve-AuditLocalPath}.ToString()
+    } -Collect {
+        Set-Item Function:Resolve-AuditLocalPath ([scriptblock]::Create($LocalPathCode))
+        Set-Item Function:Find-AuditDriveFiles ([scriptblock]::Create($FinderCode))
+        $budget=2000
+        foreach ($root in $Roots) {
+            if ($budget -le 0) { [pscustomobject]@{Root=$root;Status='Skipped';Reason='Global 2000-entry discovery limit';Files=@()}; continue }
+            try { $found=Find-AuditDriveFiles -Root $root -Since $since -EntryLimit $budget -FileLimit $FileLimit; $budget-=$found.EntriesScanned; $found }
+            catch { [pscustomobject]@{Root=$root;Status='Unavailable';Error=Protect-AuditText $_.Exception.Message;Files=@()} }
+        }
+    }
+    $driveFiles=@($checks.SynologyDriveDiscovery.Data | ForEach-Object {$_.Files})
+    $checks.SynologyDriveDetails = Invoke-AuditCheck SynologyDriveDetails -TimeoutSeconds 60 -Context @{
+        Files=$driveFiles;FileLimit=$MaxSynologyDriveLogFiles;LocalPathCode=${function:Resolve-AuditLocalPath}.ToString()
+        TailCode=${function:Read-AuditVeeamLog}.ToString();LogCode=${function:Read-AuditDriveLog}.ToString()
+        SettingsCode=${function:Read-AuditDriveSettings}.ToString();SelectCode=${function:Select-AuditDriveSettings}.ToString()
+    } -Collect {
+        Set-Item Function:Resolve-AuditLocalPath ([scriptblock]::Create($LocalPathCode))
+        Set-Item Function:Read-AuditVeeamLog ([scriptblock]::Create($TailCode))
+        Set-Item Function:Read-AuditDriveLog ([scriptblock]::Create($LogCode))
+        Set-Item Function:Read-AuditDriveSettings ([scriptblock]::Create($SettingsCode))
+        Set-Item Function:Select-AuditDriveSettings ([scriptblock]::Create($SelectCode))
+        $logs=@($Files | Where-Object {$_.Kind -eq 'Log'} | Sort-Object LastWriteTime -Descending)
+        $settings=@($Files | Where-Object {$_.Kind -eq 'Settings'} | Sort-Object LastWriteTime -Descending)
+        $db=@($Files | Where-Object {$_.Kind -eq 'DatabaseMetadata'})
+        [pscustomobject]@{RecordType='Coverage';LogFilesOmitted=[math]::Max(0,$logs.Count-$FileLimit);SettingsFilesOmitted=[math]::Max(0,$settings.Count-6)
+            DatabaseFilesOmitted=[math]::Max(0,$db.Count-8);DatabaseContentsRead=$false
+            Limitations='SQLite/proprietary stores are metadata-only; no database driver installed or database queried. Log/config snippets cannot prove active task status, whole-machine protection, retention, encryption at rest or a successful restore. Use the Drive Backup Task/Logs UI and ExternalEvidence for missing fields.'}
+        foreach ($file in ($logs | Select-Object -First $FileLimit)) { Read-AuditDriveLog -Path $file.Path }
+        foreach ($file in ($settings | Select-Object -First 6)) { Read-AuditDriveSettings -Path $file.Path }
+        foreach ($file in ($db | Select-Object -First 8)) { $file }
+    }
+}
+
 $checks.BackupApplicationEvents = Invoke-AuditCheck BackupApplicationEvents { Get-AuditEvents -LogName Application -ProviderPattern $BackupPattern }
 $checks.DatabaseEvents = Invoke-AuditCheck DatabaseEvents {
     Get-AuditEvents -LogName Application -Levels 1,2 -ProviderPattern '^(MSSQLSERVER|MSSQL\$|SQLAgent|SQLBrowser|MySQL|MariaDB|OracleService|OracleOraDb|PostgreSQL)'
@@ -887,7 +1164,7 @@ $checks.ExternalEvidence = Invoke-AuditCheck ExternalEvidence -Context @{
     Read-ExternalEvidence -Path $EvidencePath -Template $Template
 }
 $report = [ordered]@{
-    SchemaVersion = '1.8'; AuditId = $script:auditId; Incomplete = $false; ClientName = $ClientName; Location = $Location
+    SchemaVersion = '1.9'; AuditId = $script:auditId; Incomplete = $false; ClientName = $ClientName; Location = $Location
     StartedAt = $started.ToString('o'); CompletedAt = (Get-Date).ToString('o'); Elevated = $elevated
     PowerShellVersion = $PSVersionTable.PSVersion.ToString(); Checks = $checks
     ExportWarnings = @($script:checkpointWarnings)
@@ -898,6 +1175,7 @@ $report = [ordered]@{
         'Windows PowerShell 4.0 and later are targeted. On Server 2012 R2, local-account and administrator membership queries use CIM fallbacks when LocalAccounts is absent. Missing provider timestamps remain unknown.'
         'Collected means the query completed, not that the control passed. Unavailable, TimedOut, Partial and null values require follow-up; returned partial evidence is incomplete.'
         'Event queries inspect only the newest EventScanLimit records per log, then filter by time/provider/severity. Scan limits, oldest record time and output truncation are recorded. Event metadata is exported; BackupErrorDetails and VSSErrorDetails also include bounded message text with best-effort labelled-secret scrubbing. Failed logons include all logon types, not just RDP.'
+        'Synology Drive Client profiles, text logs and allowlisted task settings are bounded local evidence. SQLite stores are metadata-only; active task status, server retention and restored usability may need console evidence. Scheduled backup candidates include script/copy wrappers; task exit 0 and keyword matches do not prove successful backup.'
         'Veeam event channels include bounded messages and EventData plus a separate warning/error sample. Veeam text-log discovery and tail reads are capped and local-only. Keyword lines are raw evidence, not inferred job success. Missing logs and truncated samples leave recovery and coverage unknown.'
         'Software inventory covers machine-wide uninstall registrations; the general scheduled task list excludes Microsoft tasks, but backup task discovery includes them.'
         'Update history is capped at 100. Missing updates use a potentially stale local cache only; ResultCode 2 means success, 3 means success with errors. LiveMissingUpdates performs a current scan unless explicitly skipped; its status and result code must be checked. Hotfix inventory is not proof of patch compliance.'

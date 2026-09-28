@@ -378,3 +378,78 @@ Regression checks cover sparse errors, missing messages, XML failures, redaction
 bounded discovery, large UTF-8 logs, UTF-16 logs, missing files and background-worker
 serialization. Server 2012 R2 / PowerShell 4 remains targeted; live Veeam validation
 must be performed on a Windows host.
+
+### Synology Drive Client and scheduled backups (collector 1.9)
+
+**Synology Drive Client file backups, Drive sync tasks, and Active Backup for
+Business are separate evidence sources.** Drive Client is now included in backup
+software detection. Its data may belong to a different Windows user from the
+administrator running ISE, so `SynologyDriveInventory` checks the current user's
+`%LOCALAPPDATA%\SynologyDrive` and up to 20 non-system local profiles. It also
+records Drive process names/paths without command lines. Profile inventory errors,
+inaccessible roots and limits are explicit; no offline user hives are loaded.
+
+`SynologyDriveDiscovery` scans at most 2,000 entries across those roots, to three
+levels below each root. It skips reparse points, network paths, application files,
+cache folders and the `SystemFolders` payload. It locates text logs (including
+`.log.1` rotations), small JSON/INI/config files and database metadata. Discovery
+keeps at most the configured file count per kind per root and reports omissions.
+`SynologyDriveDetails` then reads, globally:
+
+- The 10 newest discovered logs modified within the lookback: up to 128 KiB and
+  30 matching lines each, 1,000 characters per line. Increase with
+  `-MaxSynologyDriveLogFiles 20` (maximum 30). UTF-8 and BOM-marked UTF-16 work.
+  Backup/sync outcomes, errors, conflicts, schedule and destination clues are
+  preserved as raw evidence; sensitive labelled lines are omitted.
+- Up to six settings files, 256 KiB each: only allowlisted connection/task fields
+  such as server, local sources, destination, mode, schedule, SSL and status/time
+  fields when present. Passwords, tokens, usernames, proxy credentials, arbitrary
+  nested data and raw configuration are not exported. Arrays/depth/field counts
+  are capped. Unknown formats and read failures remain explicit.
+- Metadata for up to eight database files. SQLite/proprietary database contents
+  are **not decoded**, and no drivers are installed. The Drive UI may hold task
+  details that text files cannot expose. Deployment settings may also be stale.
+
+For a different local data folder, use
+`-SynologyDriveDirectory 'D:\DriveClientData'` on `Export-WinFixAudit.ps1`.
+Discovery uses the standard per-check timeout; detail reads have a 60-second
+limit. Each returned file result survives a later timeout. No NAS connection,
+backup execution, file restoration or client configuration changes are performed.
+Synology documents the log location in its
+[Drive troubleshooting guide](https://kb.synology.com/en-global/DSM/tutorial/Why_are_files_not_synced_between_Synology_Drive_and_Drive_desktop_application)
+and task configuration fields in its
+[deployment guide](https://global.download.synology.com/download/Document/Software/UserGuide/Package/SynologyDrive/All/enu/Synology_Drive_Client_Mass_Deployment_Guide_enu.pdf).
+
+`BackupTasks` streams candidate records (`RecordType=Task`) as they complete,
+followed by a `RecordType=Coverage` summary with explicit scan/output limits.
+Completed candidates survive a later worker timeout. It examines up to 500
+scheduled tasks, including Microsoft and disabled tasks, and returns up to 100
+candidates. Matching includes task names/paths, executables and arguments:
+backup vendors, copy/archive/database-export tools, and generic PowerShell,
+batch, scripting or command wrappers that need review. It records run identity,
+last/next run, task result, missed runs, selected task settings and up to eight
+actions/triggers per task. Trigger types, start boundaries, daily/weekly intervals
+and repetition values are preserved where available.
+
+For literal local script references, it reads at most 20 scripts in total, two
+references per action, and 64 KiB per script. Only fixed backup-related keyword
+indicators are exported: **scripts never run, and neither script content nor
+command-line arguments are exported**. Network/reparse paths are skipped. Task
+info failures are recorded per candidate. Nested scripts, COM executors, encoded
+commands and unfamiliar tools can still require manual review. A keyword in a
+comment is only a clue; task result 0, a file copy, sync completion or a disabled
+historical task does not establish successful protection.
+
+Use `BackupLastSuccess` and `BackupProtectedScope` in the generated evidence
+template to record the Drive **Backup Task** screen's last completion (with
+timezone), next run, server, mode, schedule, destination and selected sources.
+Verify restore usability, retention, encryption, independent copies and a separate
+machine-recovery plan. The collector never upgrades a generic sync/file success
+into a whole-backup success. Review all output before sharing: paths and log
+excerpts can contain business information, and text redaction is best-effort.
+
+Regression fixtures exercise Drive discovery/rotation, secret omission, settings
+allowlists/read limits, worker serialization, task wrappers, script inspection,
+disabled tasks, trigger/run-account evidence and provider errors. Windows ISE and
+Server 2012 R2 / PowerShell 4 remain targeted; live vendor validation still needs a
+Windows host and real client/task data.
