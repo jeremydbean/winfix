@@ -511,3 +511,40 @@ it. Storage counters use the optional
 The regression suite runs on PowerShell 7 with synthetic Windows/provider
 fixtures and real job/file operations. Windows Server 2012 R2 / PowerShell 4 and
 ISE compatibility are targeted, but must be validated with a live Windows run.
+
+### Targeted disk diagnostic (ISE)
+
+`Export-WinFixDiskDiagnostic.ps1` is a separate read-only diagnostic for disk
+warnings such as Event 51. It collects current Win32 disk identity/SCSI addressing,
+QueryDosDevice mappings (including an explicit PhysicalDrive2 probe), disk and
+partition/volume inventory, controller/driver versions, available reliability and
+SMART status, retained PnP disk entries, mounted virtual-disk metadata and backup
+service/task activity. Disk numbers describe the current system and may differ
+from an earlier incident. Missing providers remain explicit.
+
+Run elevated in Windows PowerShell/ISE, optionally specifying an incident in the
+**server's local time**:
+
+```powershell
+& .\Export-WinFixDiskDiagnostic.ps1 -IncidentLocalTime '2026-09-28T11:31:13'
+```
+
+Each section has a 25-second worker limit and completed output is checkpointed to
+`%TEMP%\WinFixDiskDiagnostic`. Notepad opens the final text, and the results are
+copied to the clipboard where available. `-NoOpen` suppresses Notepad.
+
+Events use the newest 3,000-record sample (last seven days after filtering), plus
+an optional +/-10-minute incident query. Up to 30 recent storage events, 40
+incident storage events, 24 Application backup/VSS records and 15 Windows Backup
+channel records are returned. Event 51 XML includes the raw binary diagnostic
+data, limited to 16,000 characters per event; rendered messages are limited to
+3,000 characters. Each output section is capped at 250,000 characters. Bounds,
+truncation, timeouts and missing/disabled sources are recorded. No commands repair,
+scan, mount, change services or control backup jobs. Output includes local paths,
+hardware identifiers and event details, not intentionally queried passwords/keys.
+
+Microsoft documents [Event 51 interpretation](https://learn.microsoft.com/en-us/troubleshoot/windows-server/backup-and-storage/event-id-51-information)
+and [QueryDosDevice mappings](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-querydosdevicew).
+Tests: `pwsh -NoProfile -File tests/Test-DiskDiagnostic.ps1`; fixtures exercise
+timeouts, partial output, event XML and interop compilation. Native Windows API
+behavior requires validation on the affected Windows host.

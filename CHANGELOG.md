@@ -1,5 +1,9 @@
 # Changelog
 
+## 2026-09-28 — targeted disk diagnostic
+- Adds a separate read-only ISE diagnostic for disk identity, kernel-device mappings, retained PnP entries, storage drivers/health and backup activity.
+- Captures bounded Event 51 XML/binary details and optional incident-window events, with worker timeouts, per-section checkpoints and pasteable Notepad/clipboard output.
+
 ## 2026-09-28 — collector 1.10
 - Adds OneDrive account/known-folder and policy evidence across loaded user profiles without opening cloud content, mounting user hives, or claiming sync health.
 - Adds bounded generic text-log probes for additional backup products plus up to eight custom local log directories; broadens software/service/event/task detection.
