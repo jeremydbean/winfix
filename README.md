@@ -548,3 +548,71 @@ and [QueryDosDevice mappings](https://learn.microsoft.com/en-us/windows/win32/ap
 Tests: `pwsh -NoProfile -File tests/Test-DiskDiagnostic.ps1`; fixtures exercise
 timeouts, partial output, event XML and interop compilation. Native Windows API
 behavior requires validation on the affected Windows host.
+
+### Stalled Windows Backup / NAS diagnostic (ISE)
+
+`Export-WinFixBackupDiagnostic.ps1` gathers evidence when Windows Backup appears
+stuck (for example at 97%). Run it in elevated Windows PowerShell ISE:
+
+```powershell
+& {
+    $previousTls = [Net.ServicePointManager]::SecurityProtocol
+    try {
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+        $url = 'https://raw.githubusercontent.com/jeremydbean/winfix/main/Export-WinFixBackupDiagnostic.ps1'
+        $scriptText = Invoke-RestMethod -Uri $url -TimeoutSec 60 -ErrorAction Stop
+        if ([string]::IsNullOrWhiteSpace([string]$scriptText)) { throw 'Downloaded script was empty.' }
+        & ([scriptblock]::Create([string]$scriptText)) -BackupTarget '\\NAS\BackupShare'
+    }
+    finally { [Net.ServicePointManager]::SecurityProtocol = $previousTls }
+}
+```
+
+The script saves completed sections to `%TEMP%\WinFixBackupDiagnostic`, opens the
+final text in Notepad, and copies it to the clipboard where supported. The UNC
+parameter identifies the destination to investigate; it does not configure or
+change the backup. `-SampleSeconds` defaults to 30 (10–60), `-LookbackHours` to 12
+(1–168), and `-NoOpen` suppresses Notepad. No credentials are required in the
+script; it uses the elevated user's existing access.
+
+Evidence includes:
+
+- Windows Backup status before and after two process/network/disk activity samples.
+- Backup, VSS, Synology and Veeam service/process activity, with cumulative counter
+  deltas guarded against missing values, resets and process-ID reuse.
+- NAS TCP 445 reachability, read-only share capacity/quota information, and SMB
+  connections visible to the current logon session.
+- VSS writer/shadow-storage status, existing shadows, local disk capacity/health,
+  and the state and recent result of tasks with backup/vendor names.
+- Bounded Windows Backup, Application backup/VSS, storage warning, SMB connectivity
+  and SMB security events. Event 51 includes raw XML/binary diagnostic details.
+
+All sections have a 30-second worker limit except activity sampling, whose limit
+is the interval plus 60 seconds. Native console readers have their own 10–12-second
+limits, then bounded output-drain waits. Microsoft documents that
+[`wbadmin get status`](https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/wbadmin-get-status)
+can run until the backup finishes: this diagnostic closes only the newly launched
+status-reading console process, never the backup engine. A reader timeout is
+explicitly distinguished from backup failure. A lack of a wbadmin job does not
+establish that every backup product or Windows file-backup phase is idle.
+
+No commands stop backup jobs, restart services, repair/scan disks, mount images,
+create snapshots, change shares, or write files to the NAS. The capacity query
+uses the current user's credentials, which can differ from the backup service's
+account. It cannot verify NAS drive health, write throughput, restore integrity,
+or sufficient capacity to finish this particular backup. Shared service processes
+and adapter counters include unrelated activity. Neither activity nor a short
+period without activity establishes backup progress or a hang by itself.
+
+Event queries use a start-time filter and at most 3,000 newest records per log,
+then provider/level filtering, with 12–35 returned records depending on the section.
+They report sample coverage and truncation; unavailable/disabled logs and timeouts
+remain visible. Each section is capped at 250,000 characters, native-reader stdout
+and stderr at 16,000 each, event messages at 3,000, and Event 51 XML at 16,000.
+Messages have best-effort labelled-secret redaction; paths, user names, identifiers
+and diagnostic messages remain in the pasteable output.
+
+Tests: `pwsh -NoProfile -File tests/Test-BackupDiagnostic.ps1`. Fixtures verify real
+reader-process timeouts/cleanup, dual-pipe output capture, partial results,
+counter semantics, event bounds/redaction/XML, production sampling, and interop
+compilation. These checks do not substitute for a live Windows/NAS run.
