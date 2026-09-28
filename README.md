@@ -453,3 +453,61 @@ allowlists/read limits, worker serialization, task wrappers, script inspection,
 disabled tasks, trigger/run-account evidence and provider errors. Windows ISE and
 Server 2012 R2 / PowerShell 4 remain targeted; live vendor validation still needs a
 Windows host and real client/task data.
+
+### Collector 1.10: deeper local evidence
+
+The audit now includes the following additional evidence. All checks retain
+separate time limits; unavailable providers and partial results remain explicit.
+
+| Area | What is collected | Interpretation limits |
+| --- | --- | --- |
+| OneDrive | Selected machine/user policies, up to 20 local user profiles, up to eight account slots per loaded hive, configured Desktop/Documents/Pictures paths and their matches to account roots; running OneDrive processes | Registry fields vary by client version. Policies, path matches and running processes do not verify upload completion, file coverage, retention or recovery. Unloaded/denied hives remain unknown. |
+| Additional backup products | Conventional local text-log path probes for Acronis, Macrium Reflect, Cove/Backup Manager, MSP360/CloudBerry, CrashPlan, Duplicati, Axcient, Datto and UrBackup | Generic excerpts, not product-specific job parsers. Paths/formats vary by version; missing paths do not prove a product is absent. No proprietary database, binary/HTML log, archive or repository parsing. |
+| Broader detection | Software, service, event-provider and task candidate matching also includes Duplicati, Duplicacy, Restic, rclone, IDrive, Backblaze, GoodSync, SyncBack, EaseUS, AOMEI and OneDrive | Detection only where installed names or local evidence match. A sync/copy utility does not establish an independent backup. |
+| Scripts/tasks | Fixed indicators for encoded commands, execution-policy bypass, web requests, dynamic execution, deletion/mirroring and possible embedded credentials; script SHA256 and selected ACL evidence; missed runs/disabled state/task results; failure events with allowlisted task names/result codes | Indicators require review and are not proof of malicious behavior or failed backups. Scheduler running/ready states are distinguished from other nonzero results. Script text, task arguments and encoded payloads are never exported or executed. |
+| Storage/reliability | Driver-reported disk temperature, wear, error/latency counters and power-on hours; storage errors, application VSS errors and unexpected shutdown messages | Null/unsupported disk counters remain unknown. RAID/virtual disks may hide physical health; bounded event samples can miss older incidents. |
+
+OneDrive collection reads selected registry values without expanding another
+user's paths in the administrator's environment. It does not mount offline user
+hives, enumerate synced documents, open cloud placeholders, decode opaque
+OneDrive logs/databases, or query a cloud account. Check the OneDrive UI or
+[Microsoft's sync health dashboard](https://learn.microsoft.com/en-us/sharepoint/sync-health)
+for current errors; policies are documented in
+[Microsoft's OneDrive policy reference](https://learn.microsoft.com/en-us/sharepoint/use-group-policy).
+The account-folder registry probes are version-dependent hints, not a supported
+sync-health API. SharePoint libraries outside the account root and custom folder
+redirection may require separate review.
+
+Additional log discovery uses at most 1,000 entries per root, 6,000 globally,
+root plus two directory levels, and six recent `.log`, rotated `.log.N` or `.txt`
+files per root. Detail collection reads the newest 16 files globally by default,
+128 KiB and 30 matching lines per file. All omissions/caps are reported. Log
+modification time is not a job timestamp. Sensitive labelled lines are omitted
+and remaining text is redacted best-effort. For a custom product log folder:
+
+```powershell
+& .\Export-WinFixAudit.ps1 -AdditionalBackupLogDirectory 'D:\BackupAgent\Logs','C:\Tools\NightlyLogs' -MaxAdditionalBackupLogFiles 20 -CopyToClipboard
+```
+
+Up to eight additional **local log folders** and 30 detail files are supported.
+This also works for exported text logs from other backup products. It does not
+start jobs or enable logging. For example, Duplicati normally stores logs in a
+database; its optional text logging is described in the
+[Duplicati server documentation](https://docs.duplicati.com/duplicati-programs/server).
+No backup credentials or configuration databases are accessed.
+
+Script inspection still has a global 20-script/64-KiB-per-script limit. A hash is
+labelled `First64KiB` when truncated, otherwise `WholeFileAtReadTime`. Broad
+Everyone/Authenticated Users/Users write/delete/permission-change grants are
+reported using SIDs; this is not an effective-access calculation, and does not
+include parent-directory replacement rights. Relative script references need an
+explicit working directory. References using task-user environment variables,
+network paths, reparse points, or offline/recall-on-access files are skipped.
+Nested scripts, COM actions and encoded payloads still require manual review.
+Task Scheduler history is read only if available; the collector does not enable
+it. Storage counters use the optional
+[Get-StorageReliabilityCounter provider](https://learn.microsoft.com/en-us/powershell/module/storage/get-storagereliabilitycounter).
+
+The regression suite runs on PowerShell 7 with synthetic Windows/provider
+fixtures and real job/file operations. Windows Server 2012 R2 / PowerShell 4 and
+ISE compatibility are targeted, but must be validated with a live Windows run.

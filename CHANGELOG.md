@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-09-28 — collector 1.10
+- Adds OneDrive account/known-folder and policy evidence across loaded user profiles without opening cloud content, mounting user hives, or claiming sync health.
+- Adds bounded generic text-log probes for additional backup products plus up to eight custom local log directories; broadens software/service/event/task detection.
+- Adds scheduled-script SHA256 fingerprints, scoped ACL evidence, fixed command-risk indicators, task result/missed-run review flags, and allowlisted Task Scheduler failure event fields.
+- Fixes rsync substring false positives and avoids resolving task-user variables in the audit administrator's environment. Inspects literal relative script references only with an explicit working directory.
+- Adds disk reliability counters, storage error details, application VSS errors and unexpected shutdown evidence. Preserves PowerShell 4 and per-check timeout behavior.
+- Expands regression coverage for privacy, registry expansion, profile/scan limits, actual worker boundaries, scheduler states and script fingerprints. Live Windows/vendor validation remains required.
+
 ## 2026-09-28
 - Collector 1.9 adds bounded per-user Synology Drive Client log and allowlisted task-setting evidence, with explicit database/manual-evidence limits.
 - Expands scheduled backup discovery to script and copy/export wrappers, including read-only local script clues, schedules, run accounts and per-task errors.

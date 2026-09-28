@@ -497,9 +497,12 @@ try {
     if (-not $cap.ScanLimitReached -or -not $cap.OutputTruncated -or @($capResults | Where-Object {$_.RecordType -eq 'Task'}).Count -ne 1) {throw 'Task scan/output caps failed.'}
     $streamed=Invoke-AuditCheck 'ScheduledTaskTimeoutTest' -TimeoutSeconds 3 -Context @{
         driveRoot=$driveRoot;scriptPath=$scriptPath;TaskCode=${function:Get-AuditBackupTaskInventory}.ToString()
+        IndicatorCode=${function:Get-AuditCommandIndicators}.ToString();ReviewCode=${function:Get-AuditTaskReviewFlags}.ToString()
         MockTasks=${function:Get-ScheduledTask}.ToString();LocalCode=${function:Resolve-AuditLocalPath}.ToString()
     } -Collect {
         Set-Item Function:Resolve-AuditLocalPath ([scriptblock]::Create($LocalCode))
+        Set-Item Function:Get-AuditCommandIndicators ([scriptblock]::Create($IndicatorCode))
+        Set-Item Function:Get-AuditTaskReviewFlags ([scriptblock]::Create($ReviewCode))
         Set-Item Function:Get-AuditBackupTaskInventory ([scriptblock]::Create($TaskCode))
         Set-Item Function:Get-ScheduledTask ([scriptblock]::Create($MockTasks))
         function Get-ScheduledTaskInfo {
@@ -512,3 +515,160 @@ try {
     Remove-Item Function:Get-ScheduledTask,Function:Get-ScheduledTaskInfo
 } finally { Remove-Item -LiteralPath $driveRoot -Recurse -Force -ErrorAction SilentlyContinue }
 Write-Host 'PASS: Drive rotated logs/config allowlists/secret omission/read caps/worker serialization; scheduled script discovery, disabled tasks, run identity/triggers, error isolation and task limits.'
+
+# OneDrive reads only selected registry values, preserving other users' expandable paths.
+function Get-Item {
+    [CmdletBinding()]param($LiteralPath)
+    $key=[pscustomobject]@{}
+    $key | Add-Member ScriptMethod GetValue { param($name,$default,$options)
+        if ([string]$options -ne 'DoNotExpandEnvironmentNames') { throw 'Registry user path was expanded in audit context.' }
+        if ($name -eq 'Desktop') { return '%USERPROFILE%\OneDrive\Desktop' }
+        if ($name -eq 'Flag') { return 0 }
+        throw 'Non-allowlisted registry value requested.'
+    }
+    $key | Add-Member ScriptMethod Dispose { $script:registryDisposed=$true }
+    $key
+}
+$registryDisposed=$false
+$selected=Get-AuditRegistryAllowlist -Path 'fixture' -Names @('Desktop','Flag')
+if ($selected.Desktop -cne '%USERPROFILE%\OneDrive\Desktop' -or $selected.Flag -ne '0' -or -not $registryDisposed) { throw 'Registry allowlist/raw expansion/false values/disposal failed.' }
+Remove-Item Function:Get-Item
+if (-not (Test-AuditFolderWithinRoot 'C:\Users\Test\OneDrive\Documents' 'c:\users\test\onedrive') -or
+    (Test-AuditFolderWithinRoot 'C:\Users\Test\OneDriveOld\Documents' 'C:\Users\Test\OneDrive') -or
+    (Test-AuditFolderWithinRoot 'C:\Users\Test\OneDrive\..\Other' 'C:\Users\Test\OneDrive') -or
+    (Test-AuditFolderWithinRoot '%USERPROFILE%\OneDrive\Documents' 'C:\Users\Test\OneDrive')) { throw 'OneDrive path boundary/unresolved path handling failed.' }
+$originalRegistry=${function:Get-AuditRegistryAllowlist}.ToString()
+function Get-CimInstance {
+    [CmdletBinding()]param($ClassName)
+    foreach ($sid in @('S-1-5-21-100','S-1-5-21-200','S-1-5-21-300','S-1-5-21-400')) { [pscustomobject]@{SID=$sid;LocalPath='C:\Users\Test';Special=$false} }
+}
+function Test-Path {
+    [CmdletBinding()]param($LiteralPath)
+    if ($LiteralPath -match 'S-1-5-21-200') { return $false }
+    if ($LiteralPath -match 'S-1-5-21-300') { throw 'Access denied' }
+    if ($LiteralPath -notmatch '^(HKLM:|Registry::)') { throw 'Unexpected filesystem or cloud content access.' }
+    return $true
+}
+function Get-ChildItem {
+    [CmdletBinding()]param($LiteralPath)
+    foreach ($n in 1..9) { [pscustomobject]@{PSPath="Registry::Account$n";PSChildName="Business$n"} }
+}
+function Get-AuditRegistryAllowlist {
+    param($Path,$Names)
+    if ($Path -like '*Account*') { return [pscustomobject]@{UserFolder='C:\Users\Test\OneDrive';TenantDisplayName='Example';Token='TOPSECRET'} }
+    if ($Path -like '*User Shell Folders') { return [pscustomobject]@{Desktop='%USERPROFILE%\OneDrive\Desktop';Personal='C:\Users\Test\OneDriveOld\Documents'} }
+    [pscustomobject]@{FilesOnDemandEnabled='1';DisablePersonalSync='0'}
+}
+try {
+    $od=@(Get-AuditOneDriveEvidence -ProfileLimit 3)
+    $profile=@($od | Where-Object {$_.RecordType -eq 'Profile'})
+    if ($profile.Count -ne 3 -or $profile[0].Accounts.Count -ne 8 -or -not $profile[0].AccountsTruncated -or
+        $profile[0].KnownFolders[0].Assessment -ne 'PathUnderConfiguredOneDriveRoot' -or
+        $profile[0].KnownFolders[1].Assessment -ne 'NoPathMatchOrUnresolvedVariable' -or
+        $profile[0].KnownFolders[2].Assessment -ne 'Unknown' -or
+        $profile[1].Status -ne 'HiveNotLoaded' -or $profile[2].Status -ne 'Unavailable' -or -not $od[-1].ProfilesTruncated -or
+        (ConvertTo-AuditJson $od) -match 'TOPSECRET') { throw 'OneDrive profile caps, hive states, path mapping or secret exclusion failed.' }
+    $worker=Invoke-AuditCheck 'OneDriveFixtureWorker' -Context @{
+        OdCode=${function:Get-AuditOneDriveEvidence}.ToString();FolderCode=${function:Test-AuditFolderWithinRoot}.ToString()
+        RegMock=${function:Get-AuditRegistryAllowlist}.ToString();CimMock=${function:Get-CimInstance}.ToString()
+        PathMock=${function:Test-Path}.ToString();ChildMock=${function:Get-ChildItem}.ToString()
+    } -Collect {
+        Set-Item Function:Get-AuditOneDriveEvidence ([scriptblock]::Create($OdCode))
+        Set-Item Function:Test-AuditFolderWithinRoot ([scriptblock]::Create($FolderCode))
+        Set-Item Function:Get-AuditRegistryAllowlist ([scriptblock]::Create($RegMock))
+        Set-Item Function:Get-CimInstance ([scriptblock]::Create($CimMock))
+        Set-Item Function:Test-Path ([scriptblock]::Create($PathMock))
+        Set-Item Function:Get-ChildItem ([scriptblock]::Create($ChildMock))
+        Get-AuditOneDriveEvidence -ProfileLimit 3
+    }
+    if ($worker.Status -ne 'Collected' -or $worker.Count -ne 6 -or (ConvertTo-AuditJson $worker) -match 'TOPSECRET') { throw 'OneDrive evidence lost at worker/JSON boundary.' }
+} finally {
+    Remove-Item Function:Get-CimInstance,Function:Test-Path,Function:Get-ChildItem
+    Set-Item Function:Get-AuditRegistryAllowlist ([scriptblock]::Create($originalRegistry))
+}
+Write-Host 'PASS: OneDrive raw registry allowlists, folder boundaries, loaded/unloaded/denied profiles, profile/account caps, no cloud reads and real worker output.'
+
+$flags=@(Get-AuditCommandIndicators '-ExecutionPolicy Bypass -EncodedCommand opaque -password TOPSECRET; robocopy C:\Data D:\Backup /MIR; Invoke-WebRequest https://example.invalid | iex')
+foreach ($expected in @('EncodedCommand','ExecutionPolicyBypass','CredentialLiteralIndicator','DeletionOrMirror','DownloadOrWebRequest','DynamicExecution')) {
+    if ($flags -notcontains $expected) { throw "Missing command indicator: $expected" }
+}
+if (($flags -join ' ') -match 'TOPSECRET|opaque') { throw 'Command content escaped indicator allowlist.' }
+$task=[pscustomobject]@{State='Ready';Settings=[pscustomobject]@{Enabled=$true};Principal=[pscustomobject]@{RunLevel='Highest'}}
+$flags=@(Get-AuditTaskReviewFlags $task ([pscustomobject]@{LastTaskResult=267009;NumberOfMissedRuns=0}))
+if ($flags -contains 'NonzeroResultNeedsInterpretation') { throw 'Running task incorrectly labeled unsuccessful.' }
+$flags=@(Get-AuditTaskReviewFlags $task ([pscustomobject]@{LastTaskResult=5;NumberOfMissedRuns=2}))
+if ($flags -notcontains 'NonzeroResultNeedsInterpretation' -or $flags -notcontains 'MissedRuns') { throw 'Task exit/missed-run flags missing.' }
+function Get-WinEvent {
+    [CmdletBinding()]param($ListLog,$LogName,$MaxEvents)
+    if ($ListLog) { return [pscustomobject]@{IsEnabled=$true;RecordCount=1} }
+    $event=[pscustomobject]@{TimeCreated=Get-Date;Id=201;Level=2;ProviderName='TaskScheduler'}
+    $event | Add-Member ScriptMethod ToXml { '<Event><EventData><Data Name="TaskName">\Nightly</Data><Data Name="ResultCode">5</Data><Data Name="ActionArguments">TOPSECRET</Data></EventData></Event>' }
+    $event
+}
+try {
+    $events=Get-AuditEvents -LogName Fixture -IncludeEventData -EventDataNames @('TaskName','ResultCode')
+    if ($events.Events[0].EventData.Count -ne 2 -or (ConvertTo-AuditJson $events) -match 'TOPSECRET|ActionArguments') { throw 'Task event allowlist leaked arguments or lost task result.' }
+} finally { Remove-Item Function:Get-WinEvent }
+
+$newTemp=if ($env:OS -eq 'Windows_NT') { [IO.Path]::GetTempPath() } else { '/private/tmp' }
+$moreRoot=Join-Path $newTemp ('winfix-more-'+[guid]::NewGuid().ToString('N'))
+$null=[IO.Directory]::CreateDirectory($moreRoot)
+try {
+    foreach ($leaf in @('backup.log','backup.log.1','summary.txt','credentials.db','config.json','old.log')) { [IO.File]::WriteAllText((Join-Path $moreRoot $leaf),"backup completed`nbackup token=TOPSECRET`nerror: destination offline`n") }
+    [IO.File]::SetLastWriteTime((Join-Path $moreRoot 'old.log'),(Get-Date).AddDays(-60))
+    $logs=Find-AuditVeeamLogs -Root $moreRoot -Since (Get-Date).AddDays(-30) -FilePattern '\.(?:log(?:\.\d+)?|txt)$'
+    if ($logs.Files.Count -ne 3 -or ($logs.Files.Path -join ' ') -match 'credentials|config|old.log') { throw 'Generic logs rotation/type/lookback filter failed.' }
+    $default=Find-AuditVeeamLogs -Root $moreRoot -Since (Get-Date).AddDays(-30)
+    if ($default.Files.Count -ne 1) { throw 'Veeam default file behavior changed.' }
+    $scriptPath=Join-Path $moreRoot 'nightly.ps1'
+    [IO.File]::WriteAllText($scriptPath,('robocopy C:\Data D:\Backup /MIR # password=TOPSECRET '+('x'*70000)))
+    function Get-ScheduledTask {
+        [pscustomobject]@{TaskName='LocalUserSyncDataAvailable';TaskPath='\';State='Ready';Actions=@([pscustomobject]@{Execute='app.exe';Arguments=''})}
+        [pscustomobject]@{TaskName='Nightly';TaskPath='\';State='Ready';Principal=[pscustomobject]@{RunLevel='Highest'};Settings=[pscustomobject]@{Enabled=$true}
+            Actions=@([pscustomobject]@{Execute='powershell.exe';Arguments='-File nightly.ps1';WorkingDirectory=$moreRoot})}
+    }
+    function Get-ScheduledTaskInfo { [CmdletBinding()]param([Parameter(ValueFromPipeline=$true)]$InputObject) process { [pscustomobject]@{LastTaskResult=5;NumberOfMissedRuns=1} } }
+    function Get-Acl {
+        [CmdletBinding()]param($LiteralPath)
+        $acl=[pscustomobject]@{Owner='SYSTEM'}
+        $acl | Add-Member ScriptMethod GetAccessRules { param($explicit,$inherited,$type)
+            [pscustomobject]@{IdentityReference='S-1-1-0';AccessControlType='Allow';FileSystemRights=131241;IsInherited=$true}
+            [pscustomobject]@{IdentityReference='S-1-5-32-545';AccessControlType='Allow';FileSystemRights=197055;IsInherited=$true}
+            [pscustomobject]@{IdentityReference='S-1-1-0';AccessControlType='Deny';FileSystemRights=2032127;IsInherited=$false}
+        }
+        $acl
+    }
+    $rows=@(Get-AuditBackupTaskInventory)
+    $permissions=$rows[0].ScriptInspections[0].Permissions
+    if ($permissions.Status -ne 'Collected' -or $permissions.BroadWriteAllowRules.Count -ne 1 -or $permissions.BroadWriteAllowRules[0].SID -ne 'S-1-5-32-545') { throw 'Script broad write ACL filtering misclassified read-only or deny rules.' }
+    Remove-Item Function:Get-Acl
+    if ($rows.Count -ne 2 -or $rows[0].TaskName -ne 'Nightly') { throw 'rsync substring false positive or relative script detection failed.' }
+    $scriptRow=$rows[0].ScriptInspections[0]
+    if (-not $scriptRow.Truncated -or $scriptRow.HashScope -ne 'First64KiB' -or $scriptRow.SHA256 -notmatch '^[0-9a-f]{64}$' -or
+        $scriptRow.ReviewIndicators -notcontains 'DeletionOrMirror' -or (ConvertTo-AuditJson $rows) -match 'TOPSECRET') { throw 'Script bounded fingerprint/risk indicators/secret suppression failed.' }
+    [IO.File]::WriteAllText($scriptPath,'Copy-Item C:\Data D:\Backup')
+    $rows=@(Get-AuditBackupTaskInventory)
+    $expected=(Get-FileHash -LiteralPath $scriptPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($rows[0].ScriptInspections[0].SHA256 -ne $expected -or $rows[0].ScriptInspections[0].HashScope -ne 'WholeFileAtReadTime') { throw 'Whole script SHA256 wrong.' }
+    Remove-Item Function:Get-ScheduledTask,Function:Get-ScheduledTaskInfo
+    # Exercise actual collector blocks and helper injection, including serialized root discovery.
+    $AdditionalBackupLogDirectory=@($moreRoot); $MaxAdditionalBackupLogFiles=2
+    $savedProgramData=$env:ProgramData; $env:ProgramData=$moreRoot
+    $since=(Get-Date).AddDays(-30)
+    foreach ($name in @('AdditionalBackupLogDiscovery','AdditionalBackupLogDetails')) {
+        if ($name -eq 'AdditionalBackupLogDetails') {
+            $selection=$ast.Find({param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq '$additionalLogs'},$true)
+            . ([scriptblock]::Create($selection.Extent.Text))
+        }
+        $assignment=$ast.Find({param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq ('$checks.'+$name)},$true)
+        . ([scriptblock]::Create($assignment.Extent.Text))
+        if ($checks[$name].Status -ne 'Collected') { throw "$name actual worker failed: $($checks[$name].Error)" }
+    }
+    $summary=@($checks.AdditionalBackupLogDetails.Data | Where-Object {$_.RecordType -eq 'Coverage'})[0]
+    if (-not $summary.OutputTruncated -or $summary.CandidateFiles -ne 3 -or $checks.AdditionalBackupLogDetails.Count -ne 3 -or
+        (ConvertTo-AuditJson $checks.AdditionalBackupLogDetails) -match 'TOPSECRET') { throw 'Vendor log global cap, secret omission or worker context failed.' }
+} finally {
+    if (Test-Path Variable:savedProgramData) { $env:ProgramData=$savedProgramData }
+    Remove-Item -LiteralPath $moreRoot -Recurse -Force -ErrorAction SilentlyContinue
+}
+Write-Host 'PASS: command/task risk indicators, scheduler state distinctions, event field allowlist, relative scripts, SHA256 scope, rsync false positives, generic vendor log selection/caps/secrets and actual collector jobs.'

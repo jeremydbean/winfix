@@ -21,6 +21,8 @@ param(
     [string]$EvidenceFile = '',
     [string]$VeeamLogDirectory = '',
     [string]$SynologyDriveDirectory = '',
+    [ValidateCount(0,8)][string[]]$AdditionalBackupLogDirectory = @(),
+    [ValidateRange(1,30)][int]$MaxAdditionalBackupLogFiles = 16,
     [ValidateRange(1,30)][int]$MaxSynologyDriveLogFiles = 10,
     [ValidateRange(1,30)][int]$MaxVeeamLogFiles = 10,
     [switch]$SkipOnlineUpdateScan,
@@ -36,7 +38,8 @@ function Protect-AuditText {
     return $Text
 }
 function Find-AuditVeeamLogs {
-    param([string]$Root, [datetime]$Since, [int]$FileLimit=10, [int]$EntryLimit=2000)
+    param([string]$Root, [datetime]$Since, [int]$FileLimit=10, [int]$EntryLimit=2000,
+        [string]$FilePattern='\.log$')
     $provider=$null; $drive=$null
     $native=$ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Root,[ref]$provider,[ref]$drive)
     if ($provider.Name -ne 'FileSystem' -or $native.StartsWith('\\')) { throw 'Veeam log collection requires a local filesystem folder.' }
@@ -63,7 +66,7 @@ function Find-AuditVeeamLogs {
                     if ($attributes -band [IO.FileAttributes]::Directory) {
                         if ($folder.Depth -lt 2) { $queue.Enqueue([pscustomobject]@{Path=$path;Depth=$folder.Depth+1}) }
                         else { $depthSkipped++ }
-                    } elseif ([IO.Path]::GetExtension($path) -eq '.log') {
+                    } elseif ([IO.Path]::GetFileName($path) -match $FilePattern) {
                         $file=New-Object IO.FileInfo($path)
                         if ($file.LastWriteTime -ge $Since) { $files += [pscustomobject]@{Path=$file.FullName;Length=$file.Length;LastWriteTime=$file.LastWriteTime} }
                     }
@@ -76,14 +79,15 @@ function Find-AuditVeeamLogs {
         DepthLimit=2;DeeperFoldersSkipped=$depthSkipped;ReparsePointsSkipped=$linksSkipped;Errors=@($failures | Select-Object -First 20)
         RecentLogCandidates=$files.Count;FileLimit=$FileLimit;OutputTruncated=($files.Count -gt $FileLimit)
         Files=@($files | Sort-Object LastWriteTime -Descending | Select-Object -First $FileLimit)
-        Coverage='Local .log files only, root plus two directory levels; newest within bounded discovery. File modification time is not an event timestamp. No archives, remote shares or reparse points are read.'}
+        FilePattern=$FilePattern
+        Coverage='Local matching text files only, root plus two directory levels; newest within bounded discovery. File modification time is not an event timestamp. No archives, remote shares or reparse points are read.'}
 }
 function Read-AuditVeeamLog {
     param([string]$Path, [int]$MaxBytes=131072, [int]$MaxLines=40,
         [string]$MatchPattern='(?i)\b(error|failed|failure|warning|success|succeeded)\b|\b(job|session|task|backup|restore)\b.*\b(finished|completed|result|status)\b')
     $stream=$null
     try {
-        if ([IO.File]::GetAttributes($Path) -band [IO.FileAttributes]::ReparsePoint) { throw 'Log file became a reparse point.' }
+        if ([long][IO.File]::GetAttributes($Path) -band (0x441000 -bor [long][IO.FileAttributes]::ReparsePoint)) { throw 'Reparse, offline or recall-on-access log files are not read.' }
         $stream=[IO.File]::Open($Path,[IO.FileMode]::Open,[IO.FileAccess]::Read,([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete))
         $length=$stream.Length; $header=New-Object byte[] 3; $null=$stream.Read($header,0,3)
         $encoding=New-Object Text.UTF8Encoding($false); $unit=1; $bom=0
@@ -123,6 +127,7 @@ function Resolve-AuditLocalPath {
     if ((New-Object IO.DriveInfo([IO.Path]::GetPathRoot($native))).DriveType -eq [IO.DriveType]::Network) { throw 'Mapped network paths are not read.' }
     $item=New-Object IO.FileInfo($native)
     if ($item.Exists -and ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'Reparse points are not read.' }
+    if ($item.Exists -and ([long]$item.Attributes -band 0x441000)) { throw 'Offline or recall-on-access files are not read.' }
     $ancestor=New-Object IO.DirectoryInfo($native)
     while ($null -ne $ancestor) {
         if ($ancestor.Exists -and ($ancestor.Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'Paths through reparse points are not read.' }
@@ -255,11 +260,123 @@ function Read-AuditDriveLog {
     } catch { [pscustomobject]@{Path=$Path;Status='Unavailable';Lines=@();Error=Protect-AuditText $_.Exception.Message} }
 }
 
+function Get-AuditCommandIndicators {
+    param([string]$Text)
+    # Return fixed categories only: command lines and embedded credentials stay local.
+    $patterns=[ordered]@{
+        EncodedCommand='(?i)-(?:e|en|enc|enco|encodedcommand)\b'
+        ExecutionPolicyBypass='(?i)-(?:executionpolicy|ep|exec)\s+(?:bypass|unrestricted)\b'
+        DownloadOrWebRequest='(?i)\b(?:DownloadString|DownloadFile|Invoke-WebRequest|Invoke-RestMethod|Start-BitsTransfer|curl|wget)\b'
+        DynamicExecution='(?i)\b(?:Invoke-Expression|iex)\b'
+        DeletionOrMirror='(?i)\b(?:Remove-Item|del|erase|rmdir)\b|/(?:MIR|PURGE)\b|\brclone\s+sync\b'
+        CredentialLiteralIndicator='(?i)(?:password|passwd|pwd|token|secret|api[_-]?key)\s*["'']?\s*[:=]|-(?:password|token|secret)\s+'
+    }
+    foreach ($key in $patterns.Keys) { if ($Text -match $patterns[$key]) { [string]$key } }
+}
+function Get-AuditTaskReviewFlags {
+    param($Task, $Info)
+    if ($Task.State -eq 'Disabled' -or $Task.Settings.Enabled -eq $false) { 'DisabledCandidate' }
+    if ($Info) {
+        if ($Info.NumberOfMissedRuns -gt 0) { 'MissedRuns' }
+        # 0x41300..0x41308 are scheduler states (ready/running/not yet run/etc.), not application errors.
+        if ($null -ne $Info.LastTaskResult -and [long]$Info.LastTaskResult -ne 0 -and
+            ([long]$Info.LastTaskResult -lt 267008 -or [long]$Info.LastTaskResult -gt 267016)) { 'NonzeroResultNeedsInterpretation' }
+        if ([long]$Info.LastTaskResult -eq 267011) { 'TaskHasNotYetRun' }
+    }
+    if ([string]$Task.Principal.RunLevel -eq 'Highest') { 'ElevatedExecutionReviewScriptPermissions' }
+}
+function Test-AuditFolderWithinRoot {
+    param([string]$Path, [string]$Root)
+    # Compare registry strings only; never touch cloud placeholders or resolve a NAS path.
+    if (-not $Path -or -not $Root -or $Path -match '%' -or $Root -match '%') { return $false }
+    $p=$Path.Replace('/','\').TrimEnd('\'); $r=$Root.Replace('/','\').TrimEnd('\')
+    if ($p -notmatch '^[A-Za-z]:\\' -or $r -notmatch '^[A-Za-z]:\\' -or $p -match '(^|\\)\.\.?($|\\)' -or $r -match '(^|\\)\.\.?($|\\)') { return $false }
+    return $p.Equals($r,[StringComparison]::OrdinalIgnoreCase) -or $p.StartsWith(($r+'\'),[StringComparison]::OrdinalIgnoreCase)
+}
+function Get-AuditOneDriveEvidence {
+    param([int]$ProfileLimit=20)
+    $policyNames=@('DisableFileSyncNGSC','DisablePersonalSync','FilesOnDemandEnabled','SilentAccountConfig',
+        'KFMSilentOptIn','KFMSilentOptInDesktop','KFMSilentOptInDocuments','KFMSilentOptInPictures','KFMBlockOptIn','KFMBlockOptOut','EnableSyncAdminReports')
+    foreach ($path in @('HKLM:\SOFTWARE\Policies\Microsoft\OneDrive','HKLM:\SOFTWARE\Policies\Microsoft\Windows\OneDrive')) {
+        try {
+            $exists=Test-Path -LiteralPath $path -ErrorAction Stop; $values=[ordered]@{}
+            if ($exists) {
+                $raw=Get-AuditRegistryAllowlist -Path $path -Names $policyNames
+                foreach ($name in $policyNames) { if ($null -ne $raw.$name) { $values[$name]=Protect-AuditText ([string]$raw.$name) } }
+            }
+            [pscustomobject]@{RecordType='MachinePolicy';Path=$path;Status=if ($exists) {'Collected'} else {'NotConfigured'};Values=[pscustomobject]$values}
+        } catch { [pscustomobject]@{RecordType='MachinePolicy';Path=$path;Status='Unavailable';Error=Protect-AuditText $_.Exception.Message} }
+    }
+    $profiles=@(Get-CimInstance Win32_UserProfile -ErrorAction Stop | Where-Object { -not $_.Special } | Select-Object -First ($ProfileLimit+1))
+    foreach ($profile in ($profiles | Select-Object -First $ProfileLimit)) {
+        $base='Registry::HKEY_USERS\'+$profile.SID
+        try {
+            if (-not (Test-Path -LiteralPath $base -ErrorAction Stop)) {
+                [pscustomobject]@{RecordType='Profile';SID=$profile.SID;ProfilePath=$profile.LocalPath;Status='HiveNotLoaded';Coverage='Not inspected. Offline user hives are never mounted.'}; continue
+            }
+            $accounts=@(); $accountPath=$base+'\Software\Microsoft\OneDrive\Accounts'; $accountKeys=@()
+            if (Test-Path -LiteralPath $accountPath -ErrorAction Stop) { $accountKeys=@(Get-ChildItem -LiteralPath $accountPath -ErrorAction Stop | Select-Object -First 9) }
+            foreach ($key in ($accountKeys | Select-Object -First 8)) {
+                $raw=Get-AuditRegistryAllowlist -Path $key.PSPath -Names @('UserFolder','TenantDisplayName')
+                # Undocumented account values are hints, not a stable health API. No emails, tokens or credential values.
+                $accounts += [pscustomobject]@{AccountSlot=$key.PSChildName;UserFolder=Protect-AuditText ([string]$raw.UserFolder)
+                    ConfiguredTenantName=Protect-AuditText ([string]$raw.TenantDisplayName)}
+            }
+            $folders=@(); $shellPath=$base+'\Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders'
+            $shell=$null
+            if (Test-Path -LiteralPath $shellPath -ErrorAction Stop) { $shell=Get-AuditRegistryAllowlist -Path $shellPath -Names @('Desktop','Personal','My Pictures') }
+            foreach ($name in @('Desktop','Personal','My Pictures')) {
+                $value=[string]$shell.$name
+                $expanded=$value.Replace('%USERPROFILE%',[string]$profile.LocalPath).Replace('%userprofile%',[string]$profile.LocalPath)
+                $matched=@($accounts | Where-Object { Test-AuditFolderWithinRoot -Path $expanded -Root $_.UserFolder } | ForEach-Object {$_.AccountSlot})
+                $folders += [pscustomobject]@{Folder=$name;ConfiguredPath=Protect-AuditText $value;OneDriveAccountMatches=$matched
+                    Assessment=if (-not $value) {'Unknown'} elseif ($matched.Count) {'PathUnderConfiguredOneDriveRoot'} else {'NoPathMatchOrUnresolvedVariable'}}
+            }
+            $userPolicy=$null; $userPolicyPath=$base+'\Software\Policies\Microsoft\OneDrive'
+            if (Test-Path -LiteralPath $userPolicyPath -ErrorAction Stop) { $userPolicy=Get-AuditRegistryAllowlist -Path $userPolicyPath -Names $policyNames }
+            [pscustomobject]@{RecordType='Profile';SID=$profile.SID;ProfilePath=$profile.LocalPath;Status='Collected';Accounts=$accounts;AccountsTruncated=($accountKeys.Count -gt 8);KnownFolders=$folders;UserPolicy=$userPolicy}
+        } catch { [pscustomobject]@{RecordType='Profile';SID=$profile.SID;ProfilePath=$profile.LocalPath;Status='Unavailable';Error=Protect-AuditText $_.Exception.Message} }
+    }
+    [pscustomobject]@{RecordType='Coverage';ProfileLimit=$ProfileLimit;ProfilesTruncated=($profiles.Count -gt $ProfileLimit)
+        Coverage='Loaded user hives only; account registry fields are version-dependent hints. Folder path matches and configured KFM policies do not prove upload completion, all-files coverage, retention, independent backup or restore success. No synchronized content or opaque OneDrive databases/logs are opened; no cloud-file hydration or cloud API calls.'}
+}
+function Get-AuditRegistryAllowlist {
+    param([string]$Path, [string[]]$Names)
+    $key=Get-Item -LiteralPath $Path -ErrorAction Stop
+    try {
+        $values=[ordered]@{}
+        foreach ($name in $Names) {
+            # Expansion in the administrator's environment would misidentify another user's folders.
+            $value=$key.GetValue($name,$null,[Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+            if ($null -ne $value -and ($value -is [string] -or $value -is [int] -or $value -is [long])) {
+                $safe=Protect-AuditText ([string]$value)
+                $values[$name]=$safe.Substring(0,[math]::Min(2048,$safe.Length))
+            }
+        }
+        [pscustomobject]$values
+    } finally { $key.Dispose() }
+}
+function Get-AuditAdditionalBackupRoots {
+    param([string]$ProgramDataPath, [string[]]$AdditionalPaths=@())
+    # Best-effort version-dependent local log probes, never backup repositories/configuration databases.
+    $probes=@(
+        @('Acronis','Acronis\BackupAndRecovery\Logs'), @('Acronis','Acronis\BackupAndRecovery\MMS\Logs'),
+        @('Macrium Reflect','Macrium\Reflect'), @('Cove / Backup Manager','MXB\Backup Manager\logs'),
+        @('MSP360 / CloudBerry','CloudBerryLab\CloudBerry Backup\Logs'), @('MSP360','MSP360\MSP360 Backup\Logs'),
+        @('CrashPlan','CrashPlan\log'), @('Duplicati','Duplicati\logs'),
+        @('Axcient','Axcient\logs'), @('Datto','Datto\logs'), @('UrBackup','UrBackup\logs')
+    )
+    foreach ($probe in $probes) {
+        [pscustomobject]@{Product=$probe[0];Path=(Join-Path $ProgramDataPath $probe[1]);Source='ConventionalPathProbe'}
+    }
+    foreach ($path in ($AdditionalPaths | Select-Object -First 8)) { [pscustomobject]@{Product='User-specified backup log folder';Path=$path;Source='ExplicitDirectory'} }
+}
+
 function Get-AuditBackupTaskInventory {
     param([int]$ScanLimit=500, [int]$TaskLimit=100)
     $tasks=@(Get-ScheduledTask | Select-Object -First ($ScanLimit+1))
     $scanned=0; $matched=0; $rows=@(); $scriptsRead=0
-    $pattern='(?i)backup|back[ _-]?up|synology|cloud.?drive|veeam|acronis|macrium|datto|robocopy|xcopy|rsync|rclone|restic|borg|duplicati|winscp|vssadmin|diskshadow|wbadmin|7z(?:\.exe)?|tar\.exe|sqlcmd|mysqldump|pg_dump|export-vm|compress-archive|copy-item'
+    $pattern='(?i)backup|back[ _-]?up|synology|cloud.?drive|veeam|acronis|macrium|datto|robocopy|xcopy|\brsync\b|rclone|restic|borg|duplicati|duplicacy|idrive|backblaze|goodsync|syncback|easeus|aomei|onedrive|winscp|vssadmin|diskshadow|wbadmin|7z(?:\.exe)?|tar\.exe|sqlcmd|mysqldump|pg_dump|export-vm|compress-archive|copy-item'
     foreach ($task in ($tasks | Select-Object -First $ScanLimit)) {
         $scanned++; $reasons=@(); $actions=@(); $inspections=@()
         if ("$($task.TaskName) $($task.TaskPath)" -match $pattern) { $reasons+='TaskNameOrPath' }
@@ -270,11 +387,11 @@ function Get-AuditBackupTaskInventory {
             $wrapper=$exe -match '(?i)(^|[\\/])(powershell|pwsh|cmd|wscript|cscript|python(?:\d+)?)(?:\.exe)?$' -or $exe -match '(?i)\.(ps1|bat|cmd|vbs|py)$'
             if ($wrapper) { $reasons+='ScriptOrCommandWrapperNeedsReview' }
             if ($argsText -match '(?i)-(enc|encodedcommand)\b') { $reasons+='EncodedCommandNotDecoded' }
-            $actions += [pscustomobject]@{Execute=(Protect-AuditText $exe);WorkingDirectory=(Protect-AuditText ([string]$action.WorkingDirectory));ArgumentsOmitted=$true}
+            $actions += [pscustomobject]@{Execute=(Protect-AuditText $exe);WorkingDirectory=(Protect-AuditText ([string]$action.WorkingDirectory));ArgumentsOmitted=$true;ReviewIndicators=@(Get-AuditCommandIndicators $argsText)}
             # Inspect literal local script references only; never expand/execute shell text.
             $paths=@()
             if ($exe -match '(?i)\.(ps1|bat|cmd|vbs|py)$') { $paths+=$exe }
-            foreach ($m in [regex]::Matches($argsText,'(?i)"([^"\r\n]+\.(?:ps1|bat|cmd|vbs|py))"|''([^''\r\n]+\.(?:ps1|bat|cmd|vbs|py))''|(?:^|\s)([A-Z]:\\[^\s"'']+\.(?:ps1|bat|cmd|vbs|py))(?=\s|$)')) {
+            foreach ($m in [regex]::Matches($argsText,'(?i)"([^"\r\n]+\.(?:ps1|bat|cmd|vbs|py))"|''([^''\r\n]+\.(?:ps1|bat|cmd|vbs|py))''|(?:^|\s)([^\s"'';&|<>]+\.(?:ps1|bat|cmd|vbs|py))(?=\s|$)')) {
                 $paths+=@($m.Groups | Select-Object -Skip 1 | Where-Object {$_.Success} | Select-Object -First 1 | ForEach-Object {$_.Value})
             }
             foreach ($scriptPath in @($paths | Select-Object -Unique | Select-Object -First 2)) {
@@ -282,10 +399,11 @@ function Get-AuditBackupTaskInventory {
                 $stream=$null
                 try {
                     $scriptsRead++
+                    if ("$scriptPath $($action.WorkingDirectory)" -match '(?i)%(USERPROFILE|APPDATA|LOCALAPPDATA|HOMEDRIVE|HOMEPATH|USERNAME)%|\$env:') { throw 'Task-user variables cannot be resolved in the audit account context.' }
                     $expanded=[Environment]::ExpandEnvironmentVariables($scriptPath)
                     if (-not [IO.Path]::IsPathRooted($expanded)) {
                         if (-not $action.WorkingDirectory) { throw 'Relative script path has no explicit working directory.' }
-                        $expanded=Join-Path $action.WorkingDirectory $expanded
+                        $expanded=Join-Path ([Environment]::ExpandEnvironmentVariables([string]$action.WorkingDirectory)) $expanded
                     }
                     $native=Resolve-AuditLocalPath $expanded
                     $stream=[IO.File]::Open($native,[IO.FileMode]::Open,[IO.FileAccess]::Read,([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete))
@@ -301,8 +419,20 @@ function Get-AuditBackupTaskInventory {
                         if ($content -match [regex]::Escape($clue)) { $clues+=$clue }
                     }
                     if ($clues.Count) { $reasons+='ReferencedScriptIndicator' }
-                    $inspections += [pscustomobject]@{Path=(Protect-AuditText $native);Status='Collected';BytesRead=$read;Truncated=($length -gt $read);Indicators=$clues;ContentOmitted=$true}
-                } catch { $inspections += [pscustomobject]@{Path=(Protect-AuditText $scriptPath);Status='Unavailable';Reason='Local script could not be safely read; may be remote, missing, locked, redirected or relative.'} }
+                    $sha=[Security.Cryptography.SHA256]::Create()
+                    try { $hash=[BitConverter]::ToString($sha.ComputeHash($bytes,0,$read)).Replace('-','').ToLowerInvariant() } finally { $sha.Dispose() }
+                    $aclEvidence=$null
+                    try {
+                        $acl=Get-Acl -LiteralPath $native -ErrorAction Stop
+                        $rules=@($acl.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier]))
+                        $broad=@($rules | Where-Object { [string]$_.IdentityReference -in @('S-1-1-0','S-1-5-11','S-1-5-32-545') -and
+                            [string]$_.AccessControlType -eq 'Allow' -and ([long]$_.FileSystemRights -band 852310) -ne 0 } |
+                            Select-Object -First 8 | ForEach-Object { [pscustomobject]@{SID=[string]$_.IdentityReference;Rights=[string]$_.FileSystemRights;Inherited=$_.IsInherited} })
+                        $aclEvidence=[pscustomobject]@{Status='Collected';Owner=$acl.Owner;BroadWriteAllowRules=$broad;Coverage='Direct broad-group write/delete/permission-change grants only; deny rules, parent directory replacement and effective access are not evaluated.'}
+                    } catch { $aclEvidence=[pscustomobject]@{Status='Unavailable';Coverage='Script ACL could not be inspected on this platform or with current permissions.'} }
+                    $inspections += [pscustomobject]@{Path=(Protect-AuditText $native);Status='Collected';BytesRead=$read;Truncated=($length -gt $read);Indicators=$clues;ContentOmitted=$true
+                        ReviewIndicators=@(Get-AuditCommandIndicators $content);SHA256=$hash;HashScope=if ($length -gt $read) {'First64KiB'} else {'WholeFileAtReadTime'};Permissions=$aclEvidence}
+                } catch { $inspections += [pscustomobject]@{Path=(Protect-AuditText $scriptPath);Status='Unavailable';Reason='Local script could not be safely read; may be remote, missing, locked, redirected, relative or dependent on task-user variables.'} }
                 finally {if ($stream) {$stream.Dispose()}}
             }
         }
@@ -318,7 +448,7 @@ function Get-AuditBackupTaskInventory {
         $row = [pscustomobject]@{RecordType='Task';TaskName=$task.TaskName;TaskPath=$task.TaskPath;State=[string]$task.State;CandidateReasons=@($reasons | Select-Object -Unique)
             LastRunTime=$info.LastRunTime;NextRunTime=$info.NextRunTime;LastTaskResult=$info.LastTaskResult;NumberOfMissedRuns=$info.NumberOfMissedRuns;InfoError=$infoError
             RunAs=$task.Principal.UserId;RunAsGroup=$task.Principal.GroupId;LogonType=[string]$task.Principal.LogonType;RunLevel=[string]$task.Principal.RunLevel
-            Enabled=$task.Settings.Enabled;StartWhenAvailable=$task.Settings.StartWhenAvailable;ExecutionTimeLimit=$task.Settings.ExecutionTimeLimit
+            ReviewFlags=@(Get-AuditTaskReviewFlags -Task $task -Info $info);Enabled=$task.Settings.Enabled;StartWhenAvailable=$task.Settings.StartWhenAvailable;ExecutionTimeLimit=$task.Settings.ExecutionTimeLimit
             Actions=$actions;ActionsTruncated=(@($task.Actions).Count -gt 8);Triggers=$triggers;TriggersTruncated=(@($task.Triggers).Count -gt 8);ScriptInspections=$inspections}
         $rows += $row
         $row # Stream completed candidates so the worker preserves them if a later call times out.
@@ -362,7 +492,7 @@ function Save-AuditCheckpoint {
     if ($script:checkpointPath) {
         $tempPath = $script:checkpointPath + '.tmp'
         try {
-            $snapshot = [ordered]@{ SchemaVersion='1.9'; AuditId=$script:auditId; Incomplete=$true
+            $snapshot = [ordered]@{ SchemaVersion='1.10'; AuditId=$script:auditId; Incomplete=$true
                 SavedAt=(Get-Date).ToString('o'); ClientName=$ClientName; Location=$Location; Elevated=$elevated
                 Checks=$script:checks; ExportWarnings=@($script:checkpointWarnings) }
             $checkpointJson = ConvertTo-AuditJson -InputObject $snapshot
@@ -434,7 +564,7 @@ function Invoke-AuditCheck {
     return $result
 }
 function Get-AuditEvents {
-    param([string]$LogName, [int[]]$Levels = @(), [int[]]$Ids = @(), [string]$ProviderPattern = '', [switch]$IncludeMessage, [switch]$IncludeEventData)
+    param([string]$LogName, [int[]]$Levels = @(), [int[]]$Ids = @(), [string]$ProviderPattern = '', [switch]$IncludeMessage, [switch]$IncludeEventData, [string[]]$EventDataNames=@())
     # Bound records read BEFORE filtering; MaxEvents on a sparse filtered query
     # alone can still walk a huge log. The outer job also limits elapsed time.
     $info = Get-WinEvent -ListLog $LogName -ErrorAction Stop
@@ -466,6 +596,7 @@ function Get-AuditEvents {
             try {
                 [xml]$xml=$_.ToXml()
                 $nodes=@($xml.SelectNodes('/*[local-name()="Event"]/*[local-name()="EventData"]/*'))
+                if ($EventDataNames.Count) { $nodes=@($nodes | Where-Object { [string]$_.GetAttribute('Name') -in $EventDataNames }) }
                 $fieldCount=$nodes.Count
                 foreach ($node in ($nodes | Select-Object -First 24)) {
                     $fieldName=[string]$node.GetAttribute('Name')
@@ -636,8 +767,8 @@ if ([string]::IsNullOrWhiteSpace($OutputDirectory)) {
 $OutputDirectory = Initialize-AuditOutputDirectory -Path $OutputDirectory
 $prefix = 'WinFixAudit-' + $env:COMPUTERNAME + '-' + $started.ToString('yyyyMMdd-HHmmss')
 $script:checkpointPath = Join-Path $OutputDirectory "$prefix-PARTIAL.json"
-$BackupPattern = 'Synology (Drive|Active Backup)|cloud.?drive|Veeam|Acronis|Macrium|Datto|Carbonite|Veritas|CrashPlan|\bCove\b|Axcient|Rubrik|Backup|StorageCraft|ShadowProtect|Arcserve|MSP360|CloudBerry|Druva|Commvault|NAKIVO|Retrospect|UrBackup'
-Write-Host "WinFix audit 1.9. Completed checks are saved to $script:checkpointPath"
+$BackupPattern = 'Synology (Drive|Active Backup)|cloud.?drive|Veeam|Acronis|Macrium|Datto|Carbonite|Veritas|CrashPlan|\bCove\b|Axcient|Rubrik|Backup|StorageCraft|ShadowProtect|Arcserve|MSP360|CloudBerry|Druva|Commvault|NAKIVO|Retrospect|UrBackup|Duplicati|Duplicacy|Restic|rclone|IDrive|Backblaze|GoodSync|SyncBack|EaseUS|AOMEI|OneDrive'
+Write-Host "WinFix audit 1.10. Completed checks are saved to $script:checkpointPath"
 if (-not $elevated) { Write-Warning 'Run ISE as Administrator for the fullest audit.' }
 Save-AuditCheckpoint
 $checks.System = Invoke-AuditCheck System {
@@ -791,6 +922,85 @@ $checks.ScheduledTasks = Invoke-AuditCheck ScheduledTasks {
     Get-ScheduledTask | Where-Object { $_.TaskPath -notlike '\Microsoft\*' } |
         Select-Object TaskPath, TaskName, State, @{n='RunAs';e={$_.Principal.UserId}}, @{n='RunLevel';e={[string]$_.Principal.RunLevel}}
 }
+$checks.OneDriveConfiguration = Invoke-AuditCheck OneDriveConfiguration -Context @{
+    OneDriveCode=${function:Get-AuditOneDriveEvidence}.ToString();FolderCode=${function:Test-AuditFolderWithinRoot}.ToString()
+    RegistryCode=${function:Get-AuditRegistryAllowlist}.ToString()
+} -Collect {
+    Set-Item Function:Test-AuditFolderWithinRoot ([scriptblock]::Create($FolderCode))
+    Set-Item Function:Get-AuditRegistryAllowlist ([scriptblock]::Create($RegistryCode))
+    Set-Item Function:Get-AuditOneDriveEvidence ([scriptblock]::Create($OneDriveCode))
+    Get-AuditOneDriveEvidence
+}
+$checks.OneDriveProcesses = Invoke-AuditCheck OneDriveProcesses {
+    $items=@(Get-CimInstance Win32_Process -Filter "Name='OneDrive.exe'" -ErrorAction Stop |
+        Select-Object -First 20 ProcessId,SessionId,ExecutablePath)
+    [pscustomobject]@{Processes=$items;Coverage='Process presence only, capped at 20. Absence may mean the user is logged out; presence does not prove healthy sync.'}
+}
+$checks.AdditionalBackupLogDiscovery = Invoke-AuditCheck AdditionalBackupLogDiscovery -Context @{
+    RootsCode=${function:Get-AuditAdditionalBackupRoots}.ToString();FindCode=${function:Find-AuditVeeamLogs}.ToString()
+    LocalCode=${function:Resolve-AuditLocalPath}.ToString();ExtraPaths=$AdditionalBackupLogDirectory
+} -Collect {
+    Set-Item Function:Get-AuditAdditionalBackupRoots ([scriptblock]::Create($RootsCode))
+    Set-Item Function:Find-AuditVeeamLogs ([scriptblock]::Create($FindCode))
+    Set-Item Function:Resolve-AuditLocalPath ([scriptblock]::Create($LocalCode))
+    $remaining=6000
+    foreach ($root in @(Get-AuditAdditionalBackupRoots -ProgramDataPath $env:ProgramData -AdditionalPaths $ExtraPaths)) {
+        try {
+            $native=Resolve-AuditLocalPath $root.Path
+            if (-not (Test-Path -LiteralPath $native -PathType Container -ErrorAction Stop)) {
+                [pscustomobject]@{Product=$root.Product;Root=$root.Path;Source=$root.Source;Status='PathNotFound';Coverage='This path probe does not determine whether the product is installed.'}; continue
+            }
+            if ($remaining -le 0) { [pscustomobject]@{Product=$root.Product;Root=$root.Path;Status='Skipped';Reason='Global 6000-entry scan limit'}; continue }
+            $result=Find-AuditVeeamLogs -Root $native -Since $since -FileLimit 6 -EntryLimit ([math]::Min(1000,$remaining)) -FilePattern '\.(?:log(?:\.\d+)?|txt)$'
+            $remaining-=$result.EntriesScanned
+            [pscustomobject]@{Product=$root.Product;Root=$root.Path;Source=$root.Source;Status='Collected';Discovery=$result}
+        } catch { [pscustomobject]@{Product=$root.Product;Root=$root.Path;Status='Unavailable';Error=Protect-AuditText $_.Exception.Message} }
+    }
+}
+$additionalLogs=@(foreach ($root in $checks.AdditionalBackupLogDiscovery.Data) {
+    foreach ($file in $root.Discovery.Files) { [pscustomobject]@{Product=$root.Product;Path=$file.Path;LastWriteTime=$file.LastWriteTime} }
+})
+$checks.AdditionalBackupLogDetails = Invoke-AuditCheck AdditionalBackupLogDetails -TimeoutSeconds 60 -Context @{
+    Files=@($additionalLogs | Sort-Object LastWriteTime -Descending | Select-Object -First $MaxAdditionalBackupLogFiles)
+    Candidates=$additionalLogs.Count;Limit=$MaxAdditionalBackupLogFiles
+    LocalCode=${function:Resolve-AuditLocalPath}.ToString();ReadCode=${function:Read-AuditVeeamLog}.ToString();SafeCode=${function:Read-AuditDriveLog}.ToString()
+} -Collect {
+    Set-Item Function:Resolve-AuditLocalPath ([scriptblock]::Create($LocalCode))
+    Set-Item Function:Read-AuditVeeamLog ([scriptblock]::Create($ReadCode))
+    Set-Item Function:Read-AuditDriveLog ([scriptblock]::Create($SafeCode))
+    foreach ($file in $Files) {
+        $result=Read-AuditDriveLog -Path $file.Path
+        $result | Add-Member -NotePropertyName Product -NotePropertyValue $file.Product -Force
+        $result | Add-Member -NotePropertyName Coverage -NotePropertyValue 'Generic keyword excerpts, not a vendor job parser or verified backup success. Text is scrubbed best-effort; timestamps are unparsed. Binary/HTML logs, databases, archives, repository contents and cloud consoles are not read.' -Force
+        $result
+    }
+    [pscustomobject]@{RecordType='Coverage';CandidateFiles=$Candidates;FileLimit=$Limit;OutputTruncated=($Candidates -gt $Limit)
+        Coverage='At most six recent text files per root during discovery, then newest globally. Up to 128 KiB and 30 matching lines each. Conventional paths vary by version; use AdditionalBackupLogDirectory for custom log folders. Missing logs/keywords never establish a healthy or absent backup.'}
+}
+$checks.ScheduledTaskFailureEvents = Invoke-AuditCheck ScheduledTaskFailureEvents {
+    Get-AuditEvents -LogName 'Microsoft-Windows-TaskScheduler/Operational' -Levels 1,2,3 -IncludeEventData -EventDataNames @('TaskName','ResultCode','ErrorCode','ErrorValue','InstanceId','TaskInstanceId')
+}
+$checks.StorageReliability = Invoke-AuditCheck StorageReliability {
+    $disks=@(Get-PhysicalDisk -ErrorAction Stop | Select-Object -First 33)
+    foreach ($disk in ($disks | Select-Object -First 32)) {
+        try {
+            $counters=@($disk | Get-StorageReliabilityCounter -ErrorAction Stop | Select-Object DeviceId,Temperature,TemperatureMax,Wear,PowerOnHours,
+                ReadErrorsTotal,ReadErrorsUncorrected,WriteErrorsTotal,WriteErrorsUncorrected,ReadLatencyMax,WriteLatencyMax,FlushLatencyMax)
+            [pscustomobject]@{Disk=$disk.FriendlyName;Status='Collected';Counters=$counters;Coverage='Driver-reported counters; null/unsupported values are unknown, not zero. RAID and virtual storage may hide underlying disk health.'}
+        } catch { [pscustomobject]@{Disk=$disk.FriendlyName;Status='Unavailable';Error=Protect-AuditText $_.Exception.Message} }
+    }
+    [pscustomobject]@{RecordType='Coverage';DiskLimit=32;DisksTruncated=($disks.Count -gt 32)}
+}
+$checks.StorageErrorDetails = Invoke-AuditCheck StorageErrorDetails {
+    Get-AuditEvents -LogName System -Levels 1,2,3 -ProviderPattern 'disk|ntfs|refs|storport|storahci|stornvme|iastor|volmgr|spaceport|WHEA' -IncludeMessage
+}
+$checks.VSSApplicationDetails = Invoke-AuditCheck VSSApplicationDetails {
+    Get-AuditEvents -LogName Application -Levels 1,2,3 -ProviderPattern 'VSS|SQLWRITER|Microsoft-Windows-CAPI2' -IncludeMessage
+}
+$checks.UnexpectedShutdowns = Invoke-AuditCheck UnexpectedShutdowns {
+    Get-AuditEvents -LogName System -Ids 41,6008,1001 -ProviderPattern 'Kernel-Power|EventLog|WER-SystemErrorReporting|BugCheck' -IncludeMessage
+}
+
 $checks.Hotfixes = Invoke-AuditCheck Hotfixes { Get-HotFix | Sort-Object InstalledOn -Descending | Select-Object HotFixID, Description, InstalledOn }
 $checks.UpdateHistory = Invoke-AuditCheck UpdateHistory {
     $session = New-Object -ComObject Microsoft.Update.Session
@@ -838,8 +1048,11 @@ $checks.BackupServices = Invoke-AuditCheck BackupServices {
 }
 $checks.BackupTasks = Invoke-AuditCheck BackupTasks -Context @{
     TaskCode=${function:Get-AuditBackupTaskInventory}.ToString();LocalPathCode=${function:Resolve-AuditLocalPath}.ToString()
+    IndicatorCode=${function:Get-AuditCommandIndicators}.ToString();ReviewCode=${function:Get-AuditTaskReviewFlags}.ToString()
 } -Collect {
     Set-Item Function:Resolve-AuditLocalPath ([scriptblock]::Create($LocalPathCode))
+    Set-Item Function:Get-AuditCommandIndicators ([scriptblock]::Create($IndicatorCode))
+    Set-Item Function:Get-AuditTaskReviewFlags ([scriptblock]::Create($ReviewCode))
     Set-Item Function:Get-AuditBackupTaskInventory ([scriptblock]::Create($TaskCode))
     Get-AuditBackupTaskInventory
 }
@@ -1164,7 +1377,7 @@ $checks.ExternalEvidence = Invoke-AuditCheck ExternalEvidence -Context @{
     Read-ExternalEvidence -Path $EvidencePath -Template $Template
 }
 $report = [ordered]@{
-    SchemaVersion = '1.9'; AuditId = $script:auditId; Incomplete = $false; ClientName = $ClientName; Location = $Location
+    SchemaVersion = '1.10'; AuditId = $script:auditId; Incomplete = $false; ClientName = $ClientName; Location = $Location
     StartedAt = $started.ToString('o'); CompletedAt = (Get-Date).ToString('o'); Elevated = $elevated
     PowerShellVersion = $PSVersionTable.PSVersion.ToString(); Checks = $checks
     ExportWarnings = @($script:checkpointWarnings)
