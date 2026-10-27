@@ -80,3 +80,29 @@ $sampleResult=Invoke-BackupDiagnosticSection -Name SampleFixture -Context @{Samp
 }
 if ($sampleResult -notmatch 'Collected' -or $sampleResult -notmatch '"ReadTransferCountDelta":1024' -or $sampleResult -notmatch 'disk performance unavailable fixture' -or $sampleResult -notmatch '"Sample":2') { throw 'Production activity sampling failed.' }
 Write-Host 'PASS: parser, counter resets/missing values/PID reuse, worker partial output and cleanup, native timeout/dual-pipe capture/exit/caps, event bounds/XML/redaction, interop compilation and production sampling fixture. Live Windows/NAS behavior requires a host run.'
+# Bounded file metadata and log tail handling, including hidden evidence limits.
+$fixtureRoot=Join-Path ([IO.Path]::GetTempPath()) ('winfix-files-'+[guid]::NewGuid().ToString('N'))
+$null=[IO.Directory]::CreateDirectory((Join-Path $fixtureRoot 'nested'))
+try {
+    1..10 | ForEach-Object {[IO.File]::WriteAllText((Join-Path $fixtureRoot ("file$_.bak")),'fixture')}
+    [IO.File]::WriteAllText((Join-Path $fixtureRoot 'nested/deep.bak'),'fixture')
+    $found=@(Find-BackupEvidenceFiles -Root $fixtureRoot -EntryLimit 3)
+    $coverage=$found | Where-Object {$_.Kind -eq 'Coverage'}
+    if ($coverage.EntriesExamined -gt 3 -or -not $coverage.LimitReached) {throw 'File enumeration cap failed.'}
+    $found=@(Find-BackupEvidenceFiles -Root $fixtureRoot -Depth 1)
+    if (@($found | Where-Object {$_.Kind -eq 'File'}).Count -ne 11) {throw 'Nested file metadata missing.'}
+    $log=Join-Path $fixtureRoot 'agent.log'
+    [IO.File]::WriteAllText($log,((1..40 | ForEach-Object {"backup completed $_"}) -join "`n")+"`nbackup token=DO-NOT-EXPORT`n",[Text.Encoding]::Unicode)
+    $tail=Read-BackupTextTail -Path $log
+    if ($tail.Encoding -ne 'utf-16' -or $tail.Lines.Count -ne 12 -or -not $tail.OutputTruncated -or $tail.SensitiveLinesOmitted -ne 1 -or ($tail.Lines -join ' ') -match 'DO-NOT-EXPORT') {throw 'Log encoding/redaction/output cap failed.'}
+    $tail=Read-BackupTextTail -Path $log -ByteLimit 100
+    if ($tail.BytesRead -gt 100 -or -not $tail.TailTruncated -or ($tail.Lines -join ' ') -match 'DO-NOT-EXPORT') {throw 'Tail byte cap/redaction failed.'}
+    $result=Invoke-BackupDiagnosticSection -Name FileHelpersWorker -Context @{FinderCode=${function:Find-BackupEvidenceFiles}.ToString();TailCode=${function:Read-BackupTextTail}.ToString();Root=$fixtureRoot;Log=$log} -Collect {
+        Set-Item Function:Find-BackupEvidenceFiles ([scriptblock]::Create($FinderCode))
+        Set-Item Function:Read-BackupTextTail ([scriptblock]::Create($TailCode))
+        Find-BackupEvidenceFiles -Root $Root -EntryLimit 2
+        Read-BackupTextTail -Path $Log
+    }
+    if ($result -notmatch 'Collected' -or $result -notmatch 'backup completed 40' -or $result -match 'DO-NOT-EXPORT') {throw 'Evidence helpers failed in worker.'}
+} finally {Remove-Item $fixtureRoot -Recurse -Force}
+Write-Host 'PASS: new evidence helpers bound filesystem enumeration, preserve metadata, decode UTF16 tails, omit labelled-secret lines and work in a serialized worker.'

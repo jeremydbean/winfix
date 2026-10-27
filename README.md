@@ -616,3 +616,30 @@ Tests: `pwsh -NoProfile -File tests/Test-BackupDiagnostic.ps1`. Fixtures verify 
 reader-process timeouts/cleanup, dual-pipe output capture, partial results,
 counter semantics, event bounds/redaction/XML, production sampling, and interop
 compilation. These checks do not substitute for a live Windows/NAS run.
+
+Backup diagnostic 1.1 also collects a bounded metadata sample of the specified
+share (two levels deep, at most 1,000 entries/40 directories; newest 40 files in
+that sample). It does not open database or image contents. Additional sections
+inspect ABB process connections, conventional ABB text-log directories, and
+backup task executable/script-path hints without exporting raw arguments.
+Logs are limited to eight files, 64 KiB and twelve matching lines each; lines
+containing credential-related terms are omitted. This is best-effort filtering,
+not a guarantee that arbitrary vendor logs cannot contain sensitive information.
+Unavailable logs and scan limits are explicit; discovery does not prove complete
+coverage. An empty or unreachable share does not establish the ABB destination.
+
+Optional parameters:
+
+- `-ABBServer 'nas-host'`: probe TCP 5510 on this supplied candidate host; compare
+  it with observed ABB process endpoints and the agent's actual configuration.
+- `-TaskNamePattern 'backup|tracs|synology'`: select tasks for action metadata.
+- `-IncludeSqlBackupHistory`: query the latest 20 msdb backup-history rows on up
+  to four locally registered SQL instances using current Windows authentication.
+  Connections have a four-second timeout and queries an eight-second timeout,
+  within the existing section deadline. No SQL credentials are requested or
+  stored; no database restore, VERIFYONLY, backup job or script is executed.
+
+A successful task exit, file timestamp, TCP connection or msdb history record is
+not a tested restore. Obtain the actual ABB result and verify representative
+restores separately before declaring recovery protection complete. The script
+remains a diagnostic, not a full security audit.
