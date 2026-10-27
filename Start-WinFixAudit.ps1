@@ -11,7 +11,11 @@ validation remains enabled. No registry settings or OS components are changed.
 param(
     [switch]$DeepAudit,
     [switch]$SkipOnlineUpdateScan,
-    [string]$EvidenceFile = ''
+    [string]$EvidenceFile = '',
+    [string]$VeeamLogDirectory = '',
+    [ValidateRange(1,30)][int]$MaxVeeamLogFiles = 10,
+    [ValidateRange(500,10000)][int]$VeeamDiscoveryEntryLimit = 4000,
+    [ValidateRange(128,1024)][int]$VeeamLogTailKiB = 256
 )
 
 $previousProtocol = [Net.ServicePointManager]::SecurityProtocol
@@ -22,7 +26,9 @@ try {
     $auditScript = Invoke-RestMethod -Uri $auditUrl -TimeoutSec 60 -ErrorAction Stop
     if ([string]::IsNullOrWhiteSpace([string]$auditScript)) { throw 'The download returned an empty script.' }
     $collector = [scriptblock]::Create([string]$auditScript)
-    & $collector -CopyToClipboard -DeepAudit:$DeepAudit -SkipOnlineUpdateScan:$SkipOnlineUpdateScan -EvidenceFile $EvidenceFile
+    & $collector -CopyToClipboard -DeepAudit:$DeepAudit -SkipOnlineUpdateScan:$SkipOnlineUpdateScan -EvidenceFile $EvidenceFile `
+        -VeeamLogDirectory $VeeamLogDirectory -MaxVeeamLogFiles $MaxVeeamLogFiles `
+        -VeeamDiscoveryEntryLimit $VeeamDiscoveryEntryLimit -VeeamLogTailKiB $VeeamLogTailKiB
 } catch {
     Write-Error -Message ("WinFix could not complete: " + $_.Exception.Message +
         " If HTTPS still fails with TLS 1.2, download Export-WinFixAudit.ps1 on a working computer and transfer it to this server, then run locally. Check the server's TLS/cipher, certificate, clock and proxy configuration; do not bypass certificate validation.")

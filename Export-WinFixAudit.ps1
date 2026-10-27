@@ -25,6 +25,8 @@ param(
     [ValidateRange(1,30)][int]$MaxAdditionalBackupLogFiles = 16,
     [ValidateRange(1,30)][int]$MaxSynologyDriveLogFiles = 10,
     [ValidateRange(1,30)][int]$MaxVeeamLogFiles = 10,
+    [ValidateRange(500,10000)][int]$VeeamDiscoveryEntryLimit = 4000,
+    [ValidateRange(128,1024)][int]$VeeamLogTailKiB = 256,
     [switch]$DeepAudit,
     [switch]$SkipOnlineUpdateScan,
     [switch]$NoOpen,
@@ -40,7 +42,7 @@ function Protect-AuditText {
 }
 function Find-AuditVeeamLogs {
     param([string]$Root, [datetime]$Since, [int]$FileLimit=10, [int]$EntryLimit=2000,
-        [string]$FilePattern='\.log$')
+        [string]$FilePattern='\.log$', [switch]$PrioritizeJobLogs)
     $provider=$null; $drive=$null
     $native=$ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Root,[ref]$provider,[ref]$drive)
     if ($provider.Name -ne 'FileSystem' -or $native.StartsWith('\\')) { throw 'Veeam log collection requires a local filesystem folder.' }
@@ -54,13 +56,15 @@ function Find-AuditVeeamLogs {
     if (-not [IO.Directory]::Exists($native)) { throw "Veeam log folder not found: $native" }
     $queue=New-Object System.Collections.Queue
     $queue.Enqueue([pscustomobject]@{Path=$native;Depth=0})
-    $entries=0; $depthSkipped=0; $linksSkipped=0; $failures=@(); $files=@()
+    $entries=0; $depthSkipped=0; $linksSkipped=0; $failures=@(); $files=@(); $folderCaps=0
     while ($queue.Count -and $entries -lt $EntryLimit) {
-        $folder=$queue.Dequeue()
+        $folder=$queue.Dequeue(); $folderEntries=0
         try {
             foreach ($path in [IO.Directory]::EnumerateFileSystemEntries($folder.Path)) {
                 if ($entries -ge $EntryLimit) { break }
-                $entries++
+                # A busy service directory must not consume the entire discovery budget.
+                if ($PrioritizeJobLogs -and $folder.Depth -gt 0 -and $folderEntries -ge 250) { $folderCaps++; break }
+                $entries++; $folderEntries++
                 try {
                     $attributes=[IO.File]::GetAttributes($path)
                     if ($attributes -band [IO.FileAttributes]::ReparsePoint) { $linksSkipped++; continue }
@@ -76,25 +80,59 @@ function Find-AuditVeeamLogs {
             }
         } catch { $failures += [pscustomobject]@{Path=$folder.Path;Error=$_.Exception.Message} }
     }
+    $ordered=@($files | Sort-Object LastWriteTime -Descending)
+    $selected=@($ordered | Select-Object -First $FileLimit)
+    if ($PrioritizeJobLogs) {
+        # Retain the core service log for repository errors, then rotate across
+        # job directories before spending remaining slots on other service logs.
+        $selected=@($ordered | Where-Object { [IO.Path]::GetFileName($_.Path) -ieq 'Svc.VeeamBackup.log' } | Select-Object -First 1)
+        $groups=@($ordered | Where-Object { [IO.Path]::GetFileName($_.Path) -match '^(Task|Job|Backup)\.' } |
+            Group-Object { [IO.Path]::GetDirectoryName($_.Path) })
+        for ($round=0; $round -lt $FileLimit -and $selected.Count -lt $FileLimit; $round++) {
+            foreach ($group in $groups) {
+                if ($selected.Count -ge $FileLimit) { break }
+                if ($round -lt $group.Group.Count) { $selected += $group.Group[$round] }
+            }
+        }
+        foreach ($file in $ordered) {
+            if ($selected.Count -ge $FileLimit) { break }
+            if (@($selected | Where-Object { $_.Path -eq $file.Path }).Count -eq 0) { $selected += $file }
+        }
+    }
     [pscustomobject]@{Root=$native;EntriesScanned=$entries;EntryLimit=$EntryLimit;ScanLimitReached=($entries -ge $EntryLimit)
         DepthLimit=2;DeeperFoldersSkipped=$depthSkipped;ReparsePointsSkipped=$linksSkipped;Errors=@($failures | Select-Object -First 20)
         RecentLogCandidates=$files.Count;FileLimit=$FileLimit;OutputTruncated=($files.Count -gt $FileLimit)
-        Files=@($files | Sort-Object LastWriteTime -Descending | Select-Object -First $FileLimit)
+        Files=$selected
+        SelectionMode=if ($PrioritizeJobLogs) {'CoreServiceThenJobDirectoryRoundRobin'} else {'NewestFiles'}
+        PerDirectoryEntryLimit=if ($PrioritizeJobLogs) {250} else {$null};DirectoriesCapped=$folderCaps
+        SelectedJobLogs=@($selected | Where-Object { [IO.Path]::GetFileName($_.Path) -match '^(Task|Job|Backup)\.' }).Count
         FilePattern=$FilePattern
-        Coverage='Local matching text files only, root plus two directory levels; newest within bounded discovery. File modification time is not an event timestamp. No archives, remote shares or reparse points are read.'}
+        Coverage='Local matching text files only, root plus two directory levels; selection is bounded and cannot cover undiscovered folders. File modification time is not an event timestamp. No archives, remote shares or reparse points are read.'}
 }
 function Read-AuditVeeamLog {
-    param([string]$Path, [int]$MaxBytes=131072, [int]$MaxLines=40,
+    param([string]$Path, [ValidateRange(1024,1048576)][int]$MaxBytes=131072, [ValidateRange(1,200)][int]$MaxLines=40,
+        [ValidateRange(0,3)][int]$ContextLines=0, [switch]$IncludeActivity,
         [string]$MatchPattern='(?i)\b(error|failed|failure|warning|success|succeeded)\b|\b(job|session|task|backup|restore)\b.*\b(finished|completed|result|status)\b')
+    $ContextLines=[int][math]::Min($ContextLines,[math]::Floor(($MaxLines-1)/2))
     $stream=$null
     try {
         if ([long][IO.File]::GetAttributes($Path) -band (0x441000 -bor [long][IO.FileAttributes]::ReparsePoint)) { throw 'Reparse, offline or recall-on-access log files are not read.' }
         $stream=[IO.File]::Open($Path,[IO.FileMode]::Open,[IO.FileAccess]::Read,([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete))
-        $length=$stream.Length; $header=New-Object byte[] 3; $null=$stream.Read($header,0,3)
+        $length=$stream.Length; $header=New-Object byte[] 256; $headerRead=$stream.Read($header,0,256)
         $encoding=New-Object Text.UTF8Encoding($false); $unit=1; $bom=0
         if ($header[0] -eq 255 -and $header[1] -eq 254) { $encoding=[Text.Encoding]::Unicode; $unit=2; $bom=2 }
         elseif ($header[0] -eq 254 -and $header[1] -eq 255) { $encoding=[Text.Encoding]::BigEndianUnicode; $unit=2; $bom=2 }
         elseif ($header[0] -eq 239 -and $header[1] -eq 187 -and $header[2] -eq 191) { $bom=3 }
+        elseif ($headerRead -ge 16) {
+            # Some vendor logs use UTF-16 without a BOM. Only infer it when the
+            # ASCII lane is clearly non-NUL and the opposite lane is mostly NUL.
+            $even=0; $odd=0; $pairs=[int][math]::Floor($headerRead/2)
+            for ($h=0; $h -lt ($pairs*2); $h+=2) {
+                if ($header[$h] -eq 0) { $even++ }; if ($header[$h+1] -eq 0) { $odd++ }
+            }
+            if ($odd -gt $pairs*0.6 -and $even -lt $pairs*0.1) { $encoding=[Text.Encoding]::Unicode; $unit=2 }
+            elseif ($even -gt $pairs*0.6 -and $odd -lt $pairs*0.1) { $encoding=[Text.Encoding]::BigEndianUnicode; $unit=2 }
+        }
         $offset=[math]::Max($bom,$length-$MaxBytes)
         if ($unit -eq 2 -and ($offset % 2)) { $offset++ }
         $null=$stream.Seek($offset,[IO.SeekOrigin]::Begin)
@@ -105,17 +143,53 @@ function Read-AuditVeeamLog {
             $newline=$raw.IndexOf("`n")
             if ($newline -ge 0) { $raw=$raw.Substring($newline+1) } else { $raw='' }
         }
-        $lines=@($raw -split '\r?\n'); $matchedLines=@()
+        $lines=@($raw -split '\r?\n'); $matchesInTail=New-Object 'Collections.Generic.List[int]'; $wanted=@{}; $activity=New-Object 'Collections.Generic.List[int]'
         for ($i=0; $i -lt $lines.Count; $i++) {
-            if ($lines[$i] -match $MatchPattern) {
-                $safe=Protect-AuditText $lines[$i]
-                $matchedLines += [pscustomobject]@{TailLine=($i+1);Text=$safe.Substring(0,[math]::Min(1000,$safe.Length));Truncated=($safe.Length -gt 1000)}
-            }
+            if ($lines[$i] -match $MatchPattern) { $matchesInTail.Add($i) }
+            if (-not [string]::IsNullOrWhiteSpace($lines[$i])) { $activity.Add($i) }
         }
+        # Reserve half the context windows for recent errors so repeated cached
+        # Success/configuration messages cannot crowd out repository failures.
+        $anchorLimit=[math]::Max(1,[int][math]::Floor($MaxLines/(1+2*$ContextLines)))
+        $anchors=@()
+        if ($ContextLines -gt 0) {
+            $anchors=@($matchesInTail | Where-Object { $lines[$_] -match '(?i)\b(error|failed|failure|warning)\b|network path was not found' } |
+                Select-Object -Last ([math]::Max(1,[int][math]::Floor($anchorLimit/2))))
+        }
+        $anchors+=@($matchesInTail | Where-Object { $anchors -notcontains $_ } | Select-Object -Last ($anchorLimit-$anchors.Count))
+        foreach ($anchor in $anchors) {
+            for ($j=[math]::Max(0,$anchor-$ContextLines); $j -le [math]::Min($lines.Count-1,$anchor+$ContextLines); $j++) { $wanted[[int]$j]=$true }
+        }
+        $selectedIndices=@($wanted.Keys | Sort-Object | Select-Object -Last $MaxLines)
+        $rows=@(foreach ($i in $selectedIndices) {
+            $safe=Protect-AuditText $lines[$i]; $stamp=$null
+            if ($safe -match '^\[(?<stamp>\d{2}\.\d{2}\.\d{4} \d{2}:\d{2}:\d{2}(?:\.\d+)?)\]') { $stamp=$Matches.stamp }
+            $kind='Context'
+            if ($safe -match '==\s*Name:|Schedule options|Latest run time:') { $kind='ConfigurationSnapshot' }
+            elseif ($safe -match '(?i)job type:\s*"(?:VolumesDiscover|InfraStatistic)"') { $kind='InfrastructureActivity' }
+            elseif ($safe -match '(?i)network path was not found|CheckWinAvailability|CheckGateToRepoConnection') { $kind='RepositoryConnectivity' }
+            elseif ($safe -match '(?i)\b(error|failed|failure)\b') { $kind='ErrorExcerpt' }
+            elseif ($safe -match '(?i)\bwarning\b') { $kind='WarningExcerpt' }
+            elseif ($safe -match $MatchPattern) { $kind='OutcomeOrActivityExcerpt' }
+            [pscustomobject]@{TailLine=($i+1);Text=$safe.Substring(0,[math]::Min(1000,$safe.Length));Truncated=($safe.Length -gt 1000)
+                TimestampText=$stamp;EvidenceKind=$kind;KeywordMatch=($lines[$i] -match $MatchPattern)}
+        })
+        $recent=@(if ($IncludeActivity) {
+            foreach ($i in @($activity | Select-Object -Last 5)) {
+                $safe=Protect-AuditText $lines[$i]
+                [pscustomobject]@{TailLine=($i+1);Text=$safe.Substring(0,[math]::Min(1000,$safe.Length));Truncated=($safe.Length -gt 1000)}
+            }
+        })
         [pscustomobject]@{Path=$Path;Status='Collected';FileLength=$length;Encoding=$encoding.WebName;BytesRead=$read;ByteLimit=$MaxBytes
-            TailTruncated=($offset -gt $bom);MatchedLines=$matchedLines.Count;OutputTruncated=($matchedLines.Count -gt $MaxLines)
-            Lines=@($matchedLines | Select-Object -Last $MaxLines);Error=$null
-            Coverage='Keyword excerpts from a bounded file tail, in file order; TailLine is relative to the retained tail. Raw text is not a verified job outcome or restore result. Individual line timestamps are not parsed; older lines may remain. Secrets are scrubbed best-effort.'}
+            TailTruncated=($offset -gt $bom);MatchedLines=$matchesInTail.Count
+            OutputTruncated=(@($matchesInTail | Where-Object { $selectedIndices -notcontains $_ }).Count -gt 0)
+            Lines=$rows;RecentActivity=$recent;ContextLines=$ContextLines;Error=$null
+            BackupOutcome='Unverified';JobIdentitySource='File/folder label only; confirm in backup console'
+            VerificationNeeded=@('Latest completed backup session and per-workload restore point with timezone',
+                'Protected workload/volume scope and application consistency',
+                'Repository/gateway/destination availability and free space',
+                'Retention, encryption, offsite/immutable copy and a documented restore test')
+            Coverage='Bounded tail excerpts with optional context/activity; TailLine is relative to the retained tail. TimestampText is unparsed local log text with unknown timezone. ConfigurationSnapshot Success and InfrastructureActivity are not backup completions. Other outcome excerpts still require job/session and restore-point verification. RecentActivity is not success. Secrets are scrubbed best-effort.'}
     } catch { [pscustomobject]@{Path=$Path;Status='Unavailable';Error=$_.Exception.Message;Lines=@()} }
     finally { if ($stream) { $stream.Dispose() } }
 }
@@ -493,7 +567,7 @@ function Save-AuditCheckpoint {
     if ($script:checkpointPath) {
         $tempPath = $script:checkpointPath + '.tmp'
         try {
-            $snapshot = [ordered]@{ SchemaVersion='1.11'; AuditId=$script:auditId; Incomplete=$true
+            $snapshot = [ordered]@{ SchemaVersion='1.12'; AuditId=$script:auditId; Incomplete=$true
                 SavedAt=(Get-Date).ToString('o'); ClientName=$ClientName; Location=$Location; Elevated=$elevated
                 Checks=$script:checks; DeepAuditRequested=[bool]$DeepAudit; ExportWarnings=@($script:checkpointWarnings) }
             $checkpointJson = ConvertTo-AuditJson -InputObject $snapshot
@@ -870,7 +944,7 @@ $OutputDirectory = Initialize-AuditOutputDirectory -Path $OutputDirectory
 $prefix = 'WinFixAudit-' + $env:COMPUTERNAME + '-' + $started.ToString('yyyyMMdd-HHmmss')
 $script:checkpointPath = Join-Path $OutputDirectory "$prefix-PARTIAL.json"
 $BackupPattern = 'Synology (Drive|Active Backup)|cloud.?drive|Veeam|Acronis|Macrium|Datto|Carbonite|Veritas|CrashPlan|\bCove\b|Axcient|Rubrik|Backup|StorageCraft|ShadowProtect|Arcserve|MSP360|CloudBerry|Druva|Commvault|NAKIVO|Retrospect|UrBackup|Duplicati|Duplicacy|Restic|rclone|IDrive|Backblaze|GoodSync|SyncBack|EaseUS|AOMEI|OneDrive'
-Write-Host "WinFix audit 1.11. Completed checks are saved to $script:checkpointPath"
+Write-Host "WinFix audit 1.12. Completed checks are saved to $script:checkpointPath"
 if (-not $elevated) { Write-Warning 'Run ISE as Administrator for the fullest audit.' }
 Save-AuditCheckpoint
 $checks.System = Invoke-AuditCheck System {
@@ -1287,7 +1361,7 @@ if ($veeamDetected -or $VeeamLogDirectory) {
         Get-AuditEvents -LogName Application -ProviderPattern 'Veeam' -IncludeMessage -IncludeEventData
     }
     $checks.VeeamLogDiscovery = Invoke-AuditCheck VeeamLogDiscovery -Context @{
-        RequestedRoot=$VeeamLogDirectory;FileLimit=$MaxVeeamLogFiles;FinderCode=${function:Find-AuditVeeamLogs}.ToString()
+        RequestedRoot=$VeeamLogDirectory;FileLimit=$MaxVeeamLogFiles;EntryLimit=$VeeamDiscoveryEntryLimit;FinderCode=${function:Find-AuditVeeamLogs}.ToString()
     } -Collect {
         Set-Item Function:Find-AuditVeeamLogs ([scriptblock]::Create($FinderCode))
         $root=$RequestedRoot
@@ -1296,15 +1370,15 @@ if ($veeamDetected -or $VeeamLogDirectory) {
             $root=$config.LogDirectory
             if (-not $root) { $root=Join-Path $env:ProgramData 'Veeam\Backup' }
         }
-        Find-AuditVeeamLogs -Root $root -Since $since -FileLimit $FileLimit
+        Find-AuditVeeamLogs -Root $root -Since $since -FileLimit $FileLimit -EntryLimit $EntryLimit -PrioritizeJobLogs
     }
     $selectedLogs=@($checks.VeeamLogDiscovery.Data | ForEach-Object { $_.Files } | ForEach-Object { $_.Path })
     if ($selectedLogs.Count) {
         $checks.VeeamFileLogDetails = Invoke-AuditCheck VeeamFileLogDetails -TimeoutSeconds 60 -Context @{
-            Paths=$selectedLogs;ReaderCode=${function:Read-AuditVeeamLog}.ToString()
+            Paths=$selectedLogs;TailBytes=($VeeamLogTailKiB*1024);ReaderCode=${function:Read-AuditVeeamLog}.ToString()
         } -Collect {
             Set-Item Function:Read-AuditVeeamLog ([scriptblock]::Create($ReaderCode))
-            foreach ($path in $Paths) { Read-AuditVeeamLog -Path $path }
+            foreach ($path in $Paths) { Read-AuditVeeamLog -Path $path -MaxBytes $TailBytes -MaxLines 80 -ContextLines 2 -IncludeActivity }
         }
     }
 }
@@ -1684,7 +1758,7 @@ $checks.ExternalEvidence = Invoke-AuditCheck ExternalEvidence -Context @{
     Read-ExternalEvidence -Path $EvidencePath -Template $Template
 }
 $report = [ordered]@{
-    SchemaVersion = '1.11'; AuditId = $script:auditId; Incomplete = $false; ClientName = $ClientName; Location = $Location
+    SchemaVersion = '1.12'; AuditId = $script:auditId; Incomplete = $false; ClientName = $ClientName; Location = $Location
     StartedAt = $started.ToString('o'); CompletedAt = (Get-Date).ToString('o'); Elevated = $elevated
     PowerShellVersion = $PSVersionTable.PSVersion.ToString(); Checks = $checks
     ExportWarnings = @($script:checkpointWarnings)

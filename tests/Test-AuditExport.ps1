@@ -205,9 +205,9 @@ function Invoke-RestMethod {
     [CmdletBinding()]param($Uri,$TimeoutSec)
     if ([Net.ServicePointManager]::SecurityProtocol -ne [Net.SecurityProtocolType]::Tls12) { throw 'TLS 1.2 not selected before download.' }
     if ($Uri -ne 'https://raw.githubusercontent.com/jeremydbean/winfix/main/Export-WinFixAudit.ps1') { throw 'Download URL is not plain or expected.' }
-    'param([switch]$CopyToClipboard,[switch]$SkipOnlineUpdateScan,[string]$EvidenceFile) $global:winfixLauncherTestRan=($CopyToClipboard -and $SkipOnlineUpdateScan -and $EvidenceFile -eq "test.json")'
+    'param([switch]$CopyToClipboard,[switch]$DeepAudit,[switch]$SkipOnlineUpdateScan,[string]$EvidenceFile,[string]$VeeamLogDirectory,[int]$MaxVeeamLogFiles,[int]$VeeamDiscoveryEntryLimit,[int]$VeeamLogTailKiB) $global:winfixLauncherTestRan=($CopyToClipboard -and $DeepAudit -and $SkipOnlineUpdateScan -and $EvidenceFile -eq "test.json" -and $VeeamLogDirectory -eq "D:\ExampleLogs" -and $MaxVeeamLogFiles -eq 20 -and $VeeamDiscoveryEntryLimit -eq 8000 -and $VeeamLogTailKiB -eq 512)'
 }
-& $launcherPath -SkipOnlineUpdateScan -EvidenceFile 'test.json'
+& $launcherPath -DeepAudit -SkipOnlineUpdateScan -EvidenceFile 'test.json' -VeeamLogDirectory 'D:\ExampleLogs' -MaxVeeamLogFiles 20 -VeeamDiscoveryEntryLimit 8000 -VeeamLogTailKiB 512
 if (-not $global:winfixLauncherTestRan -or [Net.ServicePointManager]::SecurityProtocol -ne $originalProtocol) { throw 'Launcher options or TLS restoration failed.' }
 $global:winfixLauncherTestRan=$false
 function Invoke-RestMethod { [CmdletBinding()]param($Uri,$TimeoutSec) throw 'Simulated TLS failure' }

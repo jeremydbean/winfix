@@ -339,7 +339,7 @@ The regression suite exercises provider-qualified paths, filesystem PSDrives,
 literal bracket characters, real checkpoint/final writes and early failure. A
 live Windows redirected UNC share still requires verification on that host.
 
-### Veeam log evidence (collector 1.8)
+### Veeam log evidence (collector 1.12)
 
 Detected Veeam installations now add local text-log excerpts alongside Windows
 event evidence. Queried Veeam event channels include rendered messages and up to
@@ -355,29 +355,66 @@ See [Veeam's log-location documentation](https://www.veeam.com/kb1832).
 For another local folder, pass `-VeeamLogDirectory 'D:\VeeamLogs'`; this also
 enables collection when installed-product detection misses Veeam.
 
-Discovery inspects at most 2,000 filesystem entries in the root and two directory
-levels beneath it, then selects the 10 most recently modified `.log` files found
-within the audit lookback. `-MaxVeeamLogFiles 20` raises the file count (maximum 30).
-Each file contributes at most a 128 KiB tail and the last 40 keyword-matching lines,
-capped at 1,000 characters per line. UTF-8 and BOM-marked UTF-16 are supported.
-Files may remain open by Veeam; read failures are recorded per file. Discovery has
-the normal check timeout, and the file-reading check has a 60-second timeout that
-preserves already returned file results. Network folders, reparse points and
-compressed archives are excluded.
+Discovery inspects at most 4,000 filesystem entries in the root and two directory
+levels beneath it. Each non-root folder has a 250-entry cap so one busy folder
+cannot consume the whole budget. The root still shares the global cap, so large
+roots can leave other folders undiscovered. Selection retains the core
+`Svc.VeeamBackup.log` when found, rotates across directories containing
+`Task.*`, `Job.*` or `Backup.*` logs, and fills remaining slots with other recent
+logs. It selects 10 files by default; filenames are hints, not verified job names.
 
-`VeeamLogDiscovery` records discovery limits, omissions and access errors;
-`VeeamFileLogDetails` records byte/line truncation and raw warning, error and
-completion excerpts. Individual line timestamps are not parsed, so excerpts may
-predate the lookback even when the file was recently modified. Excerpts are not
-verified job results, complete history, per-VM protection or restore-test evidence.
+Each selected file contributes a tail of up to 256 KiB, up to 80 excerpt lines
+with two lines of surrounding context, and the last five non-empty activity lines.
+Half the available context windows are reserved for recent error/warning matches;
+repeated configuration Success messages cannot consume every window. Excerpts
+remain bounded and can miss errors earlier in the file. Each output line is
+limited to 1,000 characters. UTF-8, BOM-marked UTF-16, and strongly indicated
+BOM-less UTF-16 are supported. Reads allow files to remain open by Veeam.
+
+For a busy backup server, increase the bounds explicitly:
+
+```powershell
+.\Export-WinFixAudit.ps1 -CopyToClipboard -DeepAudit -MaxVeeamLogFiles 20 `
+    -VeeamDiscoveryEntryLimit 8000 -VeeamLogTailKiB 512
+```
+
+Limits are 30 files, 10,000 discovery entries, and 1,024 KiB per file. Discovery
+retains the normal check timeout; file reads retain a shared 60-second timeout
+that preserves already returned file results. Larger limits do not extend these
+timeouts. `Start-WinFixAudit.ps1` also accepts these settings and
+`-VeeamLogDirectory`. Network folders, reparse points, offline/recall files and
+compressed archives are excluded. The tail byte limit excludes the separate
+256-byte encoding probe.
+
+`VeeamLogDiscovery` records caps, omissions, selection mode and access errors.
+`VeeamFileLogDetails` records truncation, context, activity and evidence labels:
+
+- `ConfigurationSnapshot`: cached job configuration, schedules and last-run fields;
+  a Success label here does not establish a recent completed backup.
+- `InfrastructureActivity`: recognized discovery/statistics sessions, not backups.
+- `RepositoryConnectivity`, `ErrorExcerpt`, `WarningExcerpt`: diagnostic evidence
+  to correlate with the affected repository and job/session.
+- `OutcomeOrActivityExcerpt`: a keyword match requiring job/session verification.
+- `RecentActivity`: last non-empty lines even when no keywords matched; evidence of
+  log contents, not a live progress measurement or successful backup.
+
+`TimestampText` preserves a recognized timestamp string without assuming its
+timezone. File modification time is not the event time; old lines can appear in a
+recent file. `BackupOutcome` remains `Unverified` for log excerpts, and
+`VerificationNeeded` identifies the remaining evidence. A complete report needs
+per-workload restore points, scope, retention, repository protection and a restore
+test. See the [backup evidence guide and job worksheet](docs/Backup-Evidence-Guide.md).
+
 Labelled secrets, bearer tokens and URL credentials are scrubbed best-effort;
-review the paste output before sharing. Collection does not run backup jobs or
-connect to Veeam servers or repositories.
+review the paste output before sharing. Collection does not run backup jobs,
+change schedules or connect to Veeam repositories.
 
-Regression checks cover sparse errors, missing messages, XML failures, redaction,
-bounded discovery, large UTF-8 logs, UTF-16 logs, missing files and background-worker
-serialization. Server 2012 R2 / PowerShell 4 remains targeted; live Veeam validation
-must be performed on a Windows host.
+Regression checks cover fair job-log selection, discovery limits, error context,
+activity-only files, stale configuration labels, byte/line caps, UTF-8/UTF-16,
+redaction and worker serialization. Run `tests/Test-VeeamEvidence.ps1` alongside
+`tests/Test-AuditExport.ps1` and `tests/Test-DeepAudit.ps1`. Server 2012 R2 /
+PowerShell 4 remains targeted; live Veeam and legacy Windows validation still
+requires the target host.
 
 ### Synology Drive Client and scheduled backups (collector 1.9)
 
