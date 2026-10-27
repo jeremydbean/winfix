@@ -211,6 +211,28 @@ function Read-BackupTextTail {
     } finally {if ($stream) {$stream.Dispose()}}
 }
 
+function New-BackupSqlConnectionString {
+    param([string]$Instance)
+    $builder=New-Object Data.SqlClient.SqlConnectionStringBuilder
+    # PowerShell adapts this type as a dictionary: use canonical SQL keywords,
+    # not CLR property names such as DataSource or InitialCatalog.
+    $builder['Data Source']=if ($Instance -eq 'MSSQLSERVER') {'.'} else {'.\'+$Instance}
+    $builder['Initial Catalog']='msdb'
+    $builder['Integrated Security']=$true
+    $builder['Connect Timeout']=4
+    $builder['Application Name']='WinFix read-only backup diagnostic'
+    $builder['Pooling']=$false
+    $builder.ConnectionString
+}
+function Test-BackupOperationalLog {
+    param([string]$Path)
+    $leaf=($Path -split '[\\/]')[-1]
+    if ($leaf -match '(?i)license|licence|readme|notice|eula|changelog|copyright') {return $false}
+    if ($leaf -match '(?i)\.log(?:\.\d+)?$') {return $true}
+    if ($leaf -notmatch '(?i)\.txt(?:\.\d+)?$') {return $false}
+    return ($leaf -match '(?i)log|backup|agent|service|error|history|event|job|session' -or $Path -match '(?i)[\\/]logs?[\\/]')
+}
+
 if ($env:OS -ne 'Windows_NT') { throw 'Run this on the affected Windows computer.' }
 $identity=[Security.Principal.WindowsIdentity]::GetCurrent()
 $principal=New-Object Security.Principal.WindowsPrincipal($identity)
@@ -220,9 +242,9 @@ if (-not $OutputDirectory) { $OutputDirectory=Join-Path $env:TEMP 'WinFixBackupD
 $null=[IO.Directory]::CreateDirectory($OutputDirectory)
 $output=Join-Path $OutputDirectory ('WinFixBackup-'+$env:COMPUTERNAME+'-'+(Get-Date -Format 'yyyyMMdd-HHmmss')+'.txt')
 $encoding=New-Object Text.UTF8Encoding($false)
-$header="WINFIX BACKUP DIAGNOSTIC 1.1`r`nComputer: $env:COMPUTERNAME`r`nCollected: $((Get-Date).ToString('o'))`r`nTimezone: $([TimeZoneInfo]::Local.Id)`r`nPowerShell: $($PSVersionTable.PSVersion)`r`nTarget supplied for investigation: $BackupTarget`r`nRunning as: $($identity.Name)`r`nRead-only. Backup engines and services remain running. Results saved after every section.`r`nNAS queries use this elevated user's credentials, which may differ from the backup account.`r`nCounters show activity, not proof that backup data is advancing. No activity over a short sample does not prove a hang.`r`nPaths, account names, device identifiers and event messages may appear. No stored passwords or recovery keys are queried.`r`n"
+$header="WINFIX BACKUP DIAGNOSTIC 1.2`r`nComputer: $env:COMPUTERNAME`r`nCollected: $((Get-Date).ToString('o'))`r`nTimezone: $([TimeZoneInfo]::Local.Id)`r`nPowerShell: $($PSVersionTable.PSVersion)`r`nTarget supplied for investigation: $BackupTarget`r`nRunning as: $($identity.Name)`r`nRead-only. Backup engines and services remain running. Results saved after every section.`r`nNAS queries use this elevated user's credentials, which may differ from the backup account.`r`nCounters show activity, not proof that backup data is advancing. No activity over a short sample does not prove a hang.`r`nPaths, account names, device identifiers and event messages may appear. No stored passwords or recovery keys are queried.`r`n"
 [IO.File]::WriteAllText($output,$header,$encoding)
-Write-Host "WinFix backup diagnostic 1.1. Partial results: $output"
+Write-Host "WinFix backup diagnostic 1.2. Partial results: $output"
 $sections=[ordered]@{}
 $sections.WindowsBackupStatusBefore={ Invoke-BackupStatusReader -FilePath (Join-Path $env:SystemRoot 'System32\wbadmin.exe') -Arguments 'get status' -Seconds 10 }
 $sections.ActivitySamples={
@@ -320,6 +342,7 @@ if ($ABBServer) {
 }
 $sections.SynologyAgentLogs={
     $roots=@()
+    if ($env:ProgramData) {$roots+=Join-Path $env:ProgramData 'ActiveBackupforBusinessAgent'}
     foreach ($base in @($env:ProgramData,$env:ProgramFiles,${env:ProgramFiles(x86)})) {
         if ($base) {
             foreach ($suffix in @('Synology\ActiveBackupforBusinessAgent','Synology\Active Backup for Business Agent')) {$roots+=Join-Path $base $suffix}
@@ -332,10 +355,10 @@ $sections.SynologyAgentLogs={
     foreach ($root in @($roots | Select-Object -Unique)) {
         $found=@(Find-BackupEvidenceFiles -Root $root -Depth 3 -EntryLimit 600 -DirectoryLimit 24)
         $found | Where-Object {$_.Kind -ne 'File'}
-        $candidates+=@($found | Where-Object {$_.Kind -eq 'File' -and $_.Extension -in @('.log','.txt')})
+        $candidates+=@($found | Where-Object {$_.Kind -eq 'File' -and (Test-BackupOperationalLog -Path $_.Path)})
     }
     $selected=@($candidates | Sort-Object Path -Unique | Sort-Object ModifiedUTC -Descending | Select-Object -First 8)
-    [pscustomobject]@{SelectedLogFiles=$selected.Count;FileLimit=8;Meaning='Conventional install and service directories only; absent or inaccessible logs do not establish absence/failure of ABB. Binary, archive, database and configuration files are not read.'}
+    [pscustomobject]@{SelectedLogFiles=$selected.Count;FileLimit=8;Meaning='ProgramData, conventional install and service directories only; license/readme documentation excluded; absent or inaccessible logs do not establish absence/failure of ABB. Binary, archive, database and configuration files are not read.'}
     foreach ($file in $selected) {
         try {Read-BackupTextTail -Path $file.Path} catch {[pscustomobject]@{Path=$file.Path;Error=$_.Exception.Message}}
     }
@@ -363,10 +386,8 @@ if ($IncludeSqlBackupHistory) {
         foreach ($instance in $instances) {
             $connection=New-Object Data.SqlClient.SqlConnection
             try {
-                $builder=New-Object Data.SqlClient.SqlConnectionStringBuilder
-                $builder.DataSource=if ($instance -eq 'MSSQLSERVER') {'.'} else {'.\'+$instance}
-                $builder.InitialCatalog='msdb';$builder.IntegratedSecurity=$true;$builder.ConnectTimeout=4;$builder.ApplicationName='WinFix read-only backup diagnostic';$builder.Pooling=$false
-                $connection.ConnectionString=$builder.ConnectionString;$connection.Open()
+                $connection.ConnectionString=New-BackupSqlConnectionString -Instance $instance
+                $connection.Open()
                 $cmd=$connection.CreateCommand();$cmd.CommandTimeout=8
                 $cmd.CommandText='SELECT TOP (20) database_name, backup_start_date, backup_finish_date, type, backup_size, is_copy_only, has_backup_checksums FROM msdb.dbo.backupset ORDER BY backup_finish_date DESC;'
                 $reader=$cmd.ExecuteReader();$rows=0
@@ -390,12 +411,14 @@ if ($IncludeSqlBackupHistory) {
 $sections.TaskHistory={Get-BackupDiagnosticEvents -LogName 'Microsoft-Windows-TaskScheduler/Operational' -ProviderPattern '.' -Levels 1,2,3 -Limit 25 -LookbackHours $Hours}
 
 foreach ($name in $sections.Keys) {
-    $context=@{AbbHost=$ABBServer;TaskPattern=$TaskNamePattern;FinderCode=${function:Find-BackupEvidenceFiles}.ToString();TailCode=${function:Read-BackupTextTail}.ToString();NasHost=$nasHostName;Target=$BackupTarget;Interval=$SampleSeconds;Hours=$LookbackHours
+    $context=@{SqlStringCode=${function:New-BackupSqlConnectionString}.ToString();LogFilterCode=${function:Test-BackupOperationalLog}.ToString();AbbHost=$ABBServer;TaskPattern=$TaskNamePattern;FinderCode=${function:Find-BackupEvidenceFiles}.ToString();TailCode=${function:Read-BackupTextTail}.ToString();NasHost=$nasHostName;Target=$BackupTarget;Interval=$SampleSeconds;Hours=$LookbackHours
         EventCode=${function:Get-BackupDiagnosticEvents}.ToString();ReaderCode=${function:Invoke-BackupStatusReader}.ToString()
         SampleCode=${function:Get-BackupActivitySample}.ToString();DeltaCode=${function:Get-BackupCounterDelta}.ToString();SectionCode=$sections[$name].ToString()}
     $timeout=30
     if ($name -eq 'ActivitySamples') { $timeout=$SampleSeconds+60 }
     $result=Invoke-BackupDiagnosticSection -Name $name -TimeoutSeconds $timeout -Context $context -Collect {
+        Set-Item Function:New-BackupSqlConnectionString ([scriptblock]::Create($SqlStringCode))
+        Set-Item Function:Test-BackupOperationalLog ([scriptblock]::Create($LogFilterCode))
         Set-Item Function:Find-BackupEvidenceFiles ([scriptblock]::Create($FinderCode))
         Set-Item Function:Read-BackupTextTail ([scriptblock]::Create($TailCode))
         Set-Item Function:Get-BackupDiagnosticEvents ([scriptblock]::Create($EventCode))

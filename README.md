@@ -643,3 +643,11 @@ A successful task exit, file timestamp, TCP connection or msdb history record is
 not a tested restore. Obtain the actual ABB result and verify representative
 restores separately before declaring recovery protection complete. The script
 remains a diagnostic, not a full security audit.
+
+Backup diagnostic 1.2 fixes SQL connection-string construction under PowerShell's
+SqlClient dictionary adapter (`Data Source` rather than the unsupported keyword
+`DataSource`). It also probes `%ProgramData%\ActiveBackupforBusinessAgent` and
+excludes license/readme documentation from ABB operational-log selection. Plain
+`.log` files, numbered log rotations, and relevant `.txt` files are eligible;
+missing real logs remain an evidence gap. Tests exercise the real SqlClient
+builder without opening a database connection, plus the license/log regression.

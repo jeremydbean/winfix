@@ -106,3 +106,24 @@ try {
     if ($result -notmatch 'Collected' -or $result -notmatch 'backup completed 40' -or $result -match 'DO-NOT-EXPORT') {throw 'Evidence helpers failed in worker.'}
 } finally {Remove-Item $fixtureRoot -Recurse -Force}
 Write-Host 'PASS: new evidence helpers bound filesystem enumeration, preserve metadata, decode UTF16 tails, omit labelled-secret lines and work in a serialized worker.'
+# Use the real SqlClient builder without making any database connection. This
+# reproduces Windows PowerShell's dictionary-adapter keyword behavior.
+foreach ($instance in @('TRACSSE','MSSQLSERVER')) {
+    $cs=New-BackupSqlConnectionString -Instance $instance
+    $builder=New-Object Data.SqlClient.SqlConnectionStringBuilder($cs)
+    $expected=if ($instance -eq 'MSSQLSERVER') {'.'} else {'.\TRACSSE'}
+    if ($builder.get_DataSource() -ne $expected -or $builder.get_InitialCatalog() -ne 'msdb' -or -not $builder.get_IntegratedSecurity() -or $builder.get_ConnectTimeout() -ne 4 -or $builder.get_Pooling()) {throw 'SQL connection-string semantics incorrect.'}
+}
+foreach ($file in @('C:\ABB\ui\LICENSE.txt','C:\ABB\log\license.txt','C:\ABB\README.log','C:\ABB\config.txt','C:\ABB\system-db.sqlite')) {
+    if (Test-BackupOperationalLog $file) {throw "Selected non-log file: $file"}
+}
+foreach ($file in @('C:\ProgramData\ActiveBackupforBusinessAgent\log\log.txt','C:\ABB\agent.log','C:\ABB\log\agent.txt.1','C:\ABB\service.log.2')) {
+    if (-not (Test-BackupOperationalLog $file)) {throw "Missed operational log: $file"}
+}
+$worker=Invoke-BackupDiagnosticSection -Name SqlAndLogFixWorker -Context @{SqlStringCode=${function:New-BackupSqlConnectionString}.ToString();LogFilterCode=${function:Test-BackupOperationalLog}.ToString()} -Collect {
+    Set-Item Function:New-BackupSqlConnectionString ([scriptblock]::Create($SqlStringCode))
+    Set-Item Function:Test-BackupOperationalLog ([scriptblock]::Create($LogFilterCode))
+    [pscustomobject]@{ConnectionString=(New-BackupSqlConnectionString -Instance 'TRACSSE');SelectedLicense=(Test-BackupOperationalLog 'C:\ABB\LICENSE.txt');SelectedAgentLog=(Test-BackupOperationalLog 'C:\ABB\log\log.txt')}
+}
+if ($worker -notmatch 'Collected' -or $worker -notmatch '"SelectedLicense":false' -or $worker -notmatch '"SelectedAgentLog":true' -or $worker -notmatch 'Initial Catalog=msdb') {throw 'SQL/log fixes failed inside worker.'}
+Write-Host 'PASS: real SqlClient canonical-keyword connection strings, default/named instances, operational-log selection and worker serialization; no SQL connection made.'
