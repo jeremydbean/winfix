@@ -651,3 +651,77 @@ excludes license/readme documentation from ABB operational-log selection. Plain
 `.log` files, numbered log rotations, and relevant `.txt` files are eligible;
 missing real logs remain an evidence gap. Tests exercise the real SqlClient
 builder without opening a database connection, plus the license/log regression.
+
+### Collector 1.11: deeper server/domain-controller evidence
+
+Use `-DeepAudit` for a more detailed server or domain-controller review. Paste this block into
+**64-bit PowerShell ISE running as Administrator**, then press F5:
+
+```powershell
+& {
+    $previousTls = [Net.ServicePointManager]::SecurityProtocol
+    try {
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+        $auditUrl = 'https://raw.githubusercontent.com/jeremydbean/winfix/main/Export-WinFixAudit.ps1'
+        $auditScript = Invoke-RestMethod -Uri $auditUrl -TimeoutSec 60 -ErrorAction Stop
+        if ([string]::IsNullOrWhiteSpace([string]$auditScript)) { throw 'Empty script download.' }
+        & ([scriptblock]::Create([string]$auditScript)) -DeepAudit -CopyToClipboard
+    }
+    finally { [Net.ServicePointManager]::SecurityProtocol = $previousTls }
+}
+```
+
+The existing `Start-WinFixAudit.ps1` launcher also accepts `-DeepAudit`. The full
+pasteable result still opens in Notepad and is copied to the clipboard. Each
+completed check is checkpointed. Allow several additional minutes for deep mode;
+individual optional-provider failures remain visible and collection continues.
+Windows PowerShell 4.0/Server 2012 R2 remain supported targets. These additions
+have parser/fixture coverage on PowerShell 7, not live Windows/DC validation yet.
+
+New evidence includes:
+
+- Guest UUID/BIOS identity for matching VMware/Veeam objects; included in normal
+  mode too. The backup console must still confirm the actual VM and restore point.
+- On DCs: domain/forest mode and FSMO owners, default and fine-grained password
+  policies, direct privileged-group members, selected account-review candidates,
+  local replication metadata, SYSVOL/DFSR state and targeted AD/DNS/DFSR events.
+  Queries use the current Windows identity and target the audited DC; they do not
+  force replication, reset passwords or recursively expand the entire directory.
+- CA audit-filter/configuration and certificate expiry metadata; effective IIS
+  authentication, SSL and Extended Protection at site/enrollment paths. A probed
+  nonexistent CertSrv path is explicitly distinguished from a configured endpoint.
+  No private keys, credentials, raw web.config or CA database contents are exported.
+- Installed sync service/binary versions, Connect Sync scheduler and connector
+  run status plus targeted identity-sync errors. No synchronization is triggered.
+  Cloud Sync tenant exports, MFA and actual last successful tenant synchronization
+  still need console evidence; idle/enabled does not prove successful sync.
+- DNS forwarders/zone settings and bounded DHCP IPv4 scope-capacity statistics.
+- CBS package-state registry metadata when hotfix enumeration is incomplete.
+- Bounded metadata samples under event logs, NTDS, SYSVOL, common data folders,
+  ProgramData and Users. Each root uses at most 2,000 entries, three child levels
+  and an eight-second cooperative budget within a 90-second worker deadline.
+  Samples report logical bytes, skipped paths and limits; they are **not full
+  directory totals**, do not account for allocated/compressed/sparse size and
+  must not be added across overlapping roots. No content is read or deleted.
+- Up to five immediate child-directory ACLs per eligible data share (12 shares,
+  first 50 directory entries considered, 100 ACL rules per child). These are
+  samples, not effective access tests or a complete recursive permissions audit.
+
+Normal mode also fixes DC Administrators lookup via AD/SID, skips printer
+pseudo-paths in the NTFS check, and uses server-side time/ID/level filters for
+failed logons and Task Scheduler failures. Filtered queries return at most
+`MaxEvents + 1` matches, with one lookahead row to detect truncation, and a
+60-second worker deadline. Sparse queries can still time out; they are not
+reported as a clean history. Deep provider filters resolve registered provider
+names before querying. VSS uses a 40-second native-reader limit within a
+60-second worker; only its newly started `vssadmin list writers` process is
+closed on timeout, never VSS or a backup service.
+
+Unavailable tools/roles remain evidence gaps. Restore usability, CA templates,
+recursive group/effective permissions, hypervisor/datastore health and external
+exposure still require their respective consoles or targeted validation.
+
+Tests: `pwsh -NoProfile -File tests/Test-AuditExport.ps1` and
+`pwsh -NoProfile -File tests/Test-DeepAudit.ps1`. Fixtures cover targeted event
+query bounds, DC membership and replication failures, metadata limits/reparse
+skips, printer handling, native dual-pipe capture and reader cleanup.

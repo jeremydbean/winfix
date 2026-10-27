@@ -25,6 +25,7 @@ param(
     [ValidateRange(1,30)][int]$MaxAdditionalBackupLogFiles = 16,
     [ValidateRange(1,30)][int]$MaxSynologyDriveLogFiles = 10,
     [ValidateRange(1,30)][int]$MaxVeeamLogFiles = 10,
+    [switch]$DeepAudit,
     [switch]$SkipOnlineUpdateScan,
     [switch]$NoOpen,
     [switch]$CopyToClipboard
@@ -492,9 +493,9 @@ function Save-AuditCheckpoint {
     if ($script:checkpointPath) {
         $tempPath = $script:checkpointPath + '.tmp'
         try {
-            $snapshot = [ordered]@{ SchemaVersion='1.10'; AuditId=$script:auditId; Incomplete=$true
+            $snapshot = [ordered]@{ SchemaVersion='1.11'; AuditId=$script:auditId; Incomplete=$true
                 SavedAt=(Get-Date).ToString('o'); ClientName=$ClientName; Location=$Location; Elevated=$elevated
-                Checks=$script:checks; ExportWarnings=@($script:checkpointWarnings) }
+                Checks=$script:checks; DeepAuditRequested=[bool]$DeepAudit; ExportWarnings=@($script:checkpointWarnings) }
             $checkpointJson = ConvertTo-AuditJson -InputObject $snapshot
             [IO.File]::WriteAllText($tempPath, $checkpointJson, (New-Object Text.UTF8Encoding($false)))
             Move-Item -LiteralPath $tempPath -Destination $script:checkpointPath -Force -ErrorAction Stop
@@ -564,13 +565,27 @@ function Invoke-AuditCheck {
     return $result
 }
 function Get-AuditEvents {
-    param([string]$LogName, [int[]]$Levels = @(), [int[]]$Ids = @(), [string]$ProviderPattern = '', [switch]$IncludeMessage, [switch]$IncludeEventData, [string[]]$EventDataNames=@())
+    param([string]$LogName, [int[]]$Levels = @(), [int[]]$Ids = @(), [string]$ProviderPattern = '', [switch]$IncludeMessage, [switch]$IncludeEventData, [string[]]$EventDataNames=@(), [switch]$Targeted)
     # Bound records read BEFORE filtering; MaxEvents on a sparse filtered query
     # alone can still walk a huge log. The outer job also limits elapsed time.
     $info = Get-WinEvent -ListLog $LogName -ErrorAction Stop
     $records = @()
     if ($info.IsEnabled -and $info.RecordCount -ne 0) {
-        try { $records = @(Get-WinEvent -LogName $LogName -MaxEvents $EventScanLimit -ErrorAction Stop) }
+        try {
+            if ($Targeted) {
+                # Filter at the event service, not after a busy Security log sample.
+                # The owning worker still enforces a deadline for sparse/slow queries.
+                $filter=@{LogName=$LogName;StartTime=$since}
+                if ($Ids.Count) { $filter.Id=$Ids }
+                if ($Levels.Count) { $filter.Level=$Levels }
+                if ($ProviderPattern) {
+                    $providers=@($info.ProviderNames | Where-Object {$_ -match $ProviderPattern})
+                    if (-not $providers.Count) { throw 'No matching registered provider names in this log; targeted provider evidence unavailable.' }
+                    $filter.ProviderName=$providers
+                }
+                $records=@(Get-WinEvent -FilterHashtable $filter -MaxEvents ($MaxEvents+1) -ErrorAction Stop)
+            } else { $records = @(Get-WinEvent -LogName $LogName -MaxEvents $EventScanLimit -ErrorAction Stop) }
+        }
         catch { if ($_.FullyQualifiedErrorId -notlike 'NoMatchingEventsFound*') { throw } }
     }
     $matched = @($records | Where-Object {
@@ -612,14 +627,101 @@ function Get-AuditEvents {
     })
     [pscustomobject]@{
         LogName=$LogName; Enabled=$info.IsEnabled; RecordsInLog=$info.RecordCount
-        RecordsScanned=$records.Count; ScanLimit=$EventScanLimit; Since=$since
+        RecordsScanned=if ($Targeted) { $null } else { $records.Count }
+        RecordsReturnedByQuery=$records.Count; QueryMode=if ($Targeted) {'TimeAndIdOrLevelFilter'} else {'RecentRecordSample'}
+        ScanLimit=if ($Targeted) { $null } else { $EventScanLimit }; Since=$since
         OldestScannedTime=if ($records.Count) { $records[-1].TimeCreated } else { $null }
-        ScanLimitReached=($records.Count -ge $EventScanLimit)
+        ScanLimitReached=if ($Targeted) {$null} else {($records.Count -ge $EventScanLimit)}
+        QueryLimitReached=if ($Targeted) {($records.Count -gt $MaxEvents)} else {$null}
         MatchedInSample=$matched.Count; OutputTruncated=($matched.Count -gt $MaxEvents)
-        Coverage='Recent-record sample only; zero matches is not proof of no incidents or no backups.'
+        Coverage=if ($Targeted) {'Time/ID/level-filtered query with a worker deadline. Query limit is returned records, not records scanned or total incidents. Provider regex resolves registered names before the query. Disabled/unavailable logs and incomplete audit policy limit coverage.'} else {'Recent-record sample only; zero matches is not proof of no incidents or no backups.'}
         Events=$events
     }
 }
+function Invoke-AuditNativeReader {
+    param([string]$FilePath,[string]$Arguments,[int]$Seconds=10,[int]$TextLimit=16000)
+    $process=New-Object Diagnostics.Process
+    $started=$false; $timedOut=$false; $exitCode=$null; $stdout=''; $stderr=''; $captureError=$null
+    $start=Get-Date
+    try {
+        $process.StartInfo.FileName=$FilePath
+        $process.StartInfo.Arguments=$Arguments
+        $process.StartInfo.UseShellExecute=$false
+        $process.StartInfo.CreateNoWindow=$true
+        $process.StartInfo.RedirectStandardOutput=$true
+        $process.StartInfo.RedirectStandardError=$true
+        $started=$process.Start()
+        $readerId=$process.Id
+        # Drain BOTH pipes asynchronously so a verbose command cannot deadlock.
+        $outTask=$process.StandardOutput.ReadToEndAsync()
+        $errTask=$process.StandardError.ReadToEndAsync()
+        if (-not $process.WaitForExit($Seconds*1000)) {
+            $timedOut=$true
+            # Only this newly-created read-only console client, never wbengine or a service.
+            if (-not $process.HasExited) { $process.Kill() }
+        }
+        $exited=$process.WaitForExit(2000)
+        if ($exited) { $exitCode=$process.ExitCode }
+        if ($outTask.Wait(2000)) { $stdout=$outTask.Result } else { $captureError='Standard output drain timed out.' }
+        if ($errTask.Wait(2000)) { $stderr=$errTask.Result } else { $captureError+=' Standard error drain timed out.' }
+        $truncated=($stdout.Length -gt $TextLimit -or $stderr.Length -gt $TextLimit)
+        if ($stdout.Length -gt $TextLimit) { $stdout=$stdout.Substring(0,$TextLimit) }
+        if ($stderr.Length -gt $TextLimit) { $stderr=$stderr.Substring(0,$TextLimit) }
+        [pscustomobject]@{Command=([IO.Path]::GetFileName($FilePath)+' '+$Arguments);StartedLocal=$start.ToString('o');EndedLocal=(Get-Date).ToString('o')
+            ReaderProcessId=$readerId;ReaderTimeLimitReached=$timedOut;ReaderExited=$exited;ExitCode=$exitCode;OutputTruncated=$truncated
+            StandardOutput=$stdout;StandardError=$stderr;CaptureError=$captureError
+            Meaning='Only this read-only diagnostic process is closed on timeout. No service or backup engine is stopped. A reader timeout is unknown evidence, not a failed backup.'}
+    } finally {
+        if ($started -and -not $process.HasExited) { $process.Kill(); $null=$process.WaitForExit(2000) }
+        $process.Dispose()
+    }
+}
+
+function Assert-AuditLocalMetadataPath {
+    param([string]$Path)
+    $provider=$null; $drive=$null
+    $native=$ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Path,[ref]$provider,[ref]$drive)
+    if ($provider.Name -ne 'FileSystem' -or $native.StartsWith('\\')) { throw 'Only local filesystem metadata is inspected.' }
+    if ((New-Object IO.DriveInfo([IO.Path]::GetPathRoot($native))).DriveType -eq [IO.DriveType]::Network) { throw 'Mapped network paths are not inspected.' }
+    $node=New-Object IO.DirectoryInfo($native)
+    while ($null -ne $node) {
+        if ($node.Exists -and ([long]$node.Attributes -band (0x441000 -bor [long][IO.FileAttributes]::ReparsePoint))) { throw 'Reparse, offline and recall-on-access paths are skipped.' }
+        $node=$node.Parent
+    }
+    if (-not [IO.Directory]::Exists($native)) { throw 'Local directory missing or inaccessible.' }
+    return $native
+}
+function Measure-AuditDirectorySample {
+    param([string]$Path,[int]$EntryLimit=2000,[int]$DepthLimit=3,[int]$Seconds=8)
+    $native=Assert-AuditLocalMetadataPath $Path
+    $timer=[Diagnostics.Stopwatch]::StartNew(); $queue=New-Object Collections.Queue
+    $queue.Enqueue([pscustomobject]@{Path=$native;Depth=0})
+    $entries=0; $files=0; $bytes=[long]0; $skipped=0; $depthSkipped=0; $errors=@(); $errorCount=0; $largest=@()
+    while ($queue.Count -and $entries -lt $EntryLimit -and $timer.Elapsed.TotalSeconds -lt $Seconds) {
+        $folder=$queue.Dequeue()
+        try {
+            foreach ($entry in [IO.Directory]::EnumerateFileSystemEntries($folder.Path)) {
+                if ($entries -ge $EntryLimit -or $timer.Elapsed.TotalSeconds -ge $Seconds) { break }
+                $entries++
+                try {
+                    $attributes=[IO.File]::GetAttributes($entry)
+                    if ([long]$attributes -band (0x441000 -bor [long][IO.FileAttributes]::ReparsePoint)) { $skipped++; continue }
+                    if ($attributes -band [IO.FileAttributes]::Directory) {
+                        if ($folder.Depth -lt $DepthLimit) { $queue.Enqueue([pscustomobject]@{Path=$entry;Depth=$folder.Depth+1}) } else { $depthSkipped++ }
+                    } else {
+                        $info=New-Object IO.FileInfo($entry); $files++; $bytes+=$info.Length
+                        $largest=@(@($largest)+@([pscustomobject]@{Path=$entry;Length=$info.Length;LastWriteTime=$info.LastWriteTime}) | Sort-Object Length -Descending | Select-Object -First 10)
+                    }
+                } catch { $errorCount++; if ($errors.Count -lt 10) {$errors+=$_.Exception.Message} }
+            }
+        } catch { $errorCount++; if ($errors.Count -lt 10) {$errors+=$_.Exception.Message} }
+    }
+    [pscustomobject]@{Path=$native;EntriesInspected=$entries;FilesMeasured=$files;SampleLogicalBytes=$bytes;LargestFilesInSample=$largest
+        EntryLimit=$EntryLimit;EntryLimitReached=($entries -ge $EntryLimit);TimeLimitReached=($timer.Elapsed.TotalSeconds -ge $Seconds)
+        DepthLimit=$DepthLimit;DeeperDirectoriesSkipped=$depthSkipped;SpecialPathsSkipped=$skipped;ErrorCount=$errorCount;Errors=$errors
+        Coverage='Bounded metadata sample, not a recursive total or allocated disk usage. Enumeration order is not size order. Roots can overlap; do not add totals. No content, remote paths, reparse points or cloud placeholders are opened.'}
+}
+
 function Get-AuditHyperVDetail {
     param([string]$VMId, [ValidateSet('Disks','Integration','Checkpoints')][string]$Kind)
     Import-Module Hyper-V -ErrorAction Stop
@@ -768,7 +870,7 @@ $OutputDirectory = Initialize-AuditOutputDirectory -Path $OutputDirectory
 $prefix = 'WinFixAudit-' + $env:COMPUTERNAME + '-' + $started.ToString('yyyyMMdd-HHmmss')
 $script:checkpointPath = Join-Path $OutputDirectory "$prefix-PARTIAL.json"
 $BackupPattern = 'Synology (Drive|Active Backup)|cloud.?drive|Veeam|Acronis|Macrium|Datto|Carbonite|Veritas|CrashPlan|\bCove\b|Axcient|Rubrik|Backup|StorageCraft|ShadowProtect|Arcserve|MSP360|CloudBerry|Druva|Commvault|NAKIVO|Retrospect|UrBackup|Duplicati|Duplicacy|Restic|rclone|IDrive|Backblaze|GoodSync|SyncBack|EaseUS|AOMEI|OneDrive'
-Write-Host "WinFix audit 1.10. Completed checks are saved to $script:checkpointPath"
+Write-Host "WinFix audit 1.11. Completed checks are saved to $script:checkpointPath"
 if (-not $elevated) { Write-Warning 'Run ISE as Administrator for the fullest audit.' }
 Save-AuditCheckpoint
 $checks.System = Invoke-AuditCheck System {
@@ -865,7 +967,13 @@ $checks.LocalUsers = Invoke-AuditCheck LocalUsers {
     }
 }
 $checks.Administrators = Invoke-AuditCheck Administrators {
-    if (Get-Command Get-LocalGroupMember -ErrorAction SilentlyContinue) {
+    if ($SystemEvidence.Status -eq 'Collected' -and $SystemEvidence.Data[0].DomainRole -in @(4,5)) {
+        Import-Module ActiveDirectory -ErrorAction Stop
+        $members=@(Get-ADGroupMember -Identity 'S-1-5-32-544' -Server localhost -ErrorAction Stop | Select-Object -First 101)
+        [pscustomobject]@{Source='ActiveDirectory';GroupSID='S-1-5-32-544';OutputTruncated=($members.Count -gt 100)
+            Members=@($members | Select-Object -First 100 Name,SamAccountName,ObjectClass,@{n='SID';e={[string]$_.SID}})
+            Coverage='DC built-in Administrators direct members only; nested groups and effective privileges not expanded.'}
+    } elseif (Get-Command Get-LocalGroupMember -ErrorAction SilentlyContinue) {
         Get-LocalGroupMember -SID 'S-1-5-32-544' | Select-Object Name, SID, ObjectClass, PrincipalSource
     } else {
         # Use the well-known SID rather than an English group name.
@@ -977,8 +1085,8 @@ $checks.AdditionalBackupLogDetails = Invoke-AuditCheck AdditionalBackupLogDetail
     [pscustomobject]@{RecordType='Coverage';CandidateFiles=$Candidates;FileLimit=$Limit;OutputTruncated=($Candidates -gt $Limit)
         Coverage='At most six recent text files per root during discovery, then newest globally. Up to 128 KiB and 30 matching lines each. Conventional paths vary by version; use AdditionalBackupLogDirectory for custom log folders. Missing logs/keywords never establish a healthy or absent backup.'}
 }
-$checks.ScheduledTaskFailureEvents = Invoke-AuditCheck ScheduledTaskFailureEvents {
-    Get-AuditEvents -LogName 'Microsoft-Windows-TaskScheduler/Operational' -Levels 1,2,3 -IncludeEventData -EventDataNames @('TaskName','ResultCode','ErrorCode','ErrorValue','InstanceId','TaskInstanceId')
+$checks.ScheduledTaskFailureEvents = Invoke-AuditCheck ScheduledTaskFailureEvents -TimeoutSeconds 60 -Collect {
+    Get-AuditEvents -Targeted -LogName 'Microsoft-Windows-TaskScheduler/Operational' -Levels 1,2,3 -IncludeEventData -EventDataNames @('TaskName','ResultCode','ErrorCode','ErrorValue','InstanceId','TaskInstanceId')
 }
 $checks.StorageReliability = Invoke-AuditCheck StorageReliability {
     $disks=@(Get-PhysicalDisk -ErrorAction Stop | Select-Object -First 33)
@@ -1033,7 +1141,9 @@ $checks.SecurityLog = Invoke-AuditCheck SecurityLog { Get-WinEvent -ListLog Secu
 foreach ($log in @('System', 'Application')) {
     $checks["${log}Events"] = Invoke-AuditCheck "${log}Events" -Context @{ Log=$log } -Collect { Get-AuditEvents -LogName $Log -Levels 1,2 }
 }
-$checks.FailedLogons = Invoke-AuditCheck FailedLogons { Get-AuditEvents -LogName Security -Ids 4625 }
+$checks.FailedLogons = Invoke-AuditCheck FailedLogons -TimeoutSeconds 60 -Collect {
+    Get-AuditEvents -Targeted -LogName Security -Ids 4625 -IncludeEventData -EventDataNames @('TargetUserName','TargetDomainName','IpAddress','WorkstationName','LogonType','Status','SubStatus')
+}
 $checks.BackupSoftware = Invoke-AuditCheck BackupSoftware {
     foreach ($path in @('HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall', 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall')) {
         if (Test-Path $path) {
@@ -1126,10 +1236,11 @@ $checks.WbadminVersions = Invoke-AuditCheck WbadminVersions {
     if ($LASTEXITCODE -ne 0) { throw ($result -join "`n") }
     $result -join "`n"
 }
-$checks.VSSWriters = Invoke-AuditCheck VSSWriters {
-    $result = & vssadmin.exe list writers 2>&1
-    if ($LASTEXITCODE -ne 0) { throw ($result -join "`n") }
-    $result -join "`n"
+$checks.VSSWriters = Invoke-AuditCheck VSSWriters -TimeoutSeconds 60 -Context @{NativeCode=${function:Invoke-AuditNativeReader}.ToString()} -Collect {
+    Set-Item Function:Invoke-AuditNativeReader ([scriptblock]::Create($NativeCode))
+    $result=Invoke-AuditNativeReader -FilePath "$env:SystemRoot\System32\vssadmin.exe" -Arguments 'list writers' -Seconds 40
+    $result
+    if ($result.ReaderTimeLimitReached -or $result.ExitCode -ne 0 -or $result.CaptureError) { throw 'VSS writer reader incomplete; inspect returned output and reader status.' }
 }
 $checks.ShadowCopies = Invoke-AuditCheck ShadowCopies {
     Get-CimInstance Win32_ShadowCopy | Select-Object ID, InstallDate, VolumeName, State, Persistent, ClientAccessible, NoAutoRelease
@@ -1274,6 +1385,10 @@ $checks.VSSSystemEvents = Invoke-AuditCheck VSSSystemEvents { Get-AuditEvents -L
 $checks.ShareNTFSPermissions = Invoke-AuditCheck ShareNTFSPermissions {
     Get-SmbShare | Where-Object { -not $_.Special -and $_.Path } | ForEach-Object {
         $share = $_
+        if ($share.Path -notmatch '^[A-Za-z]:\\') {
+            [pscustomobject]@{ShareName=$share.Name;Path=$share.Path;Status='NotApplicable';Coverage='Printer or non-local filesystem path; no filesystem ACL query attempted.'}
+            return
+        }
         try {
             $acl = Get-Acl -LiteralPath $share.Path -ErrorAction Stop
             [pscustomobject]@{ ShareName=$share.Name; Path=$share.Path; Status='Collected'; Owner=$acl.Owner
@@ -1370,6 +1485,198 @@ $checks.VSSErrorDetails = Invoke-AuditCheck VSSErrorDetails {
 $evidenceTemplate = New-ExternalEvidenceTemplate -ComputerName $env:COMPUTERNAME
 $evidenceTemplatePath = Join-Path $OutputDirectory "$prefix-EVIDENCE-TEMPLATE.json"
 [IO.File]::WriteAllText($evidenceTemplatePath, (ConvertTo-AuditJson -InputObject $evidenceTemplate -Depth 6), (New-Object Text.UTF8Encoding($false)))
+# Stable guest identity helps bind an agentless backup object to this machine.
+$checks.MachineIdentity = Invoke-AuditCheck MachineIdentity {
+    Get-CimInstance Win32_ComputerSystemProduct | Select-Object Vendor,Name,IdentifyingNumber,UUID
+    Get-CimInstance Win32_BIOS | Select-Object Manufacturer,SMBIOSBIOSVersion,SerialNumber
+    [pscustomobject]@{Coverage='Match guest UUID and inventory path in the hypervisor/backup console. VMware UUID byte ordering can differ; hostname alone is not proof of backup coverage.'}
+}
+if ($DeepAudit) {
+    $checks.CriticalServices = Invoke-AuditCheck CriticalServices {
+        Get-CimInstance Win32_Service | Where-Object {$_.Name -match '^(NTDS|DNS|DHCPServer|DFSR|Netlogon|Kdc|W32Time|CertSvc|Spooler|RemoteAccess|IAS|W3SVC|ADSync|VSS|swprv|VMTools|AADConnect.*|AzureADConnect.*)$'} |
+            Select-Object Name,DisplayName,State,StartMode,StartName,ProcessId,ExitCode
+    }
+    $checks.ServicingPackages = Invoke-AuditCheck ServicingPackages -TimeoutSeconds 60 -Collect {
+        # Registry metadata fallback avoids Get-HotFix/WMI stalls; no servicing action.
+        $root='HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\Packages'
+        $rows=@(Get-ChildItem $root -ErrorAction Stop | Where-Object {$_.PSChildName -match '^Package_for_'} | Select-Object -First 501)
+        foreach ($key in ($rows | Select-Object -First 500)) {
+            $v=Get-ItemProperty -LiteralPath $key.PSPath -ErrorAction Stop
+            [pscustomobject]@{Package=$key.PSChildName;CurrentState=$v.CurrentState;InstallClient=$v.InstallClient;InstallName=$v.InstallName}
+        }
+        [pscustomobject]@{RecordType='Coverage';Limit=500;OutputTruncated=($rows.Count -gt 500)
+            Coverage='CBS registry state metadata, not a complete hotfix inventory or patch compliance result. Raw CurrentState values are not interpreted as installation success.'}
+    }
+    $checks.StorageUsageSample = Invoke-AuditCheck StorageUsageSample -TimeoutSeconds 90 -Context @{
+        PathCode=${function:Assert-AuditLocalMetadataPath}.ToString();SizeCode=${function:Measure-AuditDirectorySample}.ToString()
+    } -Collect {
+        Set-Item Function:Assert-AuditLocalMetadataPath ([scriptblock]::Create($PathCode))
+        Set-Item Function:Measure-AuditDirectorySample ([scriptblock]::Create($SizeCode))
+        $paths=@("$env:SystemRoot\System32\winevt\Logs","$env:SystemRoot\NTDS","$env:SystemRoot\SYSVOL","$env:SystemDrive\FolderRedirection","$env:SystemDrive\Shared Folders","$env:SystemDrive\Shares","$env:ProgramData","$env:SystemDrive\Users")
+        foreach ($path in $paths) {
+            try { Measure-AuditDirectorySample -Path $path }
+            catch { [pscustomobject]@{Path=$path;Status='Unavailable';Error=$_.Exception.Message} }
+        }
+    }
+    $checks.ShareChildACLs = Invoke-AuditCheck ShareChildACLs -TimeoutSeconds 60 -Context @{PathCode=${function:Assert-AuditLocalMetadataPath}.ToString()} -Collect {
+        Set-Item Function:Assert-AuditLocalMetadataPath ([scriptblock]::Create($PathCode))
+        $shares=@(Get-SmbShare | Where-Object {-not $_.Special -and $_.Path -match '^[A-Za-z]:\\' -and $_.Name -notin @('NETLOGON','SYSVOL','print$','CertEnroll')} | Select-Object -First 13)
+        foreach ($share in ($shares | Select-Object -First 12)) {
+            try {
+                $root=Assert-AuditLocalMetadataPath $share.Path
+                $seen=0; $returned=0; $skipped=0
+                foreach ($path in [IO.Directory]::EnumerateDirectories($root)) {
+                    $seen++; if ($seen -gt 50 -or $returned -ge 5) { break }
+                    try {
+                        $safe=Assert-AuditLocalMetadataPath $path
+                        $acl=Get-Acl -LiteralPath $safe -ErrorAction Stop; $returned++
+                        [pscustomobject]@{Share=$share.Name;Path=$safe;Status='Collected';Owner=$acl.Owner;InheritanceDisabled=$acl.AreAccessRulesProtected
+                            Rules=@($acl.Access | Select-Object -First 100 | ForEach-Object { [pscustomobject]@{Identity=[string]$_.IdentityReference;Rights=[string]$_.FileSystemRights;Type=[string]$_.AccessControlType;Inherited=$_.IsInherited;Inheritance=[string]$_.InheritanceFlags;Propagation=[string]$_.PropagationFlags} })
+                            RulesTruncated=(@($acl.Access).Count -gt 100)}
+                    } catch { $skipped++; [pscustomobject]@{Share=$share.Name;Path=$path;Status='Unavailable';Error=$_.Exception.Message} }
+                }
+                [pscustomobject]@{Share=$share.Name;RecordType='Coverage';ChildrenInspected=$seen;ACLsRead=$returned;Skipped=$skipped;LimitReached=($seen -gt 50 -or $returned -ge 5)
+                    Coverage='At most five immediate child-directory ACLs, first 50 entries considered. Not recursive or effective-access evaluation; no file contents read.'}
+            } catch { [pscustomobject]@{Share=$share.Name;Status='Unavailable';Error=$_.Exception.Message} }
+        }
+        [pscustomobject]@{RecordType='Coverage';ShareLimit=12;SharesTruncated=($shares.Count -gt 12)}
+    }
+    $checks.LocalCertificates = Invoke-AuditCheck LocalCertificates {
+        $certs=@(Get-ChildItem Cert:\LocalMachine\My -ErrorAction Stop | Select-Object -First 101)
+        [pscustomobject]@{Certificates=@($certs | Select-Object -First 100 Subject,Issuer,Thumbprint,NotBefore,NotAfter,HasPrivateKey)
+            OutputTruncated=($certs.Count -gt 100);Coverage='Local-machine personal-store metadata only. No private key export, trust-chain validation, revocation check or certificate binding assertion.'}
+    }
+    $checks.CertificateAuthority = Invoke-AuditCheck CertificateAuthority {
+        $root='HKLM:\SYSTEM\CurrentControlSet\Services\CertSvc\Configuration'
+        if (-not (Test-Path $root)) { [pscustomobject]@{Status='NotDetected';Coverage='No local CA configuration key; not a domain-wide CA inventory.'}; return }
+        $config=Get-ItemProperty $root -ErrorAction Stop
+        $active=$config.Active
+        if (-not $active) { throw 'CA configuration exists but active CA name is unavailable.' }
+        $key=Join-Path $root $active
+        $v=Get-ItemProperty -LiteralPath $key -ErrorAction Stop
+        [pscustomobject]@{CAName=$active;CAType=$v.CAType;AuditFilter=$v.AuditFilter;CACertHash=@($v.CACertHash)
+            DBDirectory=$config.DBDirectory;DBLogDirectory=$config.DBLogDirectory;ValidityPeriod=$v.ValidityPeriod;ValidityPeriodUnits=$v.ValidityPeriodUnits
+            Coverage='Allowlisted configuration fields only; CA templates, enrollment rights, issuance health, private-key backups and restore tests still require separate evidence.'}
+    }
+    $checks.CAWebEnrollment = Invoke-AuditCheck CAWebEnrollment -TimeoutSeconds 60 -Collect {
+        Import-Module WebAdministration -ErrorAction Stop
+        $sites=@(Get-Website | Select-Object -First 11)
+        foreach ($site in ($sites | Select-Object -First 10)) {
+            $apps=@(Get-WebApplication -Site $site.Name | Where-Object {$_.Path -match '(?i)certsrv|ces|cep'} | Select-Object -First 11)
+            # CertSrv can be a virtual directory, not a Get-WebApplication result.
+            $locations=@($site.Name,($site.Name+'/CertSrv'))+@($apps | Select-Object -First 10 | ForEach-Object {$site.Name+$_.Path})
+            foreach ($location in ($locations | Select-Object -Unique)) {
+                try {
+                    $auth=Get-WebConfiguration -PSPath 'MACHINE/WEBROOT/APPHOST' -Location $location -Filter 'system.webServer/security/authentication/windowsAuthentication' -ErrorAction Stop
+                    $ssl=Get-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' -Location $location -Filter 'system.webServer/security/access' -Name sslFlags -ErrorAction Stop
+                    [pscustomobject]@{Site=$site.Name;Location=$location;WindowsAuthentication=[bool]$auth.enabled;ExtendedProtection=[string]$auth.extendedProtection.tokenChecking
+                        SSLFlags=[string]$ssl.Value;Bindings=@($site.Bindings.Collection | Select-Object -First 20 protocol,bindingInformation)
+                        EnrollmentPathExists=(Test-Path ("IIS:\Sites\"+$location.Replace('/','\')))
+                        Coverage='Effective IIS fields at site/app/probed CertSrv paths. A nonexistent path can inherit configuration; verify EnrollmentPathExists. No endpoint request, credentials or web.config content exported. CES WCF settings/templates require manual review.'}
+                } catch { [pscustomobject]@{Location=$location;Status='Unavailable';Error=$_.Exception.Message} }
+            }
+            [pscustomobject]@{Site=$site.Name;RecordType='Coverage';ApplicationsTruncated=($apps.Count -gt 10)}
+        }
+        [pscustomobject]@{RecordType='Coverage';SitesTruncated=($sites.Count -gt 10)}
+    }
+    $checks.IdentitySync = Invoke-AuditCheck IdentitySync -TimeoutSeconds 60 -Collect {
+        # Query installed services/binaries separately from the uninstall inventory.
+        $services=@(Get-CimInstance Win32_Service | Where-Object {$_.Name -match '^(ADSync|AADConnect.*|AzureADConnect.*)$'})
+        [pscustomobject]@{RecordType='Services';Services=@($services | Select-Object Name,State,StartMode,StartName,ProcessId)
+            Coverage='Local service state only; Cloud Sync tenant provisioning success is not queried.'}
+        $binary="$env:ProgramFiles\Microsoft Azure AD Sync\Bin\miiserver.exe"
+        if (Test-Path -LiteralPath $binary) { (Get-Item -LiteralPath $binary).VersionInfo | Select-Object FileName,FileVersion,ProductVersion }
+        if (-not @($services | Where-Object Name -eq 'ADSync').Count) {
+            [pscustomobject]@{Status='NotDetected';Coverage='ADSync service absent; Cloud Sync may be used instead. This does not establish a tenant sync outage.'}; return
+        }
+        $module="$env:ProgramFiles\Microsoft Azure AD Sync\Bin\ADSync\ADSync.psd1"
+        if (Test-Path -LiteralPath $module) { Import-Module $module -ErrorAction Stop } else { Import-Module ADSync -ErrorAction Stop }
+        $scheduler=Get-ADSyncScheduler -ErrorAction Stop
+        [pscustomobject]@{RecordType='Scheduler';SyncCycleEnabled=$scheduler.SyncCycleEnabled;StagingModeEnabled=$scheduler.StagingModeEnabled
+            SchedulerSuspended=$scheduler.SchedulerSuspended;SyncCycleInProgress=$scheduler.SyncCycleInProgress
+            NextSyncCycleStartTimeInUTC=$scheduler.NextSyncCycleStartTimeInUTC;NextSyncCyclePolicyType=$scheduler.NextSyncCyclePolicyType
+            Interval=[string]$scheduler.CurrentlyEffectiveSyncCycleInterval
+            Coverage='Read-only scheduler state; enabled/idle does not prove successful directory exports. No sync cycle or tenant login is initiated.'}
+        Get-ADSyncConnectorRunStatus -ErrorAction Stop | Select-Object -First 20 ConnectorName,RunState
+    }
+    $checks.IdentitySyncEvents = Invoke-AuditCheck IdentitySyncEvents -TimeoutSeconds 60 -Collect {
+        Get-AuditEvents -Targeted -LogName Application -Levels 1,2,3 -ProviderPattern 'ADSync|Directory Synchronization|Azure.*(Connect|Provision)|Entra' -IncludeMessage
+    }
+    $checks.DNSConfiguration = Invoke-AuditCheck DNSConfiguration {
+        Import-Module DnsServer -ErrorAction Stop
+        Get-DnsServerForwarder -ComputerName localhost -ErrorAction Stop | Select-Object IPAddress,Timeout,UseRootHint
+        $zones=@(Get-DnsServerZone -ComputerName localhost -ErrorAction Stop | Select-Object -First 101)
+        [pscustomobject]@{Zones=@($zones | Select-Object -First 100 ZoneName,ZoneType,IsDsIntegrated,IsReverseLookupZone,DynamicUpdate)
+            OutputTruncated=($zones.Count -gt 100);Coverage='Local DNS configuration only; not a name-resolution, dynamic-update or replication test. Zone records are not exported.'}
+    }
+    $checks.DHCPScopes = Invoke-AuditCheck DHCPScopes {
+        Import-Module DhcpServer -ErrorAction Stop
+        $scopes=@(Get-DhcpServerv4Scope -ComputerName localhost -ErrorAction Stop | Select-Object -First 33)
+        foreach ($scope in ($scopes | Select-Object -First 32)) {
+            $stats=$null; $errorText=$null
+            try { $stats=Get-DhcpServerv4ScopeStatistics -ComputerName localhost -ScopeId $scope.ScopeId -ErrorAction Stop | Select-Object Free,InUse,PercentageInUse,Reserved,Pending,AddressesFree,AddressesInUse }
+            catch { $errorText=$_.Exception.Message }
+            [pscustomobject]@{ScopeId=[string]$scope.ScopeId;Name=$scope.Name;State=[string]$scope.State;StartRange=[string]$scope.StartRange;EndRange=[string]$scope.EndRange
+                Statistics=$stats;StatisticsError=$errorText}
+        }
+        [pscustomobject]@{OutputTruncated=($scopes.Count -gt 32);Coverage='Local IPv4 scope capacity only; client leases, credentials, authorization and failover health are not exported or tested.'}
+    }
+
+    $isDC=$checks.System.Status -eq 'Collected' -and $checks.System.Data[0].DomainRole -in @(4,5)
+    if ($isDC) {
+        $checks.ADDomain = Invoke-AuditCheck ADDomain -TimeoutSeconds 60 -Collect {
+            Import-Module ActiveDirectory -ErrorAction Stop
+            Get-ADDomain -Server localhost | Select-Object DNSRoot,NetBIOSName,DomainMode,PDCEmulator,RIDMaster,InfrastructureMaster,@{n='DomainSID';e={[string]$_.DomainSID}}
+            Get-ADForest -Server localhost | Select-Object RootDomain,ForestMode,SchemaMaster,DomainNamingMaster,Domains,GlobalCatalogs
+            Get-ADDefaultDomainPasswordPolicy -Server localhost | Select-Object ComplexityEnabled,MinPasswordLength,PasswordHistoryCount,ReversibleEncryptionEnabled,
+                @{n='MinPasswordAge';e={[string]$_.MinPasswordAge}},@{n='MaxPasswordAge';e={[string]$_.MaxPasswordAge}},LockoutThreshold,@{n='LockoutDuration';e={[string]$_.LockoutDuration}}
+        }
+        $checks.ADPasswordPolicies = Invoke-AuditCheck ADPasswordPolicies {
+            Import-Module ActiveDirectory -ErrorAction Stop
+            $policies=@(Get-ADFineGrainedPasswordPolicy -Filter * -Server localhost -ResultSetSize 21 -ErrorAction Stop)
+            [pscustomobject]@{Policies=@($policies | Select-Object -First 20 Name,Precedence,MinPasswordLength,ComplexityEnabled,PasswordHistoryCount,LockoutThreshold,
+                @{n='MaxPasswordAge';e={[string]$_.MaxPasswordAge}},@{n='AppliesTo';e={@($_.AppliesTo | Select-Object -First 50)}},@{n='AppliesToTruncated';e={@($_.AppliesTo).Count -gt 50}})
+                OutputTruncated=($policies.Count -gt 20);Coverage='Configured fine-grained policies, not per-user resultant policy. Group expansion and policy precedence must be evaluated for each reviewed account.'}
+        }
+        $checks.ADReplication = Invoke-AuditCheck ADReplication -TimeoutSeconds 60 -Collect {
+            Import-Module ActiveDirectory -ErrorAction Stop
+            $partners=@(Get-ADReplicationPartnerMetadata -Target $env:COMPUTERNAME -Scope Server -ErrorAction Stop | Select-Object -First 101)
+            [pscustomobject]@{Partners=@($partners | Select-Object -First 100 Server,Partner,Partition,LastReplicationAttempt,LastReplicationSuccess,LastReplicationResult,ConsecutiveReplicationFailures)
+                OutputTruncated=($partners.Count -gt 100);Coverage='This DC replication metadata only. No repair or forced replication; zero partners can mean a single-DC topology, not proven health.'}
+        }
+        $checks.ADPrivilegedGroups = Invoke-AuditCheck ADPrivilegedGroups -TimeoutSeconds 60 -Collect {
+            Import-Module ActiveDirectory -ErrorAction Stop
+            $domain=Get-ADDomain -Server localhost
+            $ids=@('S-1-5-32-544','S-1-5-32-548','S-1-5-32-549','S-1-5-32-551',([string]$domain.DomainSID+'-512'))
+            if ($domain.DNSRoot -eq (Get-ADForest -Server localhost).RootDomain) { $ids+=([string]$domain.DomainSID+'-518'); $ids+=([string]$domain.DomainSID+'-519') }
+            foreach ($id in $ids) {
+                try {
+                    $group=Get-ADGroup -Identity $id -Server localhost -ErrorAction Stop
+                    $members=@(Get-ADGroupMember -Identity $id -Server localhost -ErrorAction Stop | Select-Object -First 101)
+                    [pscustomobject]@{Group=$group.Name;SID=$id;Members=@($members | Select-Object -First 100 Name,SamAccountName,ObjectClass,@{n='SID';e={[string]$_.SID}})
+                        OutputTruncated=($members.Count -gt 100);Coverage='Direct members only. Nested membership, delegation, foreign principals and effective privileges require separate review.'}
+                } catch { [pscustomobject]@{SID=$id;Status='Unavailable';Error=$_.Exception.Message} }
+            }
+        }
+        $checks.ADAccountReview = Invoke-AuditCheck ADAccountReview -TimeoutSeconds 60 -Collect {
+            Import-Module ActiveDirectory -ErrorAction Stop
+            $filter='(&(objectCategory=person)(objectClass=user)(|(adminCount=1)(userAccountControl:1.2.840.113556.1.4.803:=65536)(userAccountControl:1.2.840.113556.1.4.803:=4194304)))'
+            $users=@(Get-ADUser -LDAPFilter $filter -Server localhost -ResultSetSize 101 -Properties Enabled,PasswordLastSet,PasswordNeverExpires,DoesNotRequirePreAuth,LastLogonDate,adminCount -ErrorAction Stop)
+            [pscustomobject]@{Accounts=@($users | Select-Object -First 100 SamAccountName,Enabled,PasswordLastSet,PasswordNeverExpires,DoesNotRequirePreAuth,LastLogonDate,adminCount)
+                OutputTruncated=($users.Count -gt 100);Coverage='Candidates with adminCount=1, nonexpiring password or no Kerberos preauthentication. adminCount can be stale; LastLogonDate is approximate. Not a complete account, effective privilege or fine-grained-policy audit.'}
+        }
+        $checks.SYSVOLState = Invoke-AuditCheck SYSVOLState {
+            Get-SmbShare | Where-Object {$_.Name -in @('SYSVOL','NETLOGON')} | Select-Object Name,Path
+            Get-CimInstance -Namespace root\MicrosoftDfs -ClassName DfsrReplicatedFolderInfo -ErrorAction Stop | Select-Object ReplicationGroupName,ReplicatedFolderName,State
+            [pscustomobject]@{Coverage='Share existence and local DFSR folder state, not backlog, GPO integrity, replication consistency or a restore test.'}
+        }
+        foreach ($log in @('Directory Service','DFS Replication','DNS Server')) {
+            $name='ADLog:'+ $log
+            $checks[$name]=Invoke-AuditCheck $name -TimeoutSeconds 60 -Context @{Log=$log} -Collect { Get-AuditEvents -Targeted -LogName $Log -Levels 1,2,3 -IncludeMessage }
+        }
+    }
+}
+
 $checks.ExternalEvidence = Invoke-AuditCheck ExternalEvidence -Context @{
     EvidencePath=$EvidenceFile; Template=$evidenceTemplate; ReaderCode=${function:Read-ExternalEvidence}.ToString()
 } -Collect {
@@ -1377,17 +1684,18 @@ $checks.ExternalEvidence = Invoke-AuditCheck ExternalEvidence -Context @{
     Read-ExternalEvidence -Path $EvidencePath -Template $Template
 }
 $report = [ordered]@{
-    SchemaVersion = '1.10'; AuditId = $script:auditId; Incomplete = $false; ClientName = $ClientName; Location = $Location
+    SchemaVersion = '1.11'; AuditId = $script:auditId; Incomplete = $false; ClientName = $ClientName; Location = $Location
     StartedAt = $started.ToString('o'); CompletedAt = (Get-Date).ToString('o'); Elevated = $elevated
     PowerShellVersion = $PSVersionTable.PSVersion.ToString(); Checks = $checks
     ExportWarnings = @($script:checkpointWarnings)
+    DeepAuditRequested = [bool]$DeepAudit
     OnlineUpdateScanRequested = (-not $SkipOnlineUpdateScan)
     ExternalEvidenceTemplate = $evidenceTemplatePath
     BackupLogsNotQueried = @($backupLogs | Select-Object -Skip 12)
     InterpretationNotes = @(
         'Windows PowerShell 4.0 and later are targeted. On Server 2012 R2, local-account and administrator membership queries use CIM fallbacks when LocalAccounts is absent. Missing provider timestamps remain unknown.'
         'Collected means the query completed, not that the control passed. Unavailable, TimedOut, Partial and null values require follow-up; returned partial evidence is incomplete.'
-        'Event queries inspect only the newest EventScanLimit records per log, then filter by time/provider/severity. Scan limits, oldest record time and output truncation are recorded. Event metadata is exported; BackupErrorDetails and VSSErrorDetails also include bounded message text with best-effort labelled-secret scrubbing. Failed logons include all logon types, not just RDP.'
+        'General event queries sample the newest EventScanLimit records. Failed-logon, task-failure and DeepAudit events use bounded time/ID/level/provider queries instead. QueryMode, limits, oldest returned time and truncation identify coverage; returned-record counts are not incident totals. Event metadata is exported; BackupErrorDetails and VSSErrorDetails also include bounded message text with best-effort labelled-secret scrubbing. Failed logons include all logon types, not just RDP.'
         'Synology Drive Client profiles, text logs and allowlisted task settings are bounded local evidence. SQLite stores are metadata-only; active task status, server retention and restored usability may need console evidence. Scheduled backup candidates include script/copy wrappers; task exit 0 and keyword matches do not prove successful backup.'
         'Veeam event channels include bounded messages and EventData plus a separate warning/error sample. Veeam text-log discovery and tail reads are capped and local-only. Keyword lines are raw evidence, not inferred job success. Missing logs and truncated samples leave recovery and coverage unknown.'
         'Software inventory covers machine-wide uninstall registrations; the general scheduled task list excludes Microsoft tasks, but backup task discovery includes them.'
@@ -1396,6 +1704,7 @@ $report = [ordered]@{
         'Windows backup catalogs and shadow copies are local evidence, not proof of offsite copies or a successful restore. Task exit codes need vendor interpretation.'
         'Service or software detection does not establish agent health, backup success, encryption, or restore readiness.'
         'Listening ports and RDP settings do not establish internet exposure.'
+        'DeepAudit adds bounded local metadata, AD queries to this DC, CA/IIS settings and sync status; it cannot prove tenant MFA, recovery usability or backup scope. MachineIdentity aids console matching; no backup-console login is performed.'
         'ShareNTFSPermissions covers custom share roots only; inherited/child exceptions and effective user access need validation. Password policy is local evidence and may be overridden by domain policy.'
         'No passwords, recovery keys or scheduled task action arguments are intentionally collected. Backup/VSS event messages may include filenames, accounts or other sensitive details; review before sharing.'
         'ExternalEvidence is user-supplied and not independently verified. Unknown controls remain unknown; device registration, local firewall rules and service presence do not prove MFA, public exposure or backup success.'

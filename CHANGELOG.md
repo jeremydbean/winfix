@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-10-27 — collector 1.11
+- Adds optional `-DeepAudit` for domain/forest/FSMO and password policies, privileged groups/account candidates, local replication/SYSVOL events, CA/IIS settings, certificate metadata, identity-sync status, DNS and DHCP configuration.
+- Adds bounded storage metadata and child ACL samples plus CBS package metadata; guest UUID/BIOS evidence helps match agentless backup objects without asserting coverage.
+- Fixes DC Administrators lookup and printer pseudo-path ACL errors. Adds targeted time/ID/level/provider queries with explicit coverage and deadlines.
+- Bounds the VSS console reader independently and closes only that reader on timeout; preserves partial evidence and per-check checkpoints.
+- Keeps PowerShell 4 compatibility, adds launcher support and fixture coverage. Live Windows/DC validation remains necessary.
+
 ## 2026-09-28 — disk diagnostic 1.1
 - Fixes mounted virtual-disk discovery when Windows exposes BusType as text (such as SATA or RAID), with a regression covering the production block.
 

@@ -9,6 +9,7 @@ validation remains enabled. No registry settings or OS components are changed.
 #>
 [CmdletBinding()]
 param(
+    [switch]$DeepAudit,
     [switch]$SkipOnlineUpdateScan,
     [string]$EvidenceFile = ''
 )
@@ -21,7 +22,7 @@ try {
     $auditScript = Invoke-RestMethod -Uri $auditUrl -TimeoutSec 60 -ErrorAction Stop
     if ([string]::IsNullOrWhiteSpace([string]$auditScript)) { throw 'The download returned an empty script.' }
     $collector = [scriptblock]::Create([string]$auditScript)
-    & $collector -CopyToClipboard -SkipOnlineUpdateScan:$SkipOnlineUpdateScan -EvidenceFile $EvidenceFile
+    & $collector -CopyToClipboard -DeepAudit:$DeepAudit -SkipOnlineUpdateScan:$SkipOnlineUpdateScan -EvidenceFile $EvidenceFile
 } catch {
     Write-Error -Message ("WinFix could not complete: " + $_.Exception.Message +
         " If HTTPS still fails with TLS 1.2, download Export-WinFixAudit.ps1 on a working computer and transfer it to this server, then run locally. Check the server's TLS/cipher, certificate, clock and proxy configuration; do not bypass certificate validation.")
