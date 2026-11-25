@@ -1,0 +1,649 @@
+# Audit collector and diagnostics reference
+
+Detailed behaviour, limits and version notes for `Export-WinFixAudit.ps1`, `Start-WinFixAudit.ps1`,
+`Export-WinFixDiskDiagnostic.ps1` and `Export-WinFixBackupDiagnostic.ps1`. Moved from the main README.
+For a summary of every tool, see the [README](../README.md).
+
+## Collect audit evidence for a polished report
+
+Run the standalone `Export-WinFixAudit.ps1` on the Windows computer in
+**64-bit Windows PowerShell 4.0 or later as Administrator** (5.1 preferred). It does not launch the WinFix GUI.
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Export-WinFixAudit.ps1 -CopyToClipboard
+```
+
+Optional labels and output location:
+
+```powershell
+.\Export-WinFixAudit.ps1 -ClientName "Example Clinic" -Location "Main office" -OutputDirectory C:\Temp\WinFixAudit
+```
+
+Results go into `Desktop\WinFixAudit` by default. The complete `*-PASTE.txt` file
+opens automatically in Notepad when collection finishes. Press Ctrl+A, Ctrl+C to
+copy it. Use `-NoOpen` for unattended runs. Paste the `*-PASTE.txt`
+contents into your conversation. For a large audit, send the numbered `*-PART-*.txt`
+files in order. The JSON file contains the same evidence in compact format for PowerShell 4 compatibility.
+Ask for an executive summary, prioritized findings, remediation plan and a polished
+HTML or PDF report. The collector includes this request in its paste output.
+
+Collection covers hardware/OS, installed software, management/security/backup
+services, Defender/antivirus, firewall, BitLocker, TPM, Secure Boot, accounts,
+password/audit policy, disks, RDP, networking, SMB shares and permissions,
+printers, non-Microsoft scheduled tasks, update history, cached missing updates,
+reboot indicators, time service and recent event metadata. Cached update checks
+have a 60-second timeout. A separate live scan contacts the configured Windows
+Update service with a 90-second timeout; use `-SkipOnlineUpdateScan` to stay offline.
+Neither scan installs updates. Every other check runs
+in its own background job with a default 25-second timeout. The ISE progress display
+shows the active check. Timed-out checks are marked `TimedOut`; failures with some
+returned evidence are marked `Partial`; unsupported or denied checks are marked
+`Unavailable`. Collection continues, and completed checks are saved after every
+step in a `*-PARTIAL.json` checkpoint. The checkpoint is removed after final output
+is written successfully. It remains usable if you stop the script early.
+
+For ISE: open a new script tab, paste the entire script into the upper pane, and
+press F5. No saved script path is required. Use 64-bit ISE as Administrator.
+If the Desktop path is absent, output defaults to the temporary folder.
+
+Expanded backup evidence includes installed products and services, backup scheduled
+tasks (including Microsoft tasks) with last/next run and result codes, Windows
+Server Backup summary/policy/schedule/targets/inclusions, the latest 20 local catalog
+versions, a `wbadmin get versions` fallback, VSS writer output, shadow copies and
+shadow storage. Registered backup event channels are discovered locally; up to 12
+are queried separately, with any omitted channels listed in the report. The
+Application log is also sampled for backup providers. VSS/storage warnings,
+database errors, volume capacity, and PSChiro directory presence add local evidence.
+No vendor console authentication or remote repository browsing is attempted.
+
+Event queries first read up to 1,000 newest records per log, then apply lookback,
+provider and severity filters. Each result records the scan limit, oldest scanned
+time and output truncation. This trades exhaustive history for bounded work on
+large logs; zero matches never establishes a clean 30-day history. Change the
+`$EventScanLimit` and `$CheckTimeoutSeconds` defaults at the top when pasting into
+ISE, or pass `-EventScanLimit 5000 -CheckTimeoutSeconds 45` when running a saved file.
+
+Windows backup implementation references: [Get-WBSummary](https://learn.microsoft.com/en-us/powershell/module/windowsserverbackup/get-wbsummary),
+[Get-WBPolicy](https://learn.microsoft.com/en-us/powershell/module/windowsserverbackup/get-wbpolicy),
+and [Get-WBBackupSet](https://learn.microsoft.com/en-us/powershell/module/windowsserverbackup/get-wbbackupset).
+
+This is local evidence collection, not a compliance certification. Backup restore
+success, vendor-console health, MFA, public exposure and OS lifecycle entitlements
+need separate verification. Samples and coverage limits are recorded in the JSON.
+No configuration repairs or uploads are performed. A temporary security policy
+export is normally removed after collection (forced cancellation may leave its temporary file). Review machine/domain names, account names,
+network addresses and paths before sharing. Passwords, BitLocker recovery keys,
+task action arguments are not intentionally collected. Backup/VSS warning and error
+messages are included (at most 2,000 characters each) with best-effort labelled-secret
+scrubbing; review these for filenames, account names and other sensitive text.
+
+Developer check (also runs on non-Windows PowerShell):
+`pwsh -NoProfile -File tests/Test-AuditExport.ps1`. Live collection requires Windows;
+tests cover syntax, real background-job timeout/continuation, partial/scalar results, checkpoint persistence, job cleanup, event sampling and paste reassembly. They do not validate Windows providers or permissions.
+
+
+### Fill the remaining report evidence gaps (collector 1.3)
+
+The collector now reads custom share-root NTFS permissions (including inheritance
+and per-share access errors), selected Entra device-registration fields, candidate
+remote-access firewall allow rules from ActiveStore, local NAT mappings, default
+routes, time-service settings, event-forwarding policy and current missing updates.
+Backup and VSS error-message excerpts are included for troubleshooting. Share-root
+ACLs do not evaluate child-folder overrides or effective access; local firewall and
+NAT data do not establish internet reachability. Device registration does not prove
+MFA enforcement. The default live update scan may refresh the local update cache.
+
+Backup console results, retention, destination encryption, independent copies,
+restore-test outcomes, MFA policy coverage, perimeter exposure, RMM/EDR console
+health, central retention and support entitlement cannot be confirmed solely by a
+local Windows script. No credentials or vendor API access were supplied, and the
+collector does not guess these controls from agent presence. Each run writes an
+`*-EVIDENCE-TEMPLATE.json` with the exact remaining fields and instructions. Fill it
+from the relevant console or performed test, preserving the computer name; leave
+anything unknown as `Unknown`. A `Reported` or `NotApplicable` entry requires its
+source, observation timestamp (ISO 8601 with timezone), observer and details.
+
+Import the completed template on the next run:
+
+```powershell
+.\Export-WinFixAudit.ps1 -EvidenceFile 'C:\Temp\Completed-Evidence.json'
+```
+
+When pasting into ISE, set the `$EvidenceFile` parameter default at the top instead.
+Supplied evidence appears in the paste output as `UserSuppliedNotIndependentlyVerified`;
+unknown fields stay unknown. The script does not run a restore, authenticate to
+vendor consoles, scrape private agent databases or scan external networks.
+
+References: [Entra device-state fields](https://learn.microsoft.com/en-us/entra/identity/devices/troubleshoot-device-dsregcmd),
+[Windows firewall policy](https://learn.microsoft.com/en-us/powershell/module/netsecurity/get-netfirewallrule).
+
+
+### Windows Server 2012 R2 / TLS download errors
+
+Collector 1.4 targets the PowerShell 4.0 included with Server 2012 R2 as well as
+newer Windows PowerShell. Local user and built-in Administrators membership queries
+fall back to CIM when the LocalAccounts module is absent. The fallback leaves
+unavailable account timestamps null and uses a separate boolean for password
+expiration policy. Clipboard copying falls back to Windows Forms in an STA session
+such as ISE; Notepad and the saved files remain available if clipboard copying fails.
+A RuntimeCapabilities check records missing optional commands. Unsupported OS
+features are recorded as Unavailable, not as a passing or failed security control.
+
+Open **64-bit PowerShell ISE as Administrator**, paste this entire block into the
+script pane, and press F5. Use the plain URL exactly as shown, without Markdown
+`[url](url)` syntax. TLS selection applies only to this process and is restored.
+
+```powershell
+& {
+    $previousTls = [Net.ServicePointManager]::SecurityProtocol
+    try {
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+        $auditUrl = 'https://raw.githubusercontent.com/jeremydbean/winfix/main/Export-WinFixAudit.ps1'
+        $auditScript = Invoke-RestMethod -Uri $auditUrl -TimeoutSec 60 -ErrorAction Stop
+        & ([scriptblock]::Create([string]$auditScript)) -CopyToClipboard
+    } finally {
+        [Net.ServicePointManager]::SecurityProtocol = $previousTls
+    }
+}
+```
+
+`Start-WinFixAudit.ps1` is a reusable launcher with the same TLS handling plus
+error guidance and optional `-SkipOnlineUpdateScan` / `-EvidenceFile` parameters.
+If TLS still fails, download `Export-WinFixAudit.ps1` on a working computer and
+transfer it to the server, then paste its contents into ISE or run the saved file.
+Investigate the server's cipher/TLS settings, certificate trust, clock and proxy;
+the launcher does not weaken certificate checks, alter the registry, or install WMF.
+
+Validation includes mocked legacy-provider and clipboard branches plus launcher
+TLS selection, option forwarding and failed-download behavior. A real Server 2012
+R2 / PowerShell 4.0 run has not yet been verified in this development environment.
+
+References: [Microsoft WMF/OS version table](https://learn.microsoft.com/en-us/powershell/scripting/windows-powershell/wmf-overview),
+[Microsoft TLS 1.2 session configuration](https://devblogs.microsoft.com/powershell/powershell-gallery-tls-support/),
+[Win32_UserAccount fields](https://learn.microsoft.com/en-us/windows/win32/cimwin32prov/win32-useraccount).
+
+
+### PowerShell 4 JSON export fix (collector 1.5)
+
+PowerShell 4 can report `JsonStringInBadFormat` when its JSON formatter encounters
+strings ending in a backslash, such as a share path of `C:\`. All exports now use
+one compact JSON serializer, including checkpoints, evidence templates and final
+reports. No trailing slashes or other evidence values are stripped to avoid the
+error. Compact JSON changes whitespace, not the data.
+
+A failed checkpoint now logs a warning and leaves collection running with the
+results in memory. The previous successful checkpoint is retained and export
+warnings appear in the final report. Final output still requires a writable output
+folder. Regression tests cover trailing-slash/quoted paths, Unicode, JSON parse-back,
+paste-part reassembly, simulated legacy formatter failure and checkpoint recovery.
+The exact native PowerShell 4 behavior still needs confirmation on the server.
+
+Reference: [PowerShell 4 compact JSON workaround reported by env-exporter](https://github.com/ForNeVeR/env-exporter/issues/3).
+
+### Hyper-V backup evidence (collector 1.6)
+
+The collector inventories local registered VMs, including stopped VMs, and records
+VM IDs, configuration paths, checkpoint settings, attached disk paths, available
+local VHD metadata (including the immediate parent), integration-service status,
+and up to 50 checkpoints per VM. Each VM's disk, integration and checkpoint query
+has its own timeout; a blocked query does not stop the other VMs. By default the
+first 50 VMs are inspected; `-MaxHyperVVMs` raises that limit up to 500, and omitted
+VM names/IDs are listed. Large hosts can take longer because each VM adds checks.
+Non-local VHD paths are recorded without opening a network repository; VHD metadata
+errors preserve the disk attachment. Parent chains are not traversed.
+
+Hyper-V replication state and three Admin event channels (VMMS, Worker and
+Integration) add bounded local evidence and scrubbed message excerpts. Empty or
+unavailable results, checkpoint presence, healthy integration services and replica
+health never establish vendor backup success. Older Hyper-V versions may lack
+newer properties; those remain null. Server 2012 R2 / PowerShell 4 remains targeted.
+
+The external evidence template now also requests `HyperVBackupCoverage` and
+`HyperVRestoreTest`: map every VM to a Synology/vendor task and usable recovery
+point, confirm disks and application consistency, and record an isolated restore
+and application test. Existing 12-control evidence files remain accepted; omitted
+new controls stay Unknown. This is local-host collection only: it does not query
+guest operating systems, other cluster nodes, or authenticate to the Synology NAS.
+
+### Redirected Desktop export fix (collector 1.7)
+
+Output folders now resolve to native filesystem paths before .NET file writes.
+This fixes checkpoint and final-export failures when a redirected Desktop resolves
+to `Microsoft.PowerShell.Core\FileSystem::\\server\share\...`. A temporary write
+probe checks the destination before inventory starts, so an inaccessible output
+folder fails early with an actionable error. Local folders, UNC shares and
+filesystem PSDrives remain supported; other providers are rejected.
+
+If a redirected Desktop is unavailable, select a writable local folder explicitly:
+
+```powershell
+.\Export-WinFixAudit.ps1 -OutputDirectory "$env:TEMP\WinFixAudit" -CopyToClipboard
+```
+
+The regression suite exercises provider-qualified paths, filesystem PSDrives,
+literal bracket characters, real checkpoint/final writes and early failure. A
+live Windows redirected UNC share still requires verification on that host.
+
+### Veeam log evidence (collector 1.12)
+
+Detected Veeam installations now add local text-log excerpts alongside Windows
+event evidence. Queried Veeam event channels include rendered messages and up to
+24 EventData fields (500 characters each), so useful job names and error details
+can survive missing message-rendering resources. A separate warning/error sample
+keeps informational events from consuming the result limit. Veeam providers in
+the Application log also include messages and EventData. Event reads retain the
+existing scan, output and timeout limits; an empty sample is not proof of success.
+
+The collector reads the configured `LogDirectory` from the Veeam Backup &
+Replication registry key, falling back to `C:\ProgramData\Veeam\Backup`.
+See [Veeam's log-location documentation](https://www.veeam.com/kb1832).
+For another local folder, pass `-VeeamLogDirectory 'D:\VeeamLogs'`; this also
+enables collection when installed-product detection misses Veeam.
+
+Discovery inspects at most 4,000 filesystem entries in the root and two directory
+levels beneath it. Each non-root folder has a 250-entry cap so one busy folder
+cannot consume the whole budget. The root still shares the global cap, so large
+roots can leave other folders undiscovered. Selection retains the core
+`Svc.VeeamBackup.log` when found, rotates across directories containing
+`Task.*`, `Job.*` or `Backup.*` logs, and fills remaining slots with other recent
+logs. It selects 10 files by default; filenames are hints, not verified job names.
+
+Each selected file contributes a tail of up to 256 KiB, up to 80 excerpt lines
+with two lines of surrounding context, and the last five non-empty activity lines.
+Half the available context windows are reserved for recent error/warning matches;
+repeated configuration Success messages cannot consume every window. Excerpts
+remain bounded and can miss errors earlier in the file. Each output line is
+limited to 1,000 characters. UTF-8, BOM-marked UTF-16, and strongly indicated
+BOM-less UTF-16 are supported. Reads allow files to remain open by Veeam.
+
+For a busy backup server, increase the bounds explicitly:
+
+```powershell
+.\Export-WinFixAudit.ps1 -CopyToClipboard -DeepAudit -MaxVeeamLogFiles 20 `
+    -VeeamDiscoveryEntryLimit 8000 -VeeamLogTailKiB 512
+```
+
+Limits are 30 files, 10,000 discovery entries, and 1,024 KiB per file. Discovery
+retains the normal check timeout; file reads retain a shared 60-second timeout
+that preserves already returned file results. Larger limits do not extend these
+timeouts. `Start-WinFixAudit.ps1` also accepts these settings and
+`-VeeamLogDirectory`. Network folders, reparse points, offline/recall files and
+compressed archives are excluded. The tail byte limit excludes the separate
+256-byte encoding probe.
+
+`VeeamLogDiscovery` records caps, omissions, selection mode and access errors.
+`VeeamFileLogDetails` records truncation, context, activity and evidence labels:
+
+- `ConfigurationSnapshot`: cached job configuration, schedules and last-run fields;
+  a Success label here does not establish a recent completed backup.
+- `InfrastructureActivity`: recognized discovery/statistics sessions, not backups.
+- `RepositoryConnectivity`, `ErrorExcerpt`, `WarningExcerpt`: diagnostic evidence
+  to correlate with the affected repository and job/session.
+- `OutcomeOrActivityExcerpt`: a keyword match requiring job/session verification.
+- `RecentActivity`: last non-empty lines even when no keywords matched; evidence of
+  log contents, not a live progress measurement or successful backup.
+
+`TimestampText` preserves a recognized timestamp string without assuming its
+timezone. File modification time is not the event time; old lines can appear in a
+recent file. `BackupOutcome` remains `Unverified` for log excerpts, and
+`VerificationNeeded` identifies the remaining evidence. A complete report needs
+per-workload restore points, scope, retention, repository protection and a restore
+test. See the [backup evidence guide and job worksheet](Backup-Evidence-Guide.md).
+
+Labelled secrets, bearer tokens and URL credentials are scrubbed best-effort;
+review the paste output before sharing. Collection does not run backup jobs,
+change schedules or connect to Veeam repositories.
+
+Regression checks cover fair job-log selection, discovery limits, error context,
+activity-only files, stale configuration labels, byte/line caps, UTF-8/UTF-16,
+redaction and worker serialization. Run `tests/Test-VeeamEvidence.ps1` alongside
+`tests/Test-AuditExport.ps1` and `tests/Test-DeepAudit.ps1`. Server 2012 R2 /
+PowerShell 4 remains targeted; live Veeam and legacy Windows validation still
+requires the target host.
+
+### Synology Drive Client and scheduled backups (collector 1.9)
+
+**Synology Drive Client file backups, Drive sync tasks, and Active Backup for
+Business are separate evidence sources.** Drive Client is now included in backup
+software detection. Its data may belong to a different Windows user from the
+administrator running ISE, so `SynologyDriveInventory` checks the current user's
+`%LOCALAPPDATA%\SynologyDrive` and up to 20 non-system local profiles. It also
+records Drive process names/paths without command lines. Profile inventory errors,
+inaccessible roots and limits are explicit; no offline user hives are loaded.
+
+`SynologyDriveDiscovery` scans at most 2,000 entries across those roots, to three
+levels below each root. It skips reparse points, network paths, application files,
+cache folders and the `SystemFolders` payload. It locates text logs (including
+`.log.1` rotations), small JSON/INI/config files and database metadata. Discovery
+keeps at most the configured file count per kind per root and reports omissions.
+`SynologyDriveDetails` then reads, globally:
+
+- The 10 newest discovered logs modified within the lookback: up to 128 KiB and
+  30 matching lines each, 1,000 characters per line. Increase with
+  `-MaxSynologyDriveLogFiles 20` (maximum 30). UTF-8 and BOM-marked UTF-16 work.
+  Backup/sync outcomes, errors, conflicts, schedule and destination clues are
+  preserved as raw evidence; sensitive labelled lines are omitted.
+- Up to six settings files, 256 KiB each: only allowlisted connection/task fields
+  such as server, local sources, destination, mode, schedule, SSL and status/time
+  fields when present. Passwords, tokens, usernames, proxy credentials, arbitrary
+  nested data and raw configuration are not exported. Arrays/depth/field counts
+  are capped. Unknown formats and read failures remain explicit.
+- Metadata for up to eight database files. SQLite/proprietary database contents
+  are **not decoded**, and no drivers are installed. The Drive UI may hold task
+  details that text files cannot expose. Deployment settings may also be stale.
+
+For a different local data folder, use
+`-SynologyDriveDirectory 'D:\DriveClientData'` on `Export-WinFixAudit.ps1`.
+Discovery uses the standard per-check timeout; detail reads have a 60-second
+limit. Each returned file result survives a later timeout. No NAS connection,
+backup execution, file restoration or client configuration changes are performed.
+Synology documents the log location in its
+[Drive troubleshooting guide](https://kb.synology.com/en-global/DSM/tutorial/Why_are_files_not_synced_between_Synology_Drive_and_Drive_desktop_application)
+and task configuration fields in its
+[deployment guide](https://global.download.synology.com/download/Document/Software/UserGuide/Package/SynologyDrive/All/enu/Synology_Drive_Client_Mass_Deployment_Guide_enu.pdf).
+
+`BackupTasks` streams candidate records (`RecordType=Task`) as they complete,
+followed by a `RecordType=Coverage` summary with explicit scan/output limits.
+Completed candidates survive a later worker timeout. It examines up to 500
+scheduled tasks, including Microsoft and disabled tasks, and returns up to 100
+candidates. Matching includes task names/paths, executables and arguments:
+backup vendors, copy/archive/database-export tools, and generic PowerShell,
+batch, scripting or command wrappers that need review. It records run identity,
+last/next run, task result, missed runs, selected task settings and up to eight
+actions/triggers per task. Trigger types, start boundaries, daily/weekly intervals
+and repetition values are preserved where available.
+
+For literal local script references, it reads at most 20 scripts in total, two
+references per action, and 64 KiB per script. Only fixed backup-related keyword
+indicators are exported: **scripts never run, and neither script content nor
+command-line arguments are exported**. Network/reparse paths are skipped. Task
+info failures are recorded per candidate. Nested scripts, COM executors, encoded
+commands and unfamiliar tools can still require manual review. A keyword in a
+comment is only a clue; task result 0, a file copy, sync completion or a disabled
+historical task does not establish successful protection.
+
+Use `BackupLastSuccess` and `BackupProtectedScope` in the generated evidence
+template to record the Drive **Backup Task** screen's last completion (with
+timezone), next run, server, mode, schedule, destination and selected sources.
+Verify restore usability, retention, encryption, independent copies and a separate
+machine-recovery plan. The collector never upgrades a generic sync/file success
+into a whole-backup success. Review all output before sharing: paths and log
+excerpts can contain business information, and text redaction is best-effort.
+
+Regression fixtures exercise Drive discovery/rotation, secret omission, settings
+allowlists/read limits, worker serialization, task wrappers, script inspection,
+disabled tasks, trigger/run-account evidence and provider errors. Windows ISE and
+Server 2012 R2 / PowerShell 4 remain targeted; live vendor validation still needs a
+Windows host and real client/task data.
+
+### Collector 1.10: deeper local evidence
+
+The audit now includes the following additional evidence. All checks retain
+separate time limits; unavailable providers and partial results remain explicit.
+
+| Area | What is collected | Interpretation limits |
+| --- | --- | --- |
+| OneDrive | Selected machine/user policies, up to 20 local user profiles, up to eight account slots per loaded hive, configured Desktop/Documents/Pictures paths and their matches to account roots; running OneDrive processes | Registry fields vary by client version. Policies, path matches and running processes do not verify upload completion, file coverage, retention or recovery. Unloaded/denied hives remain unknown. |
+| Additional backup products | Conventional local text-log path probes for Acronis, Macrium Reflect, Cove/Backup Manager, MSP360/CloudBerry, CrashPlan, Duplicati, Axcient, Datto and UrBackup | Generic excerpts, not product-specific job parsers. Paths/formats vary by version; missing paths do not prove a product is absent. No proprietary database, binary/HTML log, archive or repository parsing. |
+| Broader detection | Software, service, event-provider and task candidate matching also includes Duplicati, Duplicacy, Restic, rclone, IDrive, Backblaze, GoodSync, SyncBack, EaseUS, AOMEI and OneDrive | Detection only where installed names or local evidence match. A sync/copy utility does not establish an independent backup. |
+| Scripts/tasks | Fixed indicators for encoded commands, execution-policy bypass, web requests, dynamic execution, deletion/mirroring and possible embedded credentials; script SHA256 and selected ACL evidence; missed runs/disabled state/task results; failure events with allowlisted task names/result codes | Indicators require review and are not proof of malicious behavior or failed backups. Scheduler running/ready states are distinguished from other nonzero results. Script text, task arguments and encoded payloads are never exported or executed. |
+| Storage/reliability | Driver-reported disk temperature, wear, error/latency counters and power-on hours; storage errors, application VSS errors and unexpected shutdown messages | Null/unsupported disk counters remain unknown. RAID/virtual disks may hide physical health; bounded event samples can miss older incidents. |
+
+OneDrive collection reads selected registry values without expanding another
+user's paths in the administrator's environment. It does not mount offline user
+hives, enumerate synced documents, open cloud placeholders, decode opaque
+OneDrive logs/databases, or query a cloud account. Check the OneDrive UI or
+[Microsoft's sync health dashboard](https://learn.microsoft.com/en-us/sharepoint/sync-health)
+for current errors; policies are documented in
+[Microsoft's OneDrive policy reference](https://learn.microsoft.com/en-us/sharepoint/use-group-policy).
+The account-folder registry probes are version-dependent hints, not a supported
+sync-health API. SharePoint libraries outside the account root and custom folder
+redirection may require separate review.
+
+Additional log discovery uses at most 1,000 entries per root, 6,000 globally,
+root plus two directory levels, and six recent `.log`, rotated `.log.N` or `.txt`
+files per root. Detail collection reads the newest 16 files globally by default,
+128 KiB and 30 matching lines per file. All omissions/caps are reported. Log
+modification time is not a job timestamp. Sensitive labelled lines are omitted
+and remaining text is redacted best-effort. For a custom product log folder:
+
+```powershell
+& .\Export-WinFixAudit.ps1 -AdditionalBackupLogDirectory 'D:\BackupAgent\Logs','C:\Tools\NightlyLogs' -MaxAdditionalBackupLogFiles 20 -CopyToClipboard
+```
+
+Up to eight additional **local log folders** and 30 detail files are supported.
+This also works for exported text logs from other backup products. It does not
+start jobs or enable logging. For example, Duplicati normally stores logs in a
+database; its optional text logging is described in the
+[Duplicati server documentation](https://docs.duplicati.com/duplicati-programs/server).
+No backup credentials or configuration databases are accessed.
+
+Script inspection still has a global 20-script/64-KiB-per-script limit. A hash is
+labelled `First64KiB` when truncated, otherwise `WholeFileAtReadTime`. Broad
+Everyone/Authenticated Users/Users write/delete/permission-change grants are
+reported using SIDs; this is not an effective-access calculation, and does not
+include parent-directory replacement rights. Relative script references need an
+explicit working directory. References using task-user environment variables,
+network paths, reparse points, or offline/recall-on-access files are skipped.
+Nested scripts, COM actions and encoded payloads still require manual review.
+Task Scheduler history is read only if available; the collector does not enable
+it. Storage counters use the optional
+[Get-StorageReliabilityCounter provider](https://learn.microsoft.com/en-us/powershell/module/storage/get-storagereliabilitycounter).
+
+The regression suite runs on PowerShell 7 with synthetic Windows/provider
+fixtures and real job/file operations. Windows Server 2012 R2 / PowerShell 4 and
+ISE compatibility are targeted, but must be validated with a live Windows run.
+
+### Targeted disk diagnostic (ISE)
+
+`Export-WinFixDiskDiagnostic.ps1` is a separate read-only diagnostic for disk
+warnings such as Event 51. It collects current Win32 disk identity/SCSI addressing,
+QueryDosDevice mappings (including an explicit PhysicalDrive2 probe), disk and
+partition/volume inventory, controller/driver versions, available reliability and
+SMART status, retained PnP disk entries, mounted virtual-disk metadata and backup
+service/task activity. Disk numbers describe the current system and may differ
+from an earlier incident. Missing providers remain explicit.
+
+Run elevated in Windows PowerShell/ISE, optionally specifying an incident in the
+**server's local time**:
+
+```powershell
+& .\Export-WinFixDiskDiagnostic.ps1 -IncidentLocalTime '2026-09-28T11:31:13'
+```
+
+Each section has a 25-second worker limit and completed output is checkpointed to
+`%TEMP%\WinFixDiskDiagnostic`. Notepad opens the final text, and the results are
+copied to the clipboard where available. `-NoOpen` suppresses Notepad.
+
+Events use the newest 3,000-record sample (last seven days after filtering), plus
+an optional +/-10-minute incident query. Up to 30 recent storage events, 40
+incident storage events, 24 Application backup/VSS records and 15 Windows Backup
+channel records are returned. Event 51 XML includes the raw binary diagnostic
+data, limited to 16,000 characters per event; rendered messages are limited to
+3,000 characters. Each output section is capped at 250,000 characters. Bounds,
+truncation, timeouts and missing/disabled sources are recorded. No commands repair,
+scan, mount, change services or control backup jobs. Output includes local paths,
+hardware identifiers and event details, not intentionally queried passwords/keys.
+
+Microsoft documents [Event 51 interpretation](https://learn.microsoft.com/en-us/troubleshoot/windows-server/backup-and-storage/event-id-51-information)
+and [QueryDosDevice mappings](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-querydosdevicew).
+Tests: `pwsh -NoProfile -File tests/Test-DiskDiagnostic.ps1`; fixtures exercise
+timeouts, partial output, event XML and interop compilation. Native Windows API
+behavior requires validation on the affected Windows host.
+
+### Stalled Windows Backup / NAS diagnostic (ISE)
+
+`Export-WinFixBackupDiagnostic.ps1` gathers evidence when Windows Backup appears
+stuck (for example at 97%). Run it in elevated Windows PowerShell ISE:
+
+```powershell
+& {
+    $previousTls = [Net.ServicePointManager]::SecurityProtocol
+    try {
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+        $url = 'https://raw.githubusercontent.com/jeremydbean/winfix/main/Export-WinFixBackupDiagnostic.ps1'
+        $scriptText = Invoke-RestMethod -Uri $url -TimeoutSec 60 -ErrorAction Stop
+        if ([string]::IsNullOrWhiteSpace([string]$scriptText)) { throw 'Downloaded script was empty.' }
+        & ([scriptblock]::Create([string]$scriptText)) -BackupTarget '\\NAS\BackupShare'
+    }
+    finally { [Net.ServicePointManager]::SecurityProtocol = $previousTls }
+}
+```
+
+The script saves completed sections to `%TEMP%\WinFixBackupDiagnostic`, opens the
+final text in Notepad, and copies it to the clipboard where supported. The UNC
+parameter identifies the destination to investigate; it does not configure or
+change the backup. `-SampleSeconds` defaults to 30 (10–60), `-LookbackHours` to 12
+(1–168), and `-NoOpen` suppresses Notepad. No credentials are required in the
+script; it uses the elevated user's existing access.
+
+Evidence includes:
+
+- Windows Backup status before and after two process/network/disk activity samples.
+- Backup, VSS, Synology and Veeam service/process activity, with cumulative counter
+  deltas guarded against missing values, resets and process-ID reuse.
+- NAS TCP 445 reachability, read-only share capacity/quota information, and SMB
+  connections visible to the current logon session.
+- VSS writer/shadow-storage status, existing shadows, local disk capacity/health,
+  and the state and recent result of tasks with backup/vendor names.
+- Bounded Windows Backup, Application backup/VSS, storage warning, SMB connectivity
+  and SMB security events. Event 51 includes raw XML/binary diagnostic details.
+
+All sections have a 30-second worker limit except activity sampling, whose limit
+is the interval plus 60 seconds. Native console readers have their own 10–12-second
+limits, then bounded output-drain waits. Microsoft documents that
+[`wbadmin get status`](https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/wbadmin-get-status)
+can run until the backup finishes: this diagnostic closes only the newly launched
+status-reading console process, never the backup engine. A reader timeout is
+explicitly distinguished from backup failure. A lack of a wbadmin job does not
+establish that every backup product or Windows file-backup phase is idle.
+
+No commands stop backup jobs, restart services, repair/scan disks, mount images,
+create snapshots, change shares, or write files to the NAS. The capacity query
+uses the current user's credentials, which can differ from the backup service's
+account. It cannot verify NAS drive health, write throughput, restore integrity,
+or sufficient capacity to finish this particular backup. Shared service processes
+and adapter counters include unrelated activity. Neither activity nor a short
+period without activity establishes backup progress or a hang by itself.
+
+Event queries use a start-time filter and at most 3,000 newest records per log,
+then provider/level filtering, with 12–35 returned records depending on the section.
+They report sample coverage and truncation; unavailable/disabled logs and timeouts
+remain visible. Each section is capped at 250,000 characters, native-reader stdout
+and stderr at 16,000 each, event messages at 3,000, and Event 51 XML at 16,000.
+Messages have best-effort labelled-secret redaction; paths, user names, identifiers
+and diagnostic messages remain in the pasteable output.
+
+Tests: `pwsh -NoProfile -File tests/Test-BackupDiagnostic.ps1`. Fixtures verify real
+reader-process timeouts/cleanup, dual-pipe output capture, partial results,
+counter semantics, event bounds/redaction/XML, production sampling, and interop
+compilation. These checks do not substitute for a live Windows/NAS run.
+
+Backup diagnostic 1.1 also collects a bounded metadata sample of the specified
+share (two levels deep, at most 1,000 entries/40 directories; newest 40 files in
+that sample). It does not open database or image contents. Additional sections
+inspect ABB process connections, conventional ABB text-log directories, and
+backup task executable/script-path hints without exporting raw arguments.
+Logs are limited to eight files, 64 KiB and twelve matching lines each; lines
+containing credential-related terms are omitted. This is best-effort filtering,
+not a guarantee that arbitrary vendor logs cannot contain sensitive information.
+Unavailable logs and scan limits are explicit; discovery does not prove complete
+coverage. An empty or unreachable share does not establish the ABB destination.
+
+Optional parameters:
+
+- `-ABBServer 'nas-host'`: probe TCP 5510 on this supplied candidate host; compare
+  it with observed ABB process endpoints and the agent's actual configuration.
+- `-TaskNamePattern 'backup|tracs|synology'`: select tasks for action metadata.
+- `-IncludeSqlBackupHistory`: query the latest 20 msdb backup-history rows on up
+  to four locally registered SQL instances using current Windows authentication.
+  Connections have a four-second timeout and queries an eight-second timeout,
+  within the existing section deadline. No SQL credentials are requested or
+  stored; no database restore, VERIFYONLY, backup job or script is executed.
+
+A successful task exit, file timestamp, TCP connection or msdb history record is
+not a tested restore. Obtain the actual ABB result and verify representative
+restores separately before declaring recovery protection complete. The script
+remains a diagnostic, not a full security audit.
+
+Backup diagnostic 1.2 fixes SQL connection-string construction under PowerShell's
+SqlClient dictionary adapter (`Data Source` rather than the unsupported keyword
+`DataSource`). It also probes `%ProgramData%\ActiveBackupforBusinessAgent` and
+excludes license/readme documentation from ABB operational-log selection. Plain
+`.log` files, numbered log rotations, and relevant `.txt` files are eligible;
+missing real logs remain an evidence gap. Tests exercise the real SqlClient
+builder without opening a database connection, plus the license/log regression.
+
+### Collector 1.11: deeper server/domain-controller evidence
+
+Use `-DeepAudit` for a more detailed server or domain-controller review. Paste this block into
+**64-bit PowerShell ISE running as Administrator**, then press F5:
+
+```powershell
+& {
+    $previousTls = [Net.ServicePointManager]::SecurityProtocol
+    try {
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+        $auditUrl = 'https://raw.githubusercontent.com/jeremydbean/winfix/main/Export-WinFixAudit.ps1'
+        $auditScript = Invoke-RestMethod -Uri $auditUrl -TimeoutSec 60 -ErrorAction Stop
+        if ([string]::IsNullOrWhiteSpace([string]$auditScript)) { throw 'Empty script download.' }
+        & ([scriptblock]::Create([string]$auditScript)) -DeepAudit -CopyToClipboard
+    }
+    finally { [Net.ServicePointManager]::SecurityProtocol = $previousTls }
+}
+```
+
+The existing `Start-WinFixAudit.ps1` launcher also accepts `-DeepAudit`. The full
+pasteable result still opens in Notepad and is copied to the clipboard. Each
+completed check is checkpointed. Allow several additional minutes for deep mode;
+individual optional-provider failures remain visible and collection continues.
+Windows PowerShell 4.0/Server 2012 R2 remain supported targets. These additions
+have parser/fixture coverage on PowerShell 7, not live Windows/DC validation yet.
+
+New evidence includes:
+
+- Guest UUID/BIOS identity for matching VMware/Veeam objects; included in normal
+  mode too. The backup console must still confirm the actual VM and restore point.
+- On DCs: domain/forest mode and FSMO owners, default and fine-grained password
+  policies, direct privileged-group members, selected account-review candidates,
+  local replication metadata, SYSVOL/DFSR state and targeted AD/DNS/DFSR events.
+  Queries use the current Windows identity and target the audited DC; they do not
+  force replication, reset passwords or recursively expand the entire directory.
+- CA audit-filter/configuration and certificate expiry metadata; effective IIS
+  authentication, SSL and Extended Protection at site/enrollment paths. A probed
+  nonexistent CertSrv path is explicitly distinguished from a configured endpoint.
+  No private keys, credentials, raw web.config or CA database contents are exported.
+- Installed sync service/binary versions, Connect Sync scheduler and connector
+  run status plus targeted identity-sync errors. No synchronization is triggered.
+  Cloud Sync tenant exports, MFA and actual last successful tenant synchronization
+  still need console evidence; idle/enabled does not prove successful sync.
+- DNS forwarders/zone settings and bounded DHCP IPv4 scope-capacity statistics.
+- CBS package-state registry metadata when hotfix enumeration is incomplete.
+- Bounded metadata samples under event logs, NTDS, SYSVOL, common data folders,
+  ProgramData and Users. Each root uses at most 2,000 entries, three child levels
+  and an eight-second cooperative budget within a 90-second worker deadline.
+  Samples report logical bytes, skipped paths and limits; they are **not full
+  directory totals**, do not account for allocated/compressed/sparse size and
+  must not be added across overlapping roots. No content is read or deleted.
+- Up to five immediate child-directory ACLs per eligible data share (12 shares,
+  first 50 directory entries considered, 100 ACL rules per child). These are
+  samples, not effective access tests or a complete recursive permissions audit.
+
+Normal mode also fixes DC Administrators lookup via AD/SID, skips printer
+pseudo-paths in the NTFS check, and uses server-side time/ID/level filters for
+failed logons and Task Scheduler failures. Filtered queries return at most
+`MaxEvents + 1` matches, with one lookahead row to detect truncation, and a
+60-second worker deadline. Sparse queries can still time out; they are not
+reported as a clean history. Deep provider filters resolve registered provider
+names before querying. VSS uses a 40-second native-reader limit within a
+60-second worker; only its newly started `vssadmin list writers` process is
+closed on timeout, never VSS or a backup service.
+
+Unavailable tools/roles remain evidence gaps. Restore usability, CA templates,
+recursive group/effective permissions, hypervisor/datastore health and external
+exposure still require their respective consoles or targeted validation.
+
+Tests: `pwsh -NoProfile -File tests/Test-AuditExport.ps1` and
+`pwsh -NoProfile -File tests/Test-DeepAudit.ps1`. Fixtures cover targeted event
+query bounds, DC membership and replication failures, metadata limits/reparse
+skips, printer handling, native dual-pipe capture and reader cleanup.

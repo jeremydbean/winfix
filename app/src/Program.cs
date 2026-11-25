@@ -1,0 +1,140 @@
+using System;
+using System.IO;
+using System.Linq;
+using System.Text;
+using System.Threading;
+using System.Windows.Forms;
+
+[assembly: System.Reflection.AssemblyTitle("WinFix Server Audit")]
+[assembly: System.Reflection.AssemblyProduct("WinFix Server Audit")]
+[assembly: System.Reflection.AssemblyVersion("1.0.0.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.0.0.0")]
+
+namespace WinFixAudit
+{
+    internal static class Program
+    {
+        /// <summary>
+        ///   (no args)                          GUI
+        ///   --scheduled                        collect and save a draft (used by the monthly task)
+        ///   --render &lt;report.json&gt; &lt;dir&gt;      test: write PDF, email bodies and an .eml for a sample-completed draft
+        ///   --screenshot &lt;report.json&gt; &lt;dir&gt;  test: save PNGs of the main window tabs
+        /// </summary>
+        [STAThread]
+        private static int Main(string[] args)
+        {
+            string mode = args.Length > 0 ? args[0].ToLowerInvariant() : "";
+            try
+            {
+                if (mode == "--scheduled") return Workflow.RunScheduled();
+                if (mode == "--render" && args.Length >= 3) return Render(args[1], args[2]);
+                Application.EnableVisualStyles();
+                Application.SetCompatibleTextRenderingDefault(false);
+                if (mode == "--screenshot" && args.Length >= 3) return Screenshot(args[1], args[2]);
+
+                bool first;
+                using (var mutex = new Mutex(true, @"Global\WinFixServerAudit", out first))
+                {
+                    if (!first)
+                    {
+                        MessageBox.Show("WinFix Server Audit is already open on this server.", "WinFix Server Audit", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                        return 0;
+                    }
+                    Application.ThreadException += (s, e) =>
+                    {
+                        Log.Write("UI error: " + e.Exception);
+                        MessageBox.Show(e.Exception.Message, "WinFix Server Audit", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    };
+                    Application.Run(new MainForm());
+                }
+                return 0;
+            }
+            catch (Exception ex)
+            {
+                Log.Write("Fatal (" + mode + "): " + ex);
+                if (mode == "") MessageBox.Show(ex.ToString(), "WinFix Server Audit", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                return 1;
+            }
+        }
+
+        /// <summary>Fills a draft the way a technician would, for test output.</summary>
+        private static DraftState SampleDraft(string reportPath, AuditAnalysis a, AppSettings s)
+        {
+            DraftState d = DraftStore.NewDraft(reportPath, a, s, "Manual");
+            d.Tenant = string.IsNullOrEmpty(d.Tenant) ? "Contoso Dental" : d.Tenant;
+            d.Technician = "Sample Technician";
+            d.ServerPurpose = "Domain controller and file server";
+            d.Summary = "Patched and restarted during the maintenance window. Veeam job reviewed; offsite copy current. Disk cleanup scheduled for D: next week.";
+            foreach (ManualItemDef item in ManualCatalog.For(a))
+                d.Answer(item.Id).Status = item.Required ? ManualCatalog.Pass : ManualCatalog.NotApplicable;
+            d.Answer("backup_last_success").Notes = "Veeam B&R \"DC01 nightly\" last success 24 Nov 2026 23:14.";
+            d.Answer("backup_failures").Status = ManualCatalog.Issue;
+            d.Answer("backup_failures").Notes = "Two failed retries on 18 Nov (repository full). Resolved after retention change.";
+            d.Answer("rmm_health").Notes = "Online, no alerts.";
+            Finding first = a.Findings.FirstOrDefault(f => f.Severity == Severity.Critical || f.Severity == Severity.Warning);
+            if (first != null) d.FindingNotes[first.Key] = "Scheduled for the next maintenance window (approved by client).";
+            return d;
+        }
+
+        private static int Render(string reportPath, string outDir)
+        {
+            Directory.CreateDirectory(outDir);
+            AppSettings s = AppSettings.Load();
+            if (!AppSettings.IsEmail(s.FromAddress)) s.FromAddress = "server-audit@example.com";
+            AuditReport report = AuditReport.Load(reportPath);
+            AuditAnalysis a = Analyzer.Run(report, s.ExpectedAgentList);
+            DraftState d = SampleDraft(reportPath, a, s);
+
+            var sb = new StringBuilder();
+            sb.AppendLine("Server: " + a.ServerName + " | Month: " + a.MonthLabel + " | Tenant: " + d.Tenant);
+            sb.AppendLine("Counts: critical " + a.Count(Severity.Critical) + ", warning " + a.Count(Severity.Warning) + ", info " + a.Count(Severity.Info) + ", pass " + a.Count(Severity.Pass));
+            sb.AppendLine("Subject: " + TicketComposer.Subject(s, a, d));
+            sb.AppendLine();
+            foreach (Finding f in a.Findings) sb.AppendLine("[" + Sev.Label(f.Severity) + "] " + f.Area + " | " + f.Title + " | " + f.Detail);
+            sb.AppendLine();
+            sb.AppendLine("Coverage gaps: " + a.Coverage.Rows.Count);
+            foreach (Cell[] row in a.Coverage.Rows) sb.AppendLine("  " + row[0].Text + " " + row[1].Text + " " + row[2].Text);
+            sb.AppendLine();
+            sb.AppendLine("Validation before answers: " + string.Join(" / ", DraftStore.NewDraft(reportPath, a, s, "Manual").Validate(a).ToArray()));
+            sb.AppendLine("Validation after answers: " + string.Join(" / ", d.Validate(a).ToArray()));
+
+            string name = TicketComposer.PdfFileName(a, d);
+            File.WriteAllText(Path.Combine(outDir, "email.html"), TicketComposer.Html(s, a, d, name), Encoding.UTF8);
+            File.WriteAllText(Path.Combine(outDir, "email.txt"), TicketComposer.Text(s, a, d, name), Encoding.UTF8);
+
+            // Full submit path, delivering to a pickup folder instead of SMTP.
+            string reportCopy = Path.Combine(outDir, Path.GetFileName(reportPath));
+            if (!string.Equals(Path.GetFullPath(reportPath), Path.GetFullPath(reportCopy), StringComparison.OrdinalIgnoreCase)) File.Copy(reportPath, reportCopy, true);
+            d.ReportPath = reportCopy;
+            string pdf = Workflow.Submit(s, a, d, Path.Combine(outDir, "mail"));
+            sb.AppendLine("PDF: " + pdf);
+            sb.AppendLine("Draft status after submit: " + d.Status + " to " + d.SubmittedTo);
+            File.WriteAllText(Path.Combine(outDir, "render-result.txt"), sb.ToString(), Encoding.UTF8);
+            return 0;
+        }
+
+        private static int Screenshot(string reportPath, string outDir)
+        {
+            using (var form = new MainForm(false))
+            {
+                form.StartPosition = FormStartPosition.Manual;
+                form.Location = new System.Drawing.Point(-4000, -4000);
+                form.ShowInTaskbar = false;
+                form.Show();
+                AppSettings s = AppSettings.Load();
+                AuditAnalysis a = Analyzer.Run(AuditReport.Load(reportPath), s.ExpectedAgentList);
+                DraftState d = DraftStore.NewDraft(reportPath, a, s, "Scheduled");
+                d.Tenant = "Contoso Dental";
+                d.Technician = "Sample Technician";
+                d.Answer("backup_last_success").Status = ManualCatalog.Pass;
+                d.Answer("backup_last_success").Notes = "Veeam nightly job OK 24 Nov 23:14";
+                d.Answer("backup_failures").Status = ManualCatalog.Issue;
+                form.LoadForPreview(reportPath, d);
+                Application.DoEvents();
+                form.SaveScreenshots(outDir);
+                form.Close();
+            }
+            return 0;
+        }
+    }
+}

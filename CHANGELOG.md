@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-11-25 — Server Audit app
+- Adds `app/`: WinFixAuditApp.exe, a standalone Windows app that runs the embedded collector, turns evidence into scored findings, records technician-verified manual checks (backup console, RMM, EDR, AV, hardware, MFA, exposure), builds a branded PDF report and emails a summary ticket with the PDF attached. Monthly scheduled runs save drafts only; nothing is sent until a technician submits.
+- Settings and drafts live in `C:\ProgramData\WinFixAudit` (Administrators/SYSTEM only); the SMTP password is DPAPI-encrypted.
+- Repository cleanup: removes `download_direct.ps1` and `Run_Direct.bat` (pinned to an old commit as a CDN-cache workaround), `download_and_run.ps1` (unreferenced), `OFFLINE_INSTALL.md` (inaccurate: its "offline" option downloads from GitHub) and `encrypt_creds.ps1` (contained hard-coded API credentials from the removed NinjaOne integration; rotate that secret, since it remains in git history).
+- README rewritten as an overview of the tools; the detailed collector/diagnostic reference moved to `docs/Collector.md`. `agents.md` updated to the current layout.
+
 ## 2026-10-27 — collector 1.11
 - Adds optional `-DeepAudit` for domain/forest/FSMO and password policies, privileged groups/account candidates, local replication/SYSVOL events, CA/IIS settings, certificate metadata, identity-sync status, DNS and DHCP configuration.
 - Adds bounded storage metadata and child ACL samples plus CBS package metadata; guest UUID/BIOS evidence helps match agentless backup objects without asserting coverage.

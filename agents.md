@@ -1,26 +1,23 @@
-# Agent Notes - WinFix
+# Agent notes — WinFix
 
-## Current Status
-**Date:** December 16, 2025
-**Objective:** Keep WinFix scripts stable for Windows PowerShell 5.1 (Windows Server-friendly) while maintaining the Security Audit report.
+Updated 2026-11-25.
 
-## Recent Changes
-* Removed the RMM integration from both GUI scripts.
-* Kept audit generation and local-only checks intact.
-* Hardened `Invoke-SecurityAudit` (WinFixTool.ps1, WinFixConsole.ps1):
-  HTML encoding on all interpolations, locale-independent Administrators
-  lookup via SID, Domain Controller detection, build-based EOS table,
-  Update Session history (replacing Get-HotFix), background job + 90s
-  timeout for Windows Update search, elevation guard, DB error provider
-  whitelist, broadened backup vendor list, Get-WinEvent -ListLog for
-  Security log retention, UTF-8 (no BOM) output with TEMP fallback,
-  modern `navigator.clipboard.write` with execCommand fallback,
-  data-key based copy snapshot, broader VM detection, and built-in
-  Administrator enabled-state annotation.
+## Layout
 
-## Operational Notes
-* Debug log path: `%TEMP%\WinFix_Debug.log`
-* One-line install entrypoint: `install.ps1` (downloads + launches)
+| Path | Notes |
+| --- | --- |
+| `Export-WinFixAudit.ps1` | Read-only evidence collector. Must stay compatible with Windows PowerShell 4.0 (Server 2012 R2): no PS 5+ syntax, compact JSON only, every check inside `Invoke-AuditCheck` with a timeout. |
+| `Start-WinFixAudit.ps1` | TLS 1.2 launcher for the collector. |
+| `Export-WinFixDiskDiagnostic.ps1`, `Export-WinFixBackupDiagnostic.ps1` | Targeted read-only diagnostics. |
+| `app/` | Server Audit app (C# 5 / .NET Framework 4.5, WinForms). Built with Framework `csc.exe` by `app/build.ps1`, which embeds the root collector. Keep the source C# 5: no string interpolation, `?.`, `nameof` or expression-bodied members. |
+| `WinFixTool.ps1`, `WinFixConsole.ps1` | Repair/maintenance tool (GUI and menu). `SpaceMonger.exe` is downloaded from this repo by these scripts. |
+| `WinFixTool_v2.ps1`, `install.ps1` | Earlier HTML "Max Audit" GUI and its one-line installer. |
+| `tests/` | Regression scripts for the collector and diagnostics; run with `pwsh -NoProfile -File`. |
+| `docs/Collector.md` | Full collector/diagnostic reference (moved out of README). |
 
-## Future Improvements (Optional)
-* Add additional local-only patch/backup signal sources (Windows Update history, Windows Server Backup events) to strengthen the audit without any external integrations.
+## Rules
+
+- Collectors never change configuration, upload data, run backups or read credentials. Missing evidence is reported as Unavailable/TimedOut, never as a pass.
+- When the collector changes: bump its version string (`WinFix audit x.y`), update `CHANGELOG.md` and `docs/Collector.md`, then rebuild `app/dist/WinFixAuditApp.exe` (`app/build.ps1`) and commit the exe.
+- No secrets in the repo. Integrations (SMTP, future RMM/EDR APIs) store credentials on the server with DPAPI.
+- Debug log for the older GUIs: `%TEMP%\WinFix_Debug.log`. The app logs to `C:\ProgramData\WinFixAudit\logs`.
