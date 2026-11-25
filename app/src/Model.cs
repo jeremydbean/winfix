@@ -7,7 +7,7 @@ using System.Text;
 
 namespace PolarniteAudit
 {
-    internal enum Severity { Critical = 0, Warning = 1, Info = 2, Pass = 3, Unknown = 4 }
+    internal enum Severity { Critical = 0, Warning = 1, Info = 2, Pass = 3, Unknown = 4, Accepted = 5 }
 
     internal static class Sev
     {
@@ -19,6 +19,7 @@ namespace PolarniteAudit
                 case Severity.Warning: return "Warning";
                 case Severity.Info: return "Best practice";
                 case Severity.Pass: return "Pass";
+                case Severity.Accepted: return "Accepted";
                 default: return "Unknown";
             }
         }
@@ -33,6 +34,19 @@ namespace PolarniteAudit
         public string Detail;
         public string TechNote = "";
         public bool IsNew;   // not a critical/warning finding in the previous audit
+        public Severity? OriginalSeverity;   // set when a technician override changed the rating
+        public string OverrideBy = "", OverrideReason = "";
+
+        /// <summary>"Rated Accepted by J. Smith (was Critical): reason" for reports; empty when not overridden.</summary>
+        public string OverrideText
+        {
+            get
+            {
+                if (!OriginalSeverity.HasValue) return "";
+                return "Rated " + Sev.Label(Severity) + (OverrideBy.Length > 0 ? " by " + OverrideBy : " by the technician") + " (was " + Sev.Label(OriginalSeverity.Value) + ")" +
+                       (OverrideReason.Trim().Length > 0 ? ": " + OverrideReason.Trim() : ".");
+            }
+        }
     }
 
     /// <summary>One table cell. When Chip is set the renderers draw a colored pill.</summary>

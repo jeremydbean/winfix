@@ -1,5 +1,8 @@
 # Changelog
 
+## 2026-11-25 - override any finding
+- Findings tab: a RATING dropdown on every finding (Critical, Warning, Best practice, Pass, Accepted). Overrides are saved per server (state\overrides.json), apply to future audits, and appear in the PDF and email with who changed the rating, the original rating and the reason. Accepted findings are not counted.
+
 ## 2026-11-25 — collector 1.16, in-app updates and client name from Entra
 - App: **Check for updates** downloads the newest `PolarniteServerAuditTool.exe` from GitHub (`app/dist/latest.json` gives the build time, size and SHA-256), verifies it, swaps it in and restarts; `--update` does the same unattended for RMM scripts. `build.ps1` stamps each build and writes `latest.json`.
 - Client name: taken from the Entra tenant (dsregcmd, or the new `TenantIdentity` check reading `HKLM\SYSTEM\CurrentControlSet\Control\CloudDomainJoin\TenantInfo`, which also works where dsregcmd is missing), then from the Microsoft 365 tenant users are signed in to (OneDrive work accounts). A technician-typed name is kept.

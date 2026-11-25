@@ -28,7 +28,8 @@ namespace PolarniteAudit
         private int checksDone;
         private readonly System.Windows.Forms.Timer saveTimer = new System.Windows.Forms.Timer { Interval = 800 };
 
-        private Label lblServer, lblSub, lblPill, lblBanner, lblProgress, lblReady, lblSubject, lblCounts;
+        private Label lblServer, lblSub, lblPill, lblBanner, lblProgress, lblReady, lblSubject, lblCounts, lblOverrides;
+        private Button btnResetOverrides;
         private Button btnRun, btnCancel, btnOpen, btnSettings, btnUpdate, btnPreview, btnSubmit;
         private CheckBox chkDeep, chkOnline, chkShowPassed;
         private TabControl tabs;
@@ -263,7 +264,9 @@ namespace PolarniteAudit
         private void BuildFindings()
         {
             gridFindings = NewGrid();
-            gridFindings.Columns.Add(TextCol("SEVERITY", 9, true));
+            var rating = new DataGridViewComboBoxColumn { HeaderText = "RATING", FillWeight = 11, FlatStyle = FlatStyle.Flat, DisplayStyle = DataGridViewComboBoxDisplayStyle.DropDownButton, SortMode = DataGridViewColumnSortMode.NotSortable };
+            rating.Items.AddRange(OverrideStore.Ratings);
+            gridFindings.Columns.Add(rating);
             gridFindings.Columns.Add(TextCol("AREA", 9, true));
             gridFindings.Columns.Add(TextCol("FINDING", 26, true));
             gridFindings.Columns.Add(TextCol("DETAIL", 38, true));
@@ -282,18 +285,42 @@ namespace PolarniteAudit
                 e.CellStyle.SelectionForeColor = e.CellStyle.ForeColor;
                 e.CellStyle.Font = new Font("Segoe UI", 8.5F, FontStyle.Bold);
             };
+            gridFindings.CurrentCellDirtyStateChanged += (s, e) =>
+            {
+                if (gridFindings.IsCurrentCellDirty && gridFindings.CurrentCell is DataGridViewComboBoxCell) gridFindings.CommitEdit(DataGridViewDataErrorContexts.Commit);
+            };
+            gridFindings.DataError += (s, e) => { e.ThrowException = false; };
             gridFindings.CellValueChanged += (s, e) =>
             {
-                if (loading || e.RowIndex < 0 || e.ColumnIndex != 4 || draft == null) return;
+                if (loading || e.RowIndex < 0 || draft == null) return;
                 Finding f = gridFindings.Rows[e.RowIndex].Tag as Finding;
                 if (f == null) return;
-                draft.FindingNotes[f.Key] = Convert.ToString(gridFindings.Rows[e.RowIndex].Cells[4].Value);
-                Changed();
+                if (e.ColumnIndex == 4)
+                {
+                    string note = Convert.ToString(gridFindings.Rows[e.RowIndex].Cells[4].Value);
+                    draft.FindingNotes[f.Key] = note;
+                    var all = OverrideStore.Load();
+                    FindingOverride o;
+                    if (all.TryGetValue(f.Key, out o)) { o.Reason = note ?? ""; OverrideStore.Save(all); f.OverrideReason = o.Reason; }
+                    Changed();
+                }
+                else if (e.ColumnIndex == 0)
+                {
+                    string chosen = Convert.ToString(gridFindings.Rows[e.RowIndex].Cells[0].Value);
+                    BeginInvoke(new Action(() => SetRating(f, chosen)));
+                }
             };
-            chkShowPassed = new CheckBox { Text = "Show passed checks", AutoSize = true, Dock = DockStyle.Top, Padding = new Padding(2, 0, 0, 6) };
+            var findingsBar = new FlowLayoutPanel { Dock = DockStyle.Top, AutoSize = true, WrapContents = false, Padding = new Padding(0, 0, 0, 4) };
+            chkShowPassed = new CheckBox { Text = "Show passed checks", AutoSize = true, Margin = new Padding(2, 6, 18, 4) };
             chkShowPassed.CheckedChanged += (s, e) => FillFindings();
+            lblOverrides = new Label { AutoSize = true, ForeColor = MutedText, Margin = new Padding(0, 7, 8, 4),
+                Text = "Change RATING to override a result for this server (for example Accepted when a client has no Huntress licence). It is remembered for future audits." };
+            btnResetOverrides = new Button { Text = "Reset overrides", AutoSize = true, FlatStyle = FlatStyle.Flat, Margin = new Padding(0, 2, 0, 2), Visible = false };
+            btnResetOverrides.FlatAppearance.BorderColor = Color.FromArgb(209, 213, 219);
+            btnResetOverrides.Click += (s, e) => ResetOverrides();
+            findingsBar.Controls.AddRange(new Control[] { chkShowPassed, lblOverrides, btnResetOverrides });
             tabFindings.Controls.Add(gridFindings);
-            tabFindings.Controls.Add(chkShowPassed);
+            tabFindings.Controls.Add(findingsBar);
         }
 
         private void BuildManual()
@@ -566,7 +593,7 @@ namespace PolarniteAudit
                     lvSnapshot.Items.Add(item);
                 }
                 lblCounts.Text = analysis.Count(Severity.Critical) + " critical   ·   " + analysis.Count(Severity.Warning) + " warnings   ·   " +
-                                 analysis.Count(Severity.Info) + " best practice   ·   " + analysis.Count(Severity.Pass) + " passed" +
+                                 analysis.Count(Severity.Info) + " best practice   ·   " + analysis.Count(Severity.Pass) + " passed" + (analysis.Count(Severity.Accepted) > 0 ? "   ·   " + analysis.Count(Severity.Accepted) + " accepted" : "") +
                                  (analysis.Coverage.Rows.Count > 0 ? "   ·   " + analysis.Coverage.Rows.Count + " checks without data" : "");
                 FillFindings();
                 FillManual();
@@ -585,14 +612,58 @@ namespace PolarniteAudit
             bool wasLoading = loading;
             loading = true;
             gridFindings.Rows.Clear();
-            foreach (Finding f in analysis.Findings.Where(x => chkShowPassed.Checked || x.Severity != Severity.Pass))
+            foreach (Finding f in analysis.Findings.Where(x => chkShowPassed.Checked || x.Severity != Severity.Pass || x.OriginalSeverity.HasValue))
             {
                 string note;
                 draft.FindingNotes.TryGetValue(f.Key, out note);
-                int i = gridFindings.Rows.Add(Sev.Label(f.Severity).ToUpperInvariant() + (f.IsNew ? "  \u2022 NEW" : ""), f.Area, f.Title, f.Detail, note ?? "");
+                string detail = f.Detail + (f.OriginalSeverity.HasValue ? (f.Detail.Length > 0 ? "\n" : "") + "Overridden: was " + Sev.Label(f.OriginalSeverity.Value) + (f.OverrideBy.Length > 0 ? ", changed by " + f.OverrideBy : "") : "");
+                int i = gridFindings.Rows.Add(Sev.Label(f.Severity), f.Area, f.Title + (f.IsNew ? "  \u2022 NEW" : ""), detail, note ?? "");
                 gridFindings.Rows[i].Tag = f;
             }
+            int overridden = analysis.Findings.Count(x => x.OriginalSeverity.HasValue);
+            btnResetOverrides.Text = "Reset overrides (" + overridden + ")";
+            btnResetOverrides.Visible = overridden > 0;
+            gridFindings.CurrentCell = null;   // don't open the first rating in edit mode
             loading = wasLoading;
+        }
+
+        /// <summary>Saves a technician rating for this finding (remembered on this server) and re-rates the audit.</summary>
+        private void SetRating(Finding f, string chosen)
+        {
+            if (report == null || draft == null || string.IsNullOrEmpty(chosen)) return;
+            Severity original = f.OriginalSeverity ?? f.Severity;
+            var all = OverrideStore.Load();
+            if (chosen == Sev.Label(original)) all.Remove(f.Key);
+            else
+            {
+                string note;
+                draft.FindingNotes.TryGetValue(f.Key, out note);
+                all[f.Key] = new FindingOverride { Key = f.Key, Rating = chosen, Reason = note ?? "", Title = f.Title,
+                    By = string.IsNullOrWhiteSpace(txtTech.Text) ? Environment.UserName : txtTech.Text.Trim(), At = DateTime.Now.ToString("o", CultureInfo.InvariantCulture) };
+            }
+            try { OverrideStore.Save(all); }
+            catch (Exception ex) { MessageBox.Show(this, "Could not save the override:\n\n" + ex.Message, AppInfo.Name, MessageBoxButtons.OK, MessageBoxIcon.Warning); }
+            Reanalyze();
+        }
+
+        private void ResetOverrides()
+        {
+            int n = analysis == null ? 0 : analysis.Findings.Count(x => x.OriginalSeverity.HasValue);
+            if (MessageBox.Show(this, "Remove all " + n + " rating overrides for this server? Findings go back to the app's own ratings.", AppInfo.Name, MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return;
+            try { OverrideStore.Save(new Dictionary<string, FindingOverride>()); }
+            catch (Exception ex) { MessageBox.Show(this, ex.Message, AppInfo.Name, MessageBoxButtons.OK, MessageBoxIcon.Warning); return; }
+            Reanalyze();
+        }
+
+        private void Reanalyze()
+        {
+            if (report == null) return;
+            int row = gridFindings.FirstDisplayedScrollingRowIndex;
+            analysis = Workflow.Analyze(report, settings);
+            if (draft != null && !draft.IsSubmitted) draft.ApplyAuto(analysis);
+            Populate();
+            if (row >= 0 && row < gridFindings.Rows.Count) gridFindings.FirstDisplayedScrollingRowIndex = row;
+            Changed();
         }
 
         private void FillManual()

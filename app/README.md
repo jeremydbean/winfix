@@ -36,6 +36,10 @@ It needs nothing installed on the server beyond .NET Framework 4.5+ and Windows 
 
 To move a rule between tiers, edit `BestPracticeKeys` / `TicketKeys` in `src\Analyzer.cs` (or the severity where the finding is added).
 
+### Overriding a result
+
+Every finding on the **Findings** tab has a **RATING** dropdown: Critical, Warning, Best practice, Pass or **Accepted** (shown in the report as accepted by the technician, and not counted). For example, set *Huntress agent is not installed* to Accepted for a client without a Huntress licence. The technician note on that row is used as the reason. Overrides are saved per server in `state\overrides.json` and apply to every future audit of that server; **Reset overrides** removes them. To stop requiring an agent everywhere, change *Required agents* in Settings instead.
+
 ### Auto-verified manual checks
 
 When the evidence is there, the app answers manual checks itself and marks the note **Auto-verified**:

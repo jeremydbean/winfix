@@ -122,6 +122,10 @@ namespace PolarniteAudit
                 if (warnings.Count > 10)
                     sb.Append("<p style=\"color:#6B7280;font-size:13px;margin:8px 0 0\">+ ").Append(J.HtmlEncode(J.Plural(warnings.Count - 10, "more warning", "more warnings"))).Append(" in the attached report.</p>");
             }
+            int accepted = a.Count(Severity.Accepted);
+            if (accepted > 0)
+                sb.Append("<p style=\"color:#6B7280;font-size:13px;margin:10px 0 0\">").Append(J.HtmlEncode(J.Plural(accepted, "finding was", "findings were") + " accepted by the technician (not counted): " +
+                    string.Join("; ", a.Findings.Where(f => f.Severity == Severity.Accepted).Select(f => f.Title).Take(6).ToArray()) + ".")).Append("</p>");
             int practice = a.Count(Severity.Info);
             if (practice > 0)
                 sb.Append("<p style=\"color:#6B7280;font-size:13px;margin:10px 0 0\">").Append(J.HtmlEncode(J.Plural(practice, "best-practice recommendation is", "best-practice recommendations are"))).Append(" listed in the attached report (no ticket needed).</p>");
@@ -152,7 +156,8 @@ namespace PolarniteAudit
               .Append("</td><td style=\"padding:8px 0;border-bottom:1px solid #E5E7EB\"><b>").Append(J.HtmlEncode(f.Title)).Append("</b>");
             if (f.IsNew) sb.Append(" ").Append(Chip("New", Severity.Info));
             if (f.Detail.Length > 0) sb.Append("<br><span style=\"color:#6B7280;font-size:13px\">").Append(J.HtmlEncode(f.Detail)).Append("</span>");
-            if (!string.IsNullOrWhiteSpace(note)) sb.Append("<br><i style=\"color:#2563EB;font-size:13px\">Technician: ").Append(J.HtmlEncode(note.Trim())).Append("</i>");
+            if (f.OriginalSeverity.HasValue) sb.Append("<br><i style=\"color:#2563EB;font-size:13px\">").Append(J.HtmlEncode(f.OverrideText)).Append("</i>");
+            if (!string.IsNullOrWhiteSpace(note) && note.Trim() != f.OverrideReason.Trim()) sb.Append("<br><i style=\"color:#2563EB;font-size:13px\">Technician: ").Append(J.HtmlEncode(note.Trim())).Append("</i>");
             sb.Append("</td></tr>");
         }
 
@@ -187,6 +192,7 @@ namespace PolarniteAudit
             }
             sb.AppendLine();
             }
+            foreach (Finding f in a.Findings.Where(x => x.Severity == Severity.Accepted)) sb.AppendLine("  [ACCEPTED] " + f.Title + " - " + f.OverrideText);
             if (a.Count(Severity.Info) > 0) { sb.AppendLine(J.Plural(a.Count(Severity.Info), "best-practice recommendation", "best-practice recommendations") + " in the attached report."); sb.AppendLine(); }
             sb.AppendLine("MANUAL VERIFICATION");
             foreach (ManualItemDef item in items)

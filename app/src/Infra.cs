@@ -274,6 +274,59 @@ namespace PolarniteAudit
         }
     }
 
+    /// <summary>A technician's rating for one finding on this server, kept for future audits.</summary>
+    internal sealed class FindingOverride
+    {
+        public string Key = "", Rating = "", Reason = "", By = "", At = "", Title = "";
+    }
+
+    /// <summary>
+    /// Per-server finding overrides (state\overrides.json). For example: this client has no Huntress
+    /// licence, so "Huntress agent is not installed" is Accepted. Matched by finding key every month.
+    /// </summary>
+    internal static class OverrideStore
+    {
+        public static string FilePath { get { return Path.Combine(AppPaths.StateDir, "overrides.json"); } }
+        public static readonly string[] Ratings = { "Critical", "Warning", "Best practice", "Pass", "Accepted" };
+
+        public static Dictionary<string, FindingOverride> Load()
+        {
+            var all = new Dictionary<string, FindingOverride>(StringComparer.Ordinal);
+            try
+            {
+                foreach (object o in J.List(JsonFile.Read(FilePath)))
+                {
+                    var x = new FindingOverride { Key = J.Str(o, "Key"), Rating = J.Str(o, "Rating"), Reason = J.Str(o, "Reason"), By = J.Str(o, "By"), At = J.Str(o, "At"), Title = J.Str(o, "Title") };
+                    if (x.Key.Length > 0 && Parse(x.Rating).HasValue) all[x.Key] = x;
+                }
+            }
+            catch (Exception ex) { Log.Write("Could not read finding overrides: " + ex.Message); }
+            return all;
+        }
+
+        public static void Save(Dictionary<string, FindingOverride> all)
+        {
+            AppPaths.EnsureRoot();
+            JsonFile.Write(FilePath, all.Values.OrderBy(x => x.Key).Select(x => new Dictionary<string, object>
+            {
+                { "Key", x.Key }, { "Rating", x.Rating }, { "Reason", x.Reason }, { "By", x.By }, { "At", x.At }, { "Title", x.Title }
+            }).ToList());
+        }
+
+        public static Severity? Parse(string rating)
+        {
+            switch ((rating ?? "").Trim())
+            {
+                case "Critical": return Severity.Critical;
+                case "Warning": return Severity.Warning;
+                case "Best practice": return Severity.Info;
+                case "Pass": return Severity.Pass;
+                case "Accepted": return Severity.Accepted;
+                default: return null;
+            }
+        }
+    }
+
     internal sealed class CollectorOptions
     {
         public bool DeepAudit;

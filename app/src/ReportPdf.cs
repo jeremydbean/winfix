@@ -300,6 +300,8 @@ namespace PolarniteAudit
             if (crit > 0) s += "Most urgent: " + string.Join("; ", critical.ToArray()) + ". ";
             else if (warn > 0) s += "Nothing needs a ticket; the warnings are noted for normal maintenance. ";
             else s += "No issues requiring action were found. ";
+            int accepted = a.Count(Severity.Accepted);
+            if (accepted > 0) s += J.Plural(accepted, "finding was", "findings were") + " accepted by the technician and " + (accepted == 1 ? "is" : "are") + " not counted. ";
             if (a.PreviousAuditTime.HasValue)
                 s += "Since the last audit (" + J.FormatDate(a.PreviousAuditTime) + "), " + J.Plural(a.Resolved.Count, "issue was", "issues were") + " resolved and " +
                      J.Plural(a.Findings.Count(f => f.IsNew), "new issue appeared", "new issues appeared") + ". ";
@@ -345,7 +347,7 @@ namespace PolarniteAudit
                 {
                     group = f.Severity;
                     y += 4;
-                    SubHeading(f.Severity == Severity.Critical ? "Critical: open a ticket" : f.Severity == Severity.Warning ? "Warnings: noted, no ticket" : f.Severity == Severity.Info ? "Best practice: recommendations" : "Not checked");
+                    SubHeading(f.Severity == Severity.Critical ? "Critical: open a ticket" : f.Severity == Severity.Warning ? "Warnings: noted, no ticket" : f.Severity == Severity.Info ? "Best practice: recommendations" : f.Severity == Severity.Accepted ? "Accepted by the technician: not counted" : "Not checked");
                 }
                 FindingCard(f);
             }
@@ -386,6 +388,7 @@ namespace PolarniteAudit
             var title = PdfDoc.Wrap(f.Title, PdfFont.Bold, 10.2, inner);
             var detail = PdfDoc.Wrap(f.Detail, PdfFont.Regular, 8.8, inner);
             string noteText = d.FindingNotes.ContainsKey(f.Key) ? d.FindingNotes[f.Key] : "";
+            if (f.OriginalSeverity.HasValue) noteText = f.OverrideText + (noteText.Trim().Length > 0 && noteText.Trim() != f.OverrideReason.Trim() ? " " + noteText.Trim() : "");
             var note = string.IsNullOrWhiteSpace(noteText) ? new List<string>() : PdfDoc.Wrap("Technician: " + noteText.Trim(), PdfFont.Italic, 8.7, inner);
             double body = title.Count * 13.2 + (detail.Count > 0 ? 2 + detail.Count * 11.6 : 0) + (note.Count > 0 ? 5 + note.Count * 11.6 : 0);
             double h = Math.Max(f.IsNew ? 42 : 36, body) + 20;

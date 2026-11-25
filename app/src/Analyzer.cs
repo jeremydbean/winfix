@@ -53,6 +53,7 @@ namespace PolarniteAudit
             an.StandardChecks();
             an.AutoVerify();
             an.Retier();
+            an.ApplyOverrides(OverrideStore.Load());
             an.Coverage();
             if (previous != null) an.CompareWith(previous, Run(previous, expectedAgents, null));
             an.a.Findings.Sort((x, y) =>
@@ -74,6 +75,22 @@ namespace PolarniteAudit
             "home-edition", "win11-ready", "updates-deferred", "veeam-support", "power-hibernate"
         };
         private static readonly HashSet<string> TicketKeys = new HashSet<string>(StringComparer.Ordinal) { "wuauserv-disabled" };
+
+        /// <summary>Technician overrides win over every rule; accepted findings are not counted.</summary>
+        private void ApplyOverrides(Dictionary<string, FindingOverride> overrides)
+        {
+            foreach (Finding f in a.Findings)
+            {
+                FindingOverride o;
+                if (!overrides.TryGetValue(f.Key, out o)) continue;
+                Severity? s = OverrideStore.Parse(o.Rating);
+                if (!s.HasValue || s.Value == f.Severity) continue;
+                f.OriginalSeverity = f.Severity;
+                f.Severity = s.Value;
+                f.OverrideBy = o.By ?? "";
+                f.OverrideReason = o.Reason ?? "";
+            }
+        }
 
         private void Retier()
         {
