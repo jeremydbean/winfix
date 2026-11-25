@@ -1,5 +1,8 @@
 # Changelog
 
+## 2026-11-25 - Polarnite branding
+- Polarnite logo on the app header and PDF cover, the round badge on PDF page headers and as the exe icon. The PDF writer now supports images with transparency. Assets and the script that makes them are in app/assets.
+
 ## 2026-11-25 - override any finding
 - Findings tab: a RATING dropdown on every finding (Critical, Warning, Best practice, Pass, Accepted). Overrides are saved per server (state\overrides.json), apply to future audits, and appear in the PDF and email with who changed the rating, the original rating and the reason. Accepted findings are not counted.
 

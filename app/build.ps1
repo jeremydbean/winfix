@@ -43,8 +43,10 @@ $buildInfo = Join-Path $env:TEMP ('PolarniteAudit-BuildInfo-' + [guid]::NewGuid(
 [IO.File]::WriteAllText($buildInfo, "namespace PolarniteAudit { internal static class BuildInfo { public const string BuiltUtc = `"$built`"; public const string Collector = `"$version`"; } }")
 $sources = @(Get-ChildItem (Join-Path $here 'src') -Filter *.cs | ForEach-Object { $_.FullName }) + $buildInfo
 $references = 'System.dll', 'System.Core.dll', 'System.Drawing.dll', 'System.Windows.Forms.dll', 'System.Web.Extensions.dll', 'System.Security.dll'
+$assets = Join-Path $here 'assets'
 $arguments = @('/nologo', '/codepage:65001', '/target:winexe', '/platform:anycpu', '/optimize+', '/warn:4',
-    "/out:$Output", "/win32manifest:$manifest", "/resource:$Collector,Export-WinFixAudit.ps1") +
+    "/out:$Output", "/win32manifest:$manifest", "/win32icon:$(Join-Path $assets 'polarnite.ico')", "/resource:$Collector,Export-WinFixAudit.ps1",
+    "/resource:$(Join-Path $assets 'polarnite-logo.png'),PolarniteLogo.png", "/resource:$(Join-Path $assets 'polarnite-badge.png'),PolarniteBadge.png") +
     ($references | ForEach-Object { "/reference:$_" }) + $sources
 
 try {

@@ -141,6 +141,10 @@ Keep test folders short: .NET Framework rejects paths over 260 characters.
 The first time the renamed app runs on a server, it moves `C:\ProgramData\WinFixAudit` to `C:\ProgramData\PolarniteServerAudit`
 (settings, saved SMTP password, drafts and history) and replaces the `\WinFix\Monthly Server Audit` task with `\Polarnite\Monthly Server Audit`.
 
+### Branding
+
+The Polarnite logo is on the app header and the PDF cover, the round badge is on each PDF page header, and the exe icon is the badge. The files are in `assets\` and are embedded by `build.ps1`; to change the logo, run `assets\New-BrandAssets.ps1 -Source <logo.png>` (a logo made for dark backgrounds, with transparency) and rebuild.
+
 ## Notes and limits
 
 - Missing data is never counted as a pass. Checks that fail or time out are listed under *Collection coverage* at the end of the PDF.

@@ -133,11 +133,23 @@ namespace PolarniteAudit
         {
             // Header band
             var header = new Panel { Dock = DockStyle.Top, Height = 78, BackColor = Navy, Padding = new Padding(20, 10, 20, 8) };
-            var titleSmall = new Label { Text = "MONTHLY SERVER AUDIT", ForeColor = SkySoft, Font = new Font("Segoe UI", 8F, FontStyle.Bold), AutoSize = true, Location = new Point(20, 10) };
-            lblServer = new Label { Text = Environment.MachineName, ForeColor = Color.White, Font = new Font("Segoe UI Semibold", 17F), AutoSize = true, Location = new Point(18, 26) };
-            lblSub = new Label { Text = "No audit loaded", ForeColor = SlateText, AutoSize = true, Location = new Point(21, 56) };
+            int textLeft = 20;
+            var controls = new List<Control>();
+            if (AppInfo.Logo != null)
+            {
+                // Polarnite logo (white wordmark + badge) on the navy band; text starts to its right.
+                int logoH = 56, logoW = (int)Math.Round(logoH * (double)AppInfo.Logo.Width / AppInfo.Logo.Height);
+                controls.Add(new PictureBox { Image = AppInfo.Logo, SizeMode = PictureBoxSizeMode.Zoom, Size = new Size(logoW, logoH), Location = new Point(16, 11), BackColor = Navy });
+                var divider = new Panel { BackColor = Color.FromArgb(51, 78, 110), Size = new Size(1, 50), Location = new Point(16 + logoW + 16, 14) };
+                controls.Add(divider);
+                textLeft = 16 + logoW + 34;
+            }
+            var titleSmall = new Label { Text = "MONTHLY SERVER AUDIT", ForeColor = SkySoft, Font = new Font("Segoe UI", 8F, FontStyle.Bold), AutoSize = true, Location = new Point(textLeft, 10) };
+            lblServer = new Label { Text = Environment.MachineName, ForeColor = Color.White, Font = new Font("Segoe UI Semibold", 17F), AutoSize = true, Location = new Point(textLeft - 2, 26) };
+            lblSub = new Label { Text = "No audit loaded", ForeColor = SlateText, AutoSize = true, Location = new Point(textLeft + 1, 56) };
             lblPill = new Label { Text = "", AutoSize = true, ForeColor = Color.White, Font = new Font("Segoe UI", 9F, FontStyle.Bold), Padding = new Padding(12, 5, 12, 5), Anchor = AnchorStyles.Top | AnchorStyles.Right, Visible = false };
-            header.Controls.AddRange(new Control[] { titleSmall, lblServer, lblSub, lblPill });
+            controls.AddRange(new Control[] { titleSmall, lblServer, lblSub, lblPill });
+            header.Controls.AddRange(controls.ToArray());
             header.Resize += (s, e) => lblPill.Location = new Point(header.ClientSize.Width - lblPill.Width - 22, 26);
             lblPill.SizeChanged += (s, e) => lblPill.Location = new Point(header.ClientSize.Width - lblPill.Width - 22, 26);
             var stripe = new Panel { Dock = DockStyle.Top, Height = 3, BackColor = Color.FromArgb(56, 189, 248) };

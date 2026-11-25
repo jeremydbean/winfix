@@ -3,6 +3,10 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.IO.Compression;
+using System.Drawing;
+using System.Drawing.Drawing2D;
+using System.Drawing.Imaging;
+using System.Runtime.InteropServices;
 using System.Text;
 
 namespace PolarniteAudit
@@ -40,6 +44,44 @@ namespace PolarniteAudit
         }
 
         public void SelectPage(int index) { cur = pages[index]; PageIndex = index; }
+
+        private sealed class PdfImage { public int W, H; public byte[] Rgb, Alpha; }
+        private readonly List<PdfImage> images = new List<PdfImage>();
+
+        /// <summary>Adds an image (with transparency) to the document, scaled to at most maxWidth pixels. Returns its index for DrawImage.</summary>
+        public int AddImage(Image src, int maxWidth)
+        {
+            int w = Math.Max(1, Math.Min(src.Width, maxWidth));
+            int h = Math.Max(1, (int)Math.Round(src.Height * (double)w / src.Width));
+            var img = new PdfImage { W = w, H = h, Rgb = new byte[w * h * 3], Alpha = new byte[w * h] };
+            using (var bmp = new Bitmap(w, h, PixelFormat.Format32bppArgb))
+            {
+                using (Graphics g = Graphics.FromImage(bmp))
+                {
+                    g.InterpolationMode = InterpolationMode.HighQualityBicubic;
+                    g.PixelOffsetMode = PixelOffsetMode.HighQuality;
+                    g.DrawImage(src, new Rectangle(0, 0, w, h));
+                }
+                BitmapData data = bmp.LockBits(new Rectangle(0, 0, w, h), ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
+                var raw = new byte[data.Stride * h];
+                Marshal.Copy(data.Scan0, raw, 0, raw.Length);
+                bmp.UnlockBits(data);
+                for (int y = 0; y < h; y++)
+                    for (int x = 0; x < w; x++)
+                    {
+                        int o = y * data.Stride + x * 4, i = y * w + x;
+                        img.Rgb[i * 3] = raw[o + 2]; img.Rgb[i * 3 + 1] = raw[o + 1]; img.Rgb[i * 3 + 2] = raw[o]; img.Alpha[i] = raw[o + 3];
+                    }
+            }
+            images.Add(img);
+            return images.Count - 1;
+        }
+
+        /// <summary>Draws an image added with AddImage; (x, y) is its top-left corner in points.</summary>
+        public void DrawImage(int index, double x, double y, double w, double h)
+        {
+            cur.Append("q ").Append(N(w)).Append(" 0 0 ").Append(N(h)).Append(' ').Append(N(x)).Append(' ').Append(N(Y(y + h))).Append(" cm /Im").Append(index).Append(" Do Q\n");
+        }
 
         internal static string N(double v)
         {
@@ -260,7 +302,10 @@ namespace PolarniteAudit
             string[] names = { "Helvetica", "Helvetica-Bold", "Helvetica-Oblique" };
             for (int i = 0; i < 3; i++)
                 obj(fontBase + i, "<< /Type /Font /Subtype /Type1 /BaseFont /" + names[i] + " /Encoding /WinAnsiEncoding >>");
-            string resources = "<< /Font << /F1 3 0 R /F2 4 0 R /F3 5 0 R >> >>";
+            int imageBase = pageBase + pages.Count * 2;
+            var xobjects = new StringBuilder();
+            for (int i = 0; i < images.Count; i++) xobjects.Append("/Im").Append(i).Append(' ').Append(imageBase + i * 2).Append(" 0 R ");
+            string resources = "<< /Font << /F1 3 0 R /F2 4 0 R /F3 5 0 R >>" + (images.Count > 0 ? " /XObject << " + xobjects + ">>" : "") + " >>";
             for (int i = 0; i < pages.Count; i++)
             {
                 int pageObj = pageBase + i * 2, contentObj = pageObj + 1;
@@ -271,7 +316,22 @@ namespace PolarniteAudit
                 output.Write(content, 0, content.Length);
                 write("\nendstream\nendobj\n");
             }
-            int infoObj = pageBase + pages.Count * 2;
+            for (int i = 0; i < images.Count; i++)
+            {
+                PdfImage im = images[i];
+                byte[] rgb = Zlib(im.Rgb), alpha = Zlib(im.Alpha);
+                offsets.Add(output.Position);
+                write((imageBase + i * 2) + " 0 obj\n<< /Type /XObject /Subtype /Image /Width " + im.W + " /Height " + im.H +
+                      " /ColorSpace /DeviceRGB /BitsPerComponent 8 /Interpolate true /SMask " + (imageBase + i * 2 + 1) + " 0 R /Filter /FlateDecode /Length " + rgb.Length + " >>\nstream\n");
+                output.Write(rgb, 0, rgb.Length);
+                write("\nendstream\nendobj\n");
+                offsets.Add(output.Position);
+                write((imageBase + i * 2 + 1) + " 0 obj\n<< /Type /XObject /Subtype /Image /Width " + im.W + " /Height " + im.H +
+                      " /ColorSpace /DeviceGray /BitsPerComponent 8 /Interpolate true /Filter /FlateDecode /Length " + alpha.Length + " >>\nstream\n");
+                output.Write(alpha, 0, alpha.Length);
+                write("\nendstream\nendobj\n");
+            }
+            int infoObj = imageBase + images.Count * 2;
             obj(infoObj, "<< /Title " + PdfString(Title) + " /Author " + PdfString(Author) + " /Subject " + PdfString(Subject) +
                 " /Producer (Polarnite Server Audit Tool) /CreationDate (D:" + DateTime.Now.ToString("yyyyMMddHHmmss", CultureInfo.InvariantCulture) + ") >>");
 

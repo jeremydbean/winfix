@@ -100,7 +100,12 @@ namespace PolarniteAudit
             pdf.Text(M, 38, a.ServerName, PdfFont.Bold, 8, Ink);
             double w = PdfDoc.Measure(a.ServerName, PdfFont.Bold, 8);
             pdf.Text(M + w, 38, "  ·  Monthly Server Audit  ·  " + a.MonthLabel, PdfFont.Regular, 8, Muted);
-            pdf.TextRight(PdfDoc.Width - M, 38, company, PdfFont.Bold, 8, Muted);
+            if (badgeImage >= 0)
+            {
+                pdf.DrawImage(badgeImage, PdfDoc.Width - M - 18, 25, 18, 18);
+                pdf.TextRight(PdfDoc.Width - M - 24, 38, company, PdfFont.Bold, 8, Muted);
+            }
+            else pdf.TextRight(PdfDoc.Width - M, 38, company, PdfFont.Bold, 8, Muted);
             pdf.Line(M, 46, PdfDoc.Width - M, 46, Border, 0.6);
             y = Top;
         }
@@ -169,8 +174,12 @@ namespace PolarniteAudit
 
         // ------------------------------------------------------------ build
 
+        private int logoImage = -1, badgeImage = -1;
+
         private void Build()
         {
+            if (AppInfo.Logo != null) logoImage = pdf.AddImage(AppInfo.Logo, 520);
+            if (AppInfo.Badge != null) badgeImage = pdf.AddImage(AppInfo.Badge, 96);
             pdf.Title = "Server audit — " + a.ServerName + " — " + a.MonthLabel;
             pdf.Author = string.IsNullOrEmpty(d.Technician) ? company : d.Technician;
             pdf.Subject = d.Tenant;
@@ -197,7 +206,15 @@ namespace PolarniteAudit
             pdf.PopClip();
             pdf.FillRect(0, band, PdfDoc.Width, 4, Sky);
 
-            pdf.Text(M, 44, (company + "   ·   Monthly Server Audit").ToUpperInvariant(), PdfFont.Bold, 8.2, SkySoft, 1.4);
+            if (logoImage >= 0)
+            {
+                // Logo is 1.9:1 (white wordmark + badge), drawn on the navy band.
+                const double logoH = 46;
+                double logoW = logoH * AppInfo.Logo.Width / AppInfo.Logo.Height;
+                pdf.DrawImage(logoImage, M, 12, logoW, logoH);
+                pdf.Text(M + logoW + 16, 39, "MONTHLY SERVER AUDIT", PdfFont.Bold, 8.2, SkySoft, 1.4);
+            }
+            else pdf.Text(M, 44, (company + "   ·   Monthly Server Audit").ToUpperInvariant(), PdfFont.Bold, 8.2, SkySoft, 1.4);
             double nameSize = 30;
             while (nameSize > 16 && PdfDoc.Measure(a.ServerName, PdfFont.Bold, nameSize) > CW - 170) nameSize -= 1;
             pdf.Text(M, 92, a.ServerName, PdfFont.Bold, nameSize, White);

@@ -17,6 +17,24 @@ namespace PolarniteAudit
     {
         public const string Name = "Polarnite Server Audit Tool";
         public const string ExeName = "PolarniteServerAuditTool.exe";
+
+        private static System.Drawing.Image logo, badge;
+
+        /// <summary>Polarnite logo (white wordmark and round badge) for dark backgrounds; null if the resource is missing.</summary>
+        public static System.Drawing.Image Logo { get { return logo ?? (logo = LoadImage("PolarniteLogo.png")); } }
+
+        /// <summary>The round "nITe services" badge; works on light and dark backgrounds.</summary>
+        public static System.Drawing.Image Badge { get { return badge ?? (badge = LoadImage("PolarniteBadge.png")); } }
+
+        private static System.Drawing.Image LoadImage(string name)
+        {
+            try
+            {
+                using (var s = typeof(AppInfo).Assembly.GetManifestResourceStream(name))
+                    return s == null ? null : new System.Drawing.Bitmap(System.Drawing.Image.FromStream(s));
+            }
+            catch (Exception ex) { Log.Write("Could not load " + name + ": " + ex.Message); return null; }
+        }
     }
 
     internal static class Program
