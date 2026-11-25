@@ -59,6 +59,32 @@ namespace PolarniteAudit
             chkOnline.Checked = settings.OnlineUpdateScan;
         }
 
+        // ------------------------------------------------------------ fitting the screen
+
+        protected override void OnLoad(EventArgs e)
+        {
+            base.OnLoad(e);   // DPI scaling is applied here, so measure afterwards
+            if (persist) FitToScreen(this, true);
+        }
+
+        /// <summary>
+        /// Keeps a window inside the screen's working area (laptops, 125-150 % scaling), so the
+        /// bottom buttons are never off-screen. A resizable window that does not fit is maximized.
+        /// </summary>
+        internal static void FitToScreen(Form f, bool maximizeIfTooBig)
+        {
+            Rectangle area = Screen.FromPoint(f.StartPosition == FormStartPosition.CenterParent && f.Owner != null ? f.Owner.Location : Cursor.Position).WorkingArea;
+            f.MinimumSize = new Size(Math.Min(f.MinimumSize.Width, area.Width), Math.Min(f.MinimumSize.Height, area.Height));
+            bool tooBig = f.Width > area.Width || f.Height > area.Height;
+            if (!tooBig) return;
+            if (maximizeIfTooBig) { f.WindowState = FormWindowState.Maximized; return; }
+            f.Size = new Size(Math.Min(f.Width, area.Width), Math.Min(f.Height, area.Height));
+            f.Location = new Point(area.Left + (area.Width - f.Width) / 2, area.Top + (area.Height - f.Height) / 2);
+        }
+
+        /// <summary>Test mode: resize the window, for checking small screens.</summary>
+        internal void ResizeForTest(Size size) { MinimumSize = new Size(0, 0); Size = size; PerformLayout(); Application.DoEvents(); }
+
         // ------------------------------------------------------------ UI construction
 
         private static Button NewButton(string text, bool primary)
@@ -132,7 +158,7 @@ namespace PolarniteAudit
             lblBanner = new Label { Dock = DockStyle.Top, AutoSize = false, Height = 34, Padding = new Padding(18, 0, 18, 0), TextAlign = ContentAlignment.MiddleLeft, Visible = false, Font = new Font("Segoe UI", 9F, FontStyle.Bold) };
 
             // Bottom bar
-            var bottom = new Panel { Dock = DockStyle.Bottom, Height = 58, BackColor = Soft, Padding = new Padding(16, 10, 16, 10) };
+            var bottom = new Panel { Dock = DockStyle.Bottom, Height = 64, BackColor = Soft, Padding = new Padding(16, 8, 16, 8) };
             progress = new ProgressBar { Width = 200, Height = 14, Location = new Point(18, 22), Visible = false, Maximum = 80 };
             lblProgress = new Label { AutoSize = true, Location = new Point(226, 20), ForeColor = MutedText, Text = "Ready." };
             var right = new FlowLayoutPanel { Dock = DockStyle.Right, AutoSize = true, WrapContents = false, FlowDirection = FlowDirection.LeftToRight };

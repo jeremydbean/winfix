@@ -29,6 +29,12 @@ namespace PolarniteAudit
             Fill(settings);
         }
 
+        protected override void OnLoad(EventArgs e)
+        {
+            base.OnLoad(e);
+            MainForm.FitToScreen(this, false);   // the settings list scrolls; Save/Cancel stay visible at the bottom
+        }
+
         private TableLayoutPanel grid;
 
         private void Row(string label, Control field, string hint)

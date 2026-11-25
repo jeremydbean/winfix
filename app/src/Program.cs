@@ -40,7 +40,7 @@ namespace PolarniteAudit
                 if (mode == "--render" && args.Length >= 3) return Render(args[1], args[2], args.Length >= 4 ? args[3] : null);
                 Application.EnableVisualStyles();
                 Application.SetCompatibleTextRenderingDefault(false);
-                if (mode == "--screenshot" && args.Length >= 3) return Screenshot(args[1], args[2]);
+                if (mode == "--screenshot" && args.Length >= 3) return Screenshot(args[1], args[2], args.Length >= 4 ? args[3] : null);
 
                 AppPaths.MigrateLegacy();
                 bool afterUpdate = mode == "--after-update";
@@ -139,7 +139,7 @@ namespace PolarniteAudit
             return 0;
         }
 
-        private static int Screenshot(string reportPath, string outDir)
+        private static int Screenshot(string reportPath, string outDir, string size)
         {
             using (var form = new MainForm(false))
             {
@@ -158,6 +158,8 @@ namespace PolarniteAudit
                 d.Answer("backup_failures").Status = ManualCatalog.Issue;
                 form.LoadForPreview(reportPath, d);
                 Application.DoEvents();
+                System.Text.RegularExpressions.Match m = System.Text.RegularExpressions.Regex.Match(size ?? "", @"^(\d+)x(\d+)$");
+                if (m.Success) form.ResizeForTest(new System.Drawing.Size(int.Parse(m.Groups[1].Value), int.Parse(m.Groups[2].Value)));
                 form.SaveScreenshots(outDir);
                 form.Close();
             }
