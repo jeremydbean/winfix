@@ -10,7 +10,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 
-namespace WinFixAudit
+namespace PolarniteAudit
 {
     internal sealed class MainForm : Form
     {
@@ -44,7 +44,7 @@ namespace WinFixAudit
         public MainForm(bool persist)
         {
             this.persist = persist;
-            Text = "WinFix Server Audit";
+            Text = AppInfo.Name;
             Font = new Font("Segoe UI", 9F);
             AutoScaleMode = AutoScaleMode.Dpi;
             StartPosition = FormStartPosition.CenterScreen;
@@ -392,7 +392,7 @@ namespace WinFixAudit
         {
             if (busy)
             {
-                if (MessageBox.Show(this, "An operation is still running. Cancel it and close?", "WinFix Server Audit", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes)
+                if (MessageBox.Show(this, "An operation is still running. Cancel it and close?", AppInfo.Name, MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes)
                 {
                     e.Cancel = true;
                     return;
@@ -422,7 +422,7 @@ namespace WinFixAudit
             }
             catch (Exception ex)
             {
-                MessageBox.Show(this, "Could not read the audit report:\n\n" + ex.Message, "WinFix Server Audit", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                MessageBox.Show(this, "Could not read the audit report:\n\n" + ex.Message, AppInfo.Name, MessageBoxButtons.OK, MessageBoxIcon.Error);
                 return;
             }
             DraftState existing = persist ? DraftStore.Load() : draft;
@@ -466,7 +466,7 @@ namespace WinFixAudit
             {
                 lblServer.Text = analysis.ServerName;
                 lblSub.Text = (string.IsNullOrWhiteSpace(draft.Tenant) ? "" : draft.Tenant + "   ·   ") + analysis.MonthLabel + "   ·   audited " + J.FormatDateTime(analysis.AuditTime);
-                Text = "WinFix Server Audit — " + analysis.ServerName;
+                Text = AppInfo.Name + " — " + analysis.ServerName;
                 txtTenant.Text = draft.Tenant;
                 txtTech.Text = draft.Technician;
                 txtPurpose.Text = draft.ServerPurpose;
@@ -676,7 +676,7 @@ namespace WinFixAudit
 
         private void OpenReport()
         {
-            using (var dlg = new OpenFileDialog { Title = "Open a WinFix audit report", Filter = "WinFix audit JSON (WinFixAudit-*.json)|WinFixAudit-*.json|All JSON files|*.json", InitialDirectory = Directory.Exists(AppPaths.RunsDir) ? AppPaths.RunsDir : "" })
+            using (var dlg = new OpenFileDialog { Title = "Open an audit report", Filter = "Audit collector JSON (WinFixAudit-*.json)|WinFixAudit-*.json|All JSON files|*.json", InitialDirectory = Directory.Exists(AppPaths.RunsDir) ? AppPaths.RunsDir : "" })
             {
                 if (dlg.ShowDialog(this) != DialogResult.OK) return;
                 LoadReport(dlg.FileName, "Manual");
@@ -706,7 +706,7 @@ namespace WinFixAudit
             if (analysis == null) return;
             try
             {
-                string dir = Path.Combine(Path.GetTempPath(), "WinFixAuditPreview");
+                string dir = Path.Combine(Path.GetTempPath(), "PolarniteAuditPreview");
                 Directory.CreateDirectory(dir);
                 string path = Path.Combine(dir, TicketComposer.PdfFileName(analysis, draft));
                 File.WriteAllBytes(path, ReportPdf.Render(analysis, draft, settings.CompanyName));

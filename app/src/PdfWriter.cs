@@ -5,7 +5,7 @@ using System.IO;
 using System.IO.Compression;
 using System.Text;
 
-namespace WinFixAudit
+namespace PolarniteAudit
 {
     internal struct Rgb
     {
@@ -273,7 +273,7 @@ namespace WinFixAudit
             }
             int infoObj = pageBase + pages.Count * 2;
             obj(infoObj, "<< /Title " + PdfString(Title) + " /Author " + PdfString(Author) + " /Subject " + PdfString(Subject) +
-                " /Producer (WinFix Server Audit) /CreationDate (D:" + DateTime.Now.ToString("yyyyMMddHHmmss", CultureInfo.InvariantCulture) + ") >>");
+                " /Producer (Polarnite Server Audit Tool) /CreationDate (D:" + DateTime.Now.ToString("yyyyMMddHHmmss", CultureInfo.InvariantCulture) + ") >>");
 
             long xref = output.Position;
             write("xref\n0 " + (offsets.Count + 1) + "\n0000000000 65535 f \n");

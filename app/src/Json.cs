@@ -6,7 +6,7 @@ using System.Text;
 using System.Text.RegularExpressions;
 using System.Web.Script.Serialization;
 
-namespace WinFixAudit
+namespace PolarniteAudit
 {
     /// <summary>
     /// Helpers for reading the loosely-typed collector JSON. The collector runs on

@@ -4,7 +4,7 @@ using System.Globalization;
 using System.Linq;
 using System.Text.RegularExpressions;
 
-namespace WinFixAudit
+namespace PolarniteAudit
 {
     /// <summary>
     /// Collector 1.13 rules (antivirus detections, backup jobs, certificates, activation,
@@ -50,6 +50,7 @@ namespace WinFixAudit
             Hardware();
             ActiveDirectory();
             Exposure();
+            PlatformChecks();
         }
 
         // ------------------------------------------------------------ antivirus
@@ -211,10 +212,13 @@ namespace WinFixAudit
         {
             CheckResult c = C("Activation");
             if (!c.Ok || c.First == null) return;
-            int status = (int)(J.Num(c.First, "LicenseStatus") ?? -1);
+            object os = c.Data.FirstOrDefault(x => !Match(J.Str(x, "Name") + " " + J.Str(x, "Description"), @"\bESU\b")) ?? c.First;
+            foreach (object esu in c.Data.Where(x => x != os && Match(J.Str(x, "Name") + " " + J.Str(x, "Description"), @"\bESU\b")))
+                t.Add("Extended Security Updates", new Cell((J.Num(esu, "LicenseStatus") ?? 0) == 1 ? "Activated" : "Not activated", (J.Num(esu, "LicenseStatus") ?? 0) == 1 ? Severity.Pass : Severity.Warning), J.Str(esu, "Name"));
+            int status = (int)(J.Num(os, "LicenseStatus") ?? -1);
             string[] names = { "Unlicensed", "Licensed", "Out-of-box grace", "Out-of-tolerance grace", "Non-genuine grace", "Notification", "Extended grace" };
             string text = status >= 0 && status < names.Length ? names[status] : "Unknown";
-            t.Add("Windows activation", new Cell(status == 1 ? "Activated" : text, status == 1 ? Severity.Pass : Severity.Warning), J.Str(c.First, "Description"));
+            t.Add("Windows activation", new Cell(status == 1 ? "Activated" : text, status == 1 ? Severity.Pass : Severity.Warning), J.Str(os, "Description"));
             if (status == 1) Add("activation", Severity.Pass, "System", "Windows is activated", "");
             else Add("activation", Severity.Warning, "System", "Windows is not activated (" + text + ")",
                 "Activate Windows (KMS/AVMA/MAK) before the grace period ends. Unactivated servers show notifications and may lose functionality.");
@@ -230,7 +234,7 @@ namespace WinFixAudit
             t.Add("LAPS (local admin password)", new Cell(on ? "Configured" : "Not configured", on ? Severity.Pass : Severity.Info),
                 legacy ? "Legacy Microsoft LAPS" : backup == 2 ? "Windows LAPS to Active Directory" : backup == 1 ? "Windows LAPS to Entra ID" : "");
             if (on) Add("laps", Severity.Pass, "Accounts", "LAPS manages the local administrator password", "");
-            else Add("laps", Severity.Info, "Accounts", "LAPS is not configured", "The local Administrator password is not rotated automatically. Windows LAPS is built into Server 2019 and later (April 2023 update).");
+            else Add("laps", Severity.Info, "Accounts", "LAPS is not configured", "The local Administrator password is not rotated automatically. Windows LAPS is built into Windows 10/11 and Server 2019 and later (April 2023 update).");
         }
 
         private void Hardening(TableBlock t)
@@ -289,7 +293,7 @@ namespace WinFixAudit
             t.Add("LSA protection (RunAsPPL)", new Cell(lsa ? "On" : "Off", lsa ? Severity.Pass : Severity.Info), "");
             if (!lsa) Add("lsa-ppl", Severity.Info, "Security", "LSA protection is off", "Running LSASS as a protected process makes credential dumping harder. Test drivers/plug-ins first.");
 
-            if (C("ServerRoles").Data.Any(r => J.Str(r, "Name") == "PowerShell-V2"))
+            if (C("ServerRoles").Data.Any(r => J.Str(r, "Name") == "PowerShell-V2" || J.Str(r, "Name") == "MicrosoftWindowsPowerShellV2Root"))
             {
                 t.Add("PowerShell 2.0", new Cell("Installed", Severity.Warning), "");
                 Add("psv2", Severity.Warning, "Security", "PowerShell 2.0 is installed", "PowerShell 2.0 bypasses script-block logging and AMSI. Remove the PowerShell-V2 feature.");

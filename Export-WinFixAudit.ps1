@@ -568,7 +568,7 @@ function Save-AuditCheckpoint {
     if ($script:checkpointPath) {
         $tempPath = $script:checkpointPath + '.tmp'
         try {
-            $snapshot = [ordered]@{ SchemaVersion='1.13'; AuditId=$script:auditId; Incomplete=$true
+            $snapshot = [ordered]@{ SchemaVersion='1.14'; AuditId=$script:auditId; Incomplete=$true
                 SavedAt=(Get-Date).ToString('o'); ClientName=$ClientName; Location=$Location; Elevated=$elevated
                 Checks=$script:checks; DeepAuditRequested=[bool]$DeepAudit; ExportWarnings=@($script:checkpointWarnings) }
             $checkpointJson = ConvertTo-AuditJson -InputObject $snapshot
@@ -797,6 +797,31 @@ function ConvertFrom-AuditVeeamJobMessage {
         [pscustomobject]@{ Job=$matches['job']; Result=$result }
     }
 }
+function ConvertFrom-AuditPowerSetting {
+    # powercfg /query <scheme> <subgroup> <setting>: the hex values are minimum, maximum,
+    # increment, then the current AC and DC values. Labels are localized, so use position.
+    param([string]$Text)
+    $values=@([regex]::Matches([string]$Text, ':\s*0x([0-9a-fA-F]{1,8})\b') | ForEach-Object { [Convert]::ToInt64($_.Groups[1].Value, 16) })
+    $ac=$null; $dc=$null
+    if ($values.Count -ge 4) { $ac=$values[3] }
+    if ($values.Count -ge 5) { $dc=$values[4] }
+    [pscustomobject]@{ Ac=$ac; Dc=$dc }
+}
+function ConvertFrom-AuditBackupLogLine {
+    # Best-effort outcome and timestamp for one backup-agent log line.
+    param([string]$Text)
+    $time=$null
+    # $Matches keys are case-insensitive, so the group names must differ by more than case.
+    if ([string]$Text -match '(?<yr>20\d{2})[-/.](?<mo>\d{1,2})[-/.](?<dy>\d{1,2})[ T_]+(?<hh>\d{1,2}):(?<mi>\d{2})(?::(?<ss>\d{2}))?') {
+        $sec=0; if ($Matches.ss) { $sec=[int]$Matches.ss }
+        try { $time=New-Object DateTime -ArgumentList @([int]$Matches.yr, [int]$Matches.mo, [int]$Matches.dy, [int]$Matches.hh, [int]$Matches.mi, $sec) } catch { $time=$null }
+    }
+    $clean=[string]$Text -replace '(?i)\b(no|0|zero)\s+(errors?|failures?|warnings?)\b', ''
+    $outcome='Other'
+    if ($clean -match '(?i)\b(fail(ed|ure|s)?|error|abort(ed)?|cancel(l)?ed|partial(ly)?\s+(complete|success))') { $outcome='Failure' }
+    elseif ($clean -match '(?i)\b(succe(ss|eded|ssful(ly)?)|completed?|finished)\b') { $outcome='Success' }
+    [pscustomobject]@{ Time=$time; Outcome=$outcome }
+}
 function Assert-AuditLocalMetadataPath {
     param([string]$Path)
     $provider=$null; $drive=$null
@@ -990,7 +1015,7 @@ $OutputDirectory = Initialize-AuditOutputDirectory -Path $OutputDirectory
 $prefix = 'WinFixAudit-' + $env:COMPUTERNAME + '-' + $started.ToString('yyyyMMdd-HHmmss')
 $script:checkpointPath = Join-Path $OutputDirectory "$prefix-PARTIAL.json"
 $BackupPattern = 'Synology (Drive|Active Backup)|cloud.?drive|Veeam|Acronis|Macrium|Datto|Carbonite|Veritas|CrashPlan|\bCove\b|Axcient|Rubrik|Backup|StorageCraft|ShadowProtect|Arcserve|MSP360|CloudBerry|Druva|Commvault|NAKIVO|Retrospect|UrBackup|Duplicati|Duplicacy|Restic|rclone|IDrive|Backblaze|GoodSync|SyncBack|EaseUS|AOMEI|OneDrive'
-Write-Host "WinFix audit 1.13. Completed checks are saved to $script:checkpointPath"
+Write-Host "WinFix audit 1.14. Completed checks are saved to $script:checkpointPath"
 if (-not $elevated) { Write-Warning 'Run ISE as Administrator for the fullest audit.' }
 Save-AuditCheckpoint
 $checks.System = Invoke-AuditCheck System {
@@ -1022,8 +1047,14 @@ $checks.Hardware = Invoke-AuditCheck Hardware {
     Get-CimInstance Win32_Processor | Select-Object Name, NumberOfCores, NumberOfLogicalProcessors
     Get-CimInstance Win32_BIOS | Select-Object Manufacturer, SMBIOSBIOSVersion, ReleaseDate
 }
-$checks.ServerRoles = Invoke-AuditCheck ServerRoles {
-    Get-WindowsFeature | Where-Object Installed | Select-Object Name, DisplayName
+$checks.ServerRoles = Invoke-AuditCheck ServerRoles -TimeoutSeconds 90 -Collect {
+    if ((Get-CimInstance Win32_OperatingSystem).ProductType -eq 1) {
+        # Windows 10/11: optional features (Get-WindowsFeature is server-only).
+        Get-WindowsOptionalFeature -Online -ErrorAction Stop | Where-Object { [string]$_.State -eq 'Enabled' } |
+            Select-Object @{n='Name';e={$_.FeatureName}}, @{n='DisplayName';e={$_.FeatureName}}
+    } else {
+        Get-WindowsFeature | Where-Object Installed | Select-Object Name, DisplayName
+    }
 }
 $checks.Software = Invoke-AuditCheck Software {
     # Do not use Win32_Product: querying it can trigger MSI repairs.
@@ -1741,6 +1772,179 @@ $checks.HardwareVendorHealth = Invoke-AuditCheck HardwareVendorHealth -TimeoutSe
 $checks.HardwareEvents = Invoke-AuditCheck HardwareEvents {
     Get-AuditEvents -LogName System -Levels 1,2 -ProviderPattern 'Server Administrator|iDRAC|Dell|HP Insight|HPE|iLO|\bAMS\b|Cpq|SmartArray|HpCISSs|LSI|MegaRAID|megasas|percsas|arcsas|mpt3sas|WHEA-Logger|PowerChute|APC' -IncludeMessage
 }
+$checks.ClientPlatform = Invoke-AuditCheck ClientPlatform -TimeoutSeconds 90 -Context @{
+    NativeCode=${function:Invoke-AuditNativeReader}.ToString(); PowerCode=${function:ConvertFrom-AuditPowerSetting}.ToString()
+} -Collect {
+    Set-Item Function:Invoke-AuditNativeReader ([scriptblock]::Create($NativeCode))
+    Set-Item Function:ConvertFrom-AuditPowerSetting ([scriptblock]::Create($PowerCode))
+    function Get-AuditRegValue([string]$Path, [string]$Name) {
+        try { (Get-ItemProperty -LiteralPath $Path -Name $Name -ErrorAction Stop).$Name } catch { $null }
+    }
+    $powercfg=Join-Path $env:SystemRoot 'System32\powercfg.exe'
+    $power=@(foreach ($s in @(
+            @('SleepAfter','238c9fa8-0aad-41ed-83f4-97be242c8f20','29f6c1db-86da-48c5-9fdb-f2b67b1f44da'),
+            @('HibernateAfter','238c9fa8-0aad-41ed-83f4-97be242c8f20','9d7815a6-7ee4-497e-8888-515a05f02364'),
+            @('DiskOffAfter','0012ee47-9041-4b5d-9b77-535fba8b1442','6738e2c4-e8a5-4a42-b16a-e040e769756e'))) {
+        $q=Invoke-AuditNativeReader -FilePath $powercfg -Arguments ('/query SCHEME_CURRENT ' + $s[1] + ' ' + $s[2]) -Seconds 15
+        $v=ConvertFrom-AuditPowerSetting $q.StandardOutput
+        [pscustomobject]@{ Setting=$s[0]; AcSeconds=$v.Ac; DcSeconds=$v.Dc; ExitCode=$q.ExitCode }
+    })
+    $scheme=Invoke-AuditNativeReader -FilePath $powercfg -Arguments '/getactivescheme' -Seconds 10
+    $winlogon='HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon'
+    $hasStoredPassword=$false
+    # Only the value NAME is checked; the stored password itself is never read.
+    try { $hasStoredPassword=@((Get-Item -LiteralPath $winlogon -ErrorAction Stop).GetValueNames()) -contains 'DefaultPassword' } catch { }
+    $uac='HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System'
+    $ux='HKLM:\SOFTWARE\Microsoft\WindowsUpdate\UX\Settings'
+    $wu='HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate'
+    $tpmSpec=$null
+    try { $tpmSpec=[string](Get-CimInstance -Namespace root/cimv2/Security/MicrosoftTpm -ClassName Win32_Tpm -ErrorAction Stop | Select-Object -First 1).SpecVersion } catch { }
+    [pscustomobject]@{
+        ProductType=(Get-CimInstance Win32_OperatingSystem).ProductType
+        PowerScheme=([string]$scheme.StandardOutput).Trim()
+        Power=$power
+        HibernateEnabled=(Get-AuditRegValue 'HKLM:\SYSTEM\CurrentControlSet\Control\Power' 'HibernateEnabled')
+        FastStartup=(Get-AuditRegValue 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Power' 'HiberbootEnabled')
+        AutoAdminLogon=[string](Get-AuditRegValue $winlogon 'AutoAdminLogon')
+        AutoLogonUser=[string](Get-AuditRegValue $winlogon 'DefaultUserName')
+        AutoLogonPasswordStored=$hasStoredPassword
+        UacEnabled=(Get-AuditRegValue $uac 'EnableLUA')
+        UacAdminPrompt=(Get-AuditRegValue $uac 'ConsentPromptBehaviorAdmin')
+        UpdatesPausedUntil=[string](Get-AuditRegValue $ux 'PauseUpdatesExpiryTime')
+        FeatureUpdatesPausedUntil=[string](Get-AuditRegValue $ux 'PauseFeatureUpdatesEndTime')
+        QualityUpdatesPausedUntil=[string](Get-AuditRegValue $ux 'PauseQualityUpdatesEndTime')
+        DeferFeatureDays=(Get-AuditRegValue $wu 'DeferFeatureUpdatesPeriodInDays')
+        DeferQualityDays=(Get-AuditRegValue $wu 'DeferQualityUpdatesPeriodInDays')
+        TargetReleaseVersion=[string](Get-AuditRegValue $wu 'TargetReleaseVersionInfo')
+        NoAutoRebootWithLoggedOnUsers=(Get-AuditRegValue "$wu\AU" 'NoAutoRebootWithLoggedOnUsers')
+        TpmSpecVersion=$tpmSpec
+        Coverage='Registry and powercfg values only. Power values are seconds (0 = never) for the active power plan. The auto sign-in password is detected by value name only and never read.' }
+}
+$checks.SynologyActiveBackup = Invoke-AuditCheck SynologyActiveBackup -TimeoutSeconds 90 -Context @{
+    TailCode=${function:Read-AuditVeeamLog}.ToString(); LineCode=${function:ConvertFrom-AuditBackupLogLine}.ToString()
+} -Collect {
+    Set-Item Function:Read-AuditVeeamLog ([scriptblock]::Create($TailCode))
+    Set-Item Function:ConvertFrom-AuditBackupLogLine ([scriptblock]::Create($LineCode))
+    $services=@(Get-CimInstance Win32_Service | Where-Object { "$($_.Name) $($_.DisplayName)" -match '(?i)active ?backup' })
+    $roots=New-Object 'Collections.Generic.List[string]'
+    foreach ($s in $services) {
+        $exe=[string]$s.PathName
+        if ($exe -match '^\s*"([^"]+)"') { $exe=$Matches[1] } elseif ($exe -match '^\s*(\S+\.exe)') { $exe=$Matches[1] } else { $exe=$null }
+        if ($exe) {
+            $dir=Split-Path -Parent $exe
+            if ($dir) { $roots.Add($dir); if ((Split-Path -Leaf $dir) -match '^(bin|x64|x86)$') { $roots.Add((Split-Path -Parent $dir)) } }
+        }
+    }
+    $bases=@($env:ProgramData, $env:ProgramFiles, ${env:ProgramFiles(x86)},
+        (Join-Path $env:SystemRoot 'System32\config\systemprofile\AppData\Local'), (Join-Path $env:SystemRoot 'System32\config\systemprofile\AppData\Roaming'))
+    foreach ($base in $bases) {
+        if (-not $base -or -not [IO.Directory]::Exists($base)) { continue }
+        foreach ($d in @(Get-ChildItem -LiteralPath $base -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -match '(?i)synology|active ?backup' })) {
+            if ($d.Name -match '(?i)active ?backup') { $roots.Add($d.FullName) }
+            foreach ($child in @(Get-ChildItem -LiteralPath $d.FullName -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -match '(?i)active ?backup' })) { $roots.Add($child.FullName) }
+        }
+    }
+    $uniqueRoots=@($roots | Where-Object { $_ } | Sort-Object -Unique | Select-Object -First 6)
+    if (-not $services.Count -and -not $uniqueRoots.Count) {
+        [pscustomobject]@{ RecordType='Summary'; Installed=$false; Coverage='No Active Backup for Business agent service or folder found.' }; return
+    }
+    $logs=New-Object 'Collections.Generic.List[object]'; $scanned=0
+    foreach ($root in $uniqueRoots) {
+        try {
+            foreach ($f in [IO.Directory]::EnumerateFiles($root, '*', [IO.SearchOption]::AllDirectories)) {
+                $scanned++; if ($scanned -gt 3000) { break }
+                if ($f -match '(?i)\.(log|txt)(\.\d+)?$') { $logs.Add((New-Object IO.FileInfo $f)) }
+            }
+        } catch { }
+    }
+    $connections=@()
+    try { $connections=@(Get-NetTCPConnection -State Established -RemotePort 5510 -ErrorAction Stop | Select-Object -First 5 RemoteAddress, RemotePort, OwningProcess) } catch { }
+    [pscustomobject]@{ RecordType='Summary'; Installed=$true
+        Services=@($services | Select-Object Name, DisplayName, State, StartMode); Roots=$uniqueRoots
+        LogFilesFound=$logs.Count; FilesScanned=$scanned; FileScanTruncated=($scanned -gt 3000); NasConnections=$connections
+        Coverage='Agent-side evidence: service state, the newest agent log files with outcome lines parsed best-effort, and established connections on TCP 5510 (the agent''s NAS port). Task status, retention and restore points are in Active Backup for Business on the NAS.' }
+    foreach ($f in @($logs | Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 3)) {
+        $r=Read-AuditVeeamLog -Path $f.FullName -MaxLines 40 -MatchPattern '(?i)\b(backup|fail(ed|ure)?|error|succe(ss|eded|ssful)|completed?|finished|cancel(l?ed)?|partial|abort(ed)?)\b'
+        $lines=@(foreach ($l in @($r.Lines)) {
+            if ($l.Text -match '(?i)password|passwd|token|authorization|bearer|cookie|credential') { continue }
+            $p=ConvertFrom-AuditBackupLogLine $l.Text
+            [pscustomobject]@{ Text=$l.Text; Time=$p.Time; Outcome=$p.Outcome }
+        })
+        [pscustomobject]@{ RecordType='Log'; Path=$f.FullName; LastWriteTime=$f.LastWriteTime; Length=$f.Length; Status=$r.Status; Lines=$lines }
+    }
+}
+if (Test-Path 'HKLM:\SOFTWARE\Veeam\Veeam Backup and Replication') {
+    $checks.VeeamServerJobs = Invoke-AuditCheck VeeamServerJobs -TimeoutSeconds 240 -Collect {
+        if (Get-Module -ListAvailable -Name Veeam.Backup.PowerShell) { Import-Module Veeam.Backup.PowerShell -ErrorAction Stop -WarningAction SilentlyContinue -DisableNameChecking }
+        elseif (Get-PSSnapin -Registered -Name VeeamPSSnapIn -ErrorAction SilentlyContinue) { Add-PSSnapin VeeamPSSnapIn -ErrorAction Stop }
+        else { throw 'Veeam PowerShell is not installed on this computer (not applicable).' }
+        $seen=@{}
+        foreach ($job in @(Get-VBRJob -WarningAction SilentlyContinue | Select-Object -First 100)) {
+            $seen[$job.Name]=$true
+            $last=$null; try { $last=$job.FindLastSession() } catch { }
+            $repo=$null; try { $repo=$job.GetTargetRepository().Name } catch { }
+            $points=$null; $newest=$null
+            try {
+                $b=Get-VBRBackup -Name $job.Name -WarningAction SilentlyContinue | Select-Object -First 1
+                if ($b) { $rp=@(Get-VBRRestorePoint -Backup $b -WarningAction SilentlyContinue); $points=$rp.Count; $newest=($rp | Sort-Object CreationTime -Descending | Select-Object -First 1).CreationTime }
+            } catch { }
+            $result=$null; try { $result=[string]$job.GetLastResult() } catch { }
+            [pscustomobject]@{ RecordType='Job'; Name=$job.Name; JobType=[string]$job.JobType; TypeText=[string]$job.TypeToString
+                ScheduleEnabled=[bool]$job.IsScheduleEnabled; LastResult=$result
+                LastStart=$(if ($last) { $last.CreationTime }); LastEnd=$(if ($last) { $last.EndTime })
+                Repository=$repo; RestorePoints=$points; NewestRestorePoint=$newest }
+        }
+        try {
+            foreach ($cj in @(Get-VBRComputerBackupJob -WarningAction SilentlyContinue | Select-Object -First 100)) {
+                if ($seen.ContainsKey($cj.Name)) { continue }; $seen[$cj.Name]=$true
+                $s=$null; try { $s=@(Get-VBRComputerBackupJobSession -Name $cj.Name -WarningAction SilentlyContinue) | Sort-Object CreationTime -Descending | Select-Object -First 1 } catch { }
+                [pscustomobject]@{ RecordType='Job'; Name=$cj.Name; JobType='EndpointBackup'; TypeText='Agent backup'; ScheduleEnabled=[bool]$cj.JobEnabled
+                    LastResult=$(if ($s) { [string]$s.Result }); LastStart=$(if ($s) { $s.CreationTime }); LastEnd=$(if ($s) { $s.EndTime })
+                    Repository=$(try { [string]$cj.BackupRepository.Name } catch { $null }); RestorePoints=$null; NewestRestorePoint=$null }
+            }
+        } catch { }
+        try {
+            foreach ($copy in @(Get-VBRBackupCopyJob -WarningAction SilentlyContinue | Select-Object -First 100)) {
+                if ($seen.ContainsKey($copy.Name)) { continue }; $seen[$copy.Name]=$true
+                [pscustomobject]@{ RecordType='Job'; Name=$copy.Name; JobType='BackupCopy'; TypeText='Backup copy'; ScheduleEnabled=[bool]$copy.JobEnabled
+                    LastResult=$null; LastStart=$null; LastEnd=$null; Repository=$(try { [string]$copy.Target.Name } catch { $null }); RestorePoints=$null; NewestRestorePoint=$null }
+            }
+        } catch { }
+        try {
+            foreach ($repo in @(Get-VBRBackupRepository -WarningAction SilentlyContinue | Select-Object -First 30)) {
+                $total=$null; $free=$null
+                try { $c=$repo.GetContainer(); $total=[math]::Round($c.CachedTotalSpace.InGigabytes, 1); $free=[math]::Round($c.CachedFreeSpace.InGigabytes, 1) } catch { }
+                [pscustomobject]@{ RecordType='Repository'; Name=$repo.Name; Type=[string]$repo.Type; TotalGB=$total; FreeGB=$free }
+            }
+        } catch { }
+        try {
+            $lic=Get-VBRInstalledLicense -WarningAction SilentlyContinue
+            if ($lic) { [pscustomobject]@{ RecordType='License'; Status=[string]$lic.Status; Type=[string]$lic.Type; Edition=[string]$lic.Edition
+                ExpirationDate=$lic.ExpirationDate; SupportExpirationDate=$lic.SupportExpirationDate } }
+        } catch { }
+        [pscustomobject]@{ RecordType='Coverage'; Coverage='Read-only Veeam PowerShell queries on the local Backup & Replication server: jobs, last results, restore points, repositories and licence. SureBackup/restore tests and immutability are confirmed in the console.' }
+    }
+}
+$checks.OneDriveActivity = Invoke-AuditCheck OneDriveActivity {
+    $machineExe=@(@($env:ProgramFiles, ${env:ProgramFiles(x86)}) | Where-Object { $_ } | ForEach-Object { Join-Path $_ 'Microsoft OneDrive\OneDrive.exe' } | Where-Object { [IO.File]::Exists($_) }) | Select-Object -First 1
+    foreach ($p in @(Get-CimInstance Win32_UserProfile | Where-Object { -not $_.Special -and $_.LocalPath } | Select-Object -First 20)) {
+        $base=Join-Path $p.LocalPath 'AppData\Local\Microsoft\OneDrive'
+        if (-not [IO.Directory]::Exists($base)) { continue }
+        $accounts=@()
+        $logs=Join-Path $base 'logs'
+        if ([IO.Directory]::Exists($logs)) {
+            foreach ($d in @(Get-ChildItem -LiteralPath $logs -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -match '^(Business\d*|Personal)$' })) {
+                $newest=$null; $n=0
+                try { foreach ($f in [IO.Directory]::EnumerateFiles($d.FullName)) { $n++; if ($n -gt 500) { break }; $t=[IO.File]::GetLastWriteTime($f); if (-not $newest -or $t -gt $newest) { $newest=$t } } } catch { }
+                $accounts += [pscustomobject]@{ Account=$d.Name; LastLogWrite=$newest }
+            }
+        }
+        $exe=@(@((Join-Path $base 'OneDrive.exe'), $machineExe) | Where-Object { $_ -and [IO.File]::Exists($_) }) | Select-Object -First 1
+        $version=$null; if ($exe) { try { $version=[Diagnostics.FileVersionInfo]::GetVersionInfo($exe).FileVersion } catch { } }
+        [pscustomobject]@{ SID=$p.SID; ProfilePath=$p.LocalPath; LastUseTime=$p.LastUseTime; Loaded=$p.Loaded; ClientVersion=$version; Accounts=$accounts
+            Coverage='File times of the per-user OneDrive log folders only (no log content). OneDrive syncs only while that user is signed in.' }
+    }
+}
 if ($checks.System.Status -eq 'Collected' -and $checks.System.Data[0].DomainRole -ge 4) {
     $checks.ADHygiene = Invoke-AuditCheck ADHygiene -TimeoutSeconds 120 -Collect {
         Import-Module ActiveDirectory -ErrorAction Stop
@@ -1984,7 +2188,7 @@ $checks.ExternalEvidence = Invoke-AuditCheck ExternalEvidence -Context @{
     Read-ExternalEvidence -Path $EvidencePath -Template $Template
 }
 $report = [ordered]@{
-    SchemaVersion = '1.13'; AuditId = $script:auditId; Incomplete = $false; ClientName = $ClientName; Location = $Location
+    SchemaVersion = '1.14'; AuditId = $script:auditId; Incomplete = $false; ClientName = $ClientName; Location = $Location
     StartedAt = $started.ToString('o'); CompletedAt = (Get-Date).ToString('o'); Elevated = $elevated
     PowerShellVersion = $PSVersionTable.PSVersion.ToString(); Checks = $checks
     ExportWarnings = @($script:checkpointWarnings)

@@ -1,11 +1,13 @@
 <#
 .SYNOPSIS
-Writes a synthetic WinFix collector report for testing the app's rules, PDF and email.
+Writes a synthetic collector report for testing the app's rules, PDF and email.
 Run in Windows PowerShell 5.1 so dates/enums serialize exactly as the real collector's do.
 The server is fictional (DC01 at "Contoso Dental") and deliberately has a mix of problems.
 -PreviousMonth writes the same server 30 days earlier (for testing the month-over-month comparison).
+-Workstation writes a Windows 10 PC used as a server instead (FRONTDESK-PC: ESU, sleep, auto sign-in,
+Synology Active Backup and Drive Client, OneDrive, out-of-support QuickBooks and Office).
 #>
-param([string]$OutputDirectory = '', [switch]$PreviousMonth)
+param([string]$OutputDirectory = '', [switch]$PreviousMonth, [switch]$Workstation)
 $ErrorActionPreference = 'Stop'
 if (-not $OutputDirectory) { $OutputDirectory = Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) 'sample' }
 $prev = [bool]$PreviousMonth
@@ -25,6 +27,79 @@ function EvSet($events, [switch]$Targeted, [switch]$Truncated) {
 }
 
 $checks = [ordered]@{}
+if ($Workstation) {
+    $checks.System = Ok ([pscustomobject]@{ ComputerName='FRONTDESK-PC'; Manufacturer='Dell Inc.'; Model='OptiPlex 7050'; Domain='WORKGROUP'; PartOfDomain=$false; DomainRole=0
+        MemoryGB=15.9; OS='Microsoft Windows 10 Pro'; Version='10.0.19045'; Build='19045'; Architecture='64-bit'
+        InstallDate=[datetime]'2018-06-02 09:40'; LastBoot=(Ago 3.1); UptimeDays=3.1 })
+    $checks.OSRelease = Ok ([pscustomobject]@{ ProductName='Windows 10 Pro'; EditionID='Professional'; DisplayVersion='22H2'; ReleaseId='2009'; CurrentVersion='6.3'; CurrentBuild='19045'; UBR=6456; InstallationType='Client' })
+    $checks.Hardware = Ok @([pscustomobject]@{ Name='Intel(R) Core(TM) i5-7500 CPU @ 3.40GHz'; NumberOfCores=4; NumberOfLogicalProcessors=4 }, [pscustomobject]@{ Manufacturer='Dell Inc.'; SMBIOSBIOSVersion='1.24.0'; ReleaseDate=[datetime]'2023-05-10' })
+    $checks.ServerRoles = Ok @('SMB1Protocol','Printing-Foundation-Features','MicrosoftWindowsPowerShellV2Root' | ForEach-Object { [pscustomobject]@{ Name=$_; DisplayName=$_ } })
+    $checks.AgentServices = Ok @(
+        [pscustomobject]@{ Name='NinjaRMMAgent'; DisplayName='NinjaRMMAgent'; State='Running'; StartMode='Auto' },
+        [pscustomobject]@{ Name='HuntressAgent'; DisplayName='Huntress Agent'; State='Running'; StartMode='Auto' },
+        [pscustomobject]@{ Name='ActiveBackupforBusinessAgentService'; DisplayName='Active Backup for Business Agent'; State='Running'; StartMode='Auto' })
+    $checks.Defender = Ok ([pscustomobject]@{ AMServiceEnabled=$true; AntivirusEnabled=$true; AntispywareEnabled=$true; RealTimeProtectionEnabled=$true; BehaviorMonitorEnabled=$true
+        NISEnabled=$true; IsTamperProtected=$true; AntivirusSignatureVersion='1.441.120.0'; AntivirusSignatureLastUpdated=(Ago 0.4); QuickScanEndTime=(Ago 1); FullScanEndTime=(Ago 9) })
+    $checks.Firewall = Ok @('Domain','Private','Public' | ForEach-Object { [pscustomobject]@{ Name=$_; Enabled=1; DefaultInboundAction=4; DefaultOutboundAction=2; LogBlocked=2; LogAllowed=2 } })
+    $checks.BitLocker = Ok @([pscustomobject]@{ MountPoint='C:'; VolumeType=0; VolumeStatus=0; ProtectionStatus=0; EncryptionPercentage=0; EncryptionMethod=0; LockStatus=0 })
+    $checks.SecureBoot = Ok ([pscustomobject]@{ Enabled=$true })
+    $checks.Disks = Ok @([pscustomobject]@{ DeviceID='C:'; VolumeName='Windows'; FileSystem='NTFS'; SizeGB=475.8; FreeGB=61.2 })
+    $checks.PhysicalDisks = Ok @([pscustomobject]@{ FriendlyName='SAMSUNG MZ7LN512'; MediaType='SSD'; HealthStatus='Healthy'; OperationalStatus='OK'; Size=512110190592 })
+    $checks.LocalUsers = Ok @(
+        [pscustomobject]@{ Name='Administrator'; Enabled=$false; SID='S-1-5-21-1-2-3-500'; LastLogon=$null; PasswordLastSet=(Ago 900); PasswordRequired=$true },
+        [pscustomobject]@{ Name='reception'; Enabled=$true; SID='S-1-5-21-1-2-3-1001'; LastLogon=(Ago 1); PasswordLastSet=(Ago 700); PasswordRequired=$true },
+        [pscustomobject]@{ Name='scanner'; Enabled=$true; SID='S-1-5-21-1-2-3-1002'; LastLogon=(Ago 120); PasswordLastSet=(Ago 1200); PasswordRequired=$true })
+    $checks.Administrators = Ok @([pscustomobject]@{ Name='FRONTDESK-PC\reception'; ObjectClass='User'; PrincipalSource=1 }, [pscustomobject]@{ Name='FRONTDESK-PC\Administrator'; ObjectClass='User'; PrincipalSource=1 })
+    $checks.RDP = Ok ([pscustomobject]@{ DenyConnections=1; RequireNLA=1; SecurityLayer=2; Port=3389 })
+    $checks.Network = Ok @([pscustomobject]@{ Description='Intel(R) Ethernet Connection I219-LM'; DHCPEnabled=$false; IPAddress=@('192.168.1.20'); IPSubnet=@('255.255.255.0'); DefaultIPGateway=@('192.168.1.1'); DNSServerSearchOrder=@('192.168.1.1') })
+    $checks.Shares = Ok @([pscustomobject]@{ Name='Dentrix'; Path='C:\Dentrix'; Description=''; EncryptData=$false; Special=$false }, [pscustomobject]@{ Name='Scans'; Path='C:\Scans'; Description=''; EncryptData=$false; Special=$false })
+    $checks.SMB = Ok ([pscustomobject]@{ EnableSMB1Protocol=$true; EnableSMB2Protocol=$true; EncryptData=$false; RequireSecuritySignature=$false; EnableSecuritySignature=$false })
+    $checks.Hotfixes = Ok @([pscustomobject]@{ HotFixID='KB5066791'; Description='Security Update'; InstalledOn=(Ago 41) })
+    $checks.PendingReboot = Ok ([pscustomobject]@{ ComponentServicing=$false; WindowsUpdate=$false; PendingFileRename=$false })
+    $checks.BackupSoftware = Ok @([pscustomobject]@{ DisplayName='Synology Active Backup for Business Agent'; DisplayVersion='2.7.1-3235'; Publisher='Synology Inc.'; InstallDate='20230912' },
+        [pscustomobject]@{ DisplayName='Synology Drive Client'; DisplayVersion='3.5.1-16101'; Publisher='Synology Inc.'; InstallDate='20240301' })
+    $checks.BackupServices = Ok @([pscustomobject]@{ Name='ActiveBackupforBusinessAgentService'; DisplayName='Active Backup for Business Agent'; State='Running'; StartMode='Auto' })
+    $checks.Software = Ok @('Synology Active Backup for Business Agent', 'Synology Drive Client', 'NinjaRMMAgent', 'Huntress Agent', 'Dentrix G7', 'QuickBooks Desktop Pro 2022',
+        'Microsoft Office Home and Business 2016 - en-us', 'Microsoft OneDrive', 'Adobe Acrobat Reader DC' | ForEach-Object { [pscustomobject]@{ DisplayName=$_; DisplayVersion='1.0'; Publisher='Sample'; InstallDate='20240101' } })
+    $checks.ListeningPorts = Ok @(135, 139, 445, 5040 | ForEach-Object { [pscustomobject]@{ LocalAddress='0.0.0.0'; LocalPort=$_; OwningProcess=4 } })
+    $checks.DefenderThreats = Ok @([pscustomobject]@{ RecordType='Coverage'; Since=(Ago 30); OutputTruncated=$false })
+    $checks.AgentActivity = Ok @([pscustomobject]@{ Agent='NinjaRMM'; Root='C:\ProgramData\NinjaRMMAgent\logs'; NewestLog='ninjarmm.log'; LastWriteTime=(Ago 0.01) },
+        [pscustomobject]@{ Agent='Huntress'; Root='C:\Program Files\Huntress'; NewestLog='HuntressAgent.log'; LastWriteTime=(Ago 0.02) })
+    $checks.Activation = Ok @(
+        [pscustomobject]@{ Name='Windows(R), Professional edition'; Description='Windows(R) Operating System, OEM_DM channel'; LicenseStatus=1; GracePeriodRemaining=0 },
+        [pscustomobject]@{ Name='Windows(R), Client-ESU-Year2 add-on for Windows 10'; Description='Windows(R) Operating System, VOLUME_MAK channel'; LicenseStatus=1; GracePeriodRemaining=0 })
+    $checks.KeyServices = Ok @([pscustomobject]@{ Name='wuauserv'; DisplayName='Windows Update'; State='Running'; StartMode='Manual' })
+    $checks.ClientPlatform = Ok ([pscustomobject]@{ ProductType=1; PowerScheme='Power Scheme GUID: 381b4222-f694-41f0-9685-ff5bb260df2e  (Balanced) *'
+        Power=@([pscustomobject]@{ Setting='SleepAfter'; AcSeconds=1800; DcSeconds=900; ExitCode=0 }, [pscustomobject]@{ Setting='HibernateAfter'; AcSeconds=0; DcSeconds=0; ExitCode=0 },
+            [pscustomobject]@{ Setting='DiskOffAfter'; AcSeconds=1200; DcSeconds=600; ExitCode=0 })
+        HibernateEnabled=1; FastStartup=1; AutoAdminLogon='1'; AutoLogonUser='reception'; AutoLogonPasswordStored=$true; UacEnabled=1; UacAdminPrompt=5
+        UpdatesPausedUntil=(Ago -12).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ'); FeatureUpdatesPausedUntil=''; QualityUpdatesPausedUntil=''
+        DeferFeatureDays=$null; DeferQualityDays=$null; TargetReleaseVersion=''; NoAutoRebootWithLoggedOnUsers=$null; TpmSpecVersion='1.2, 2, 3'; Coverage='sample' })
+    $abbLine = { param($days, $text) [pscustomobject]@{ Text=((Ago $days).ToString('yyyy-MM-dd HH:mm:ss') + ' ' + $text) } }
+    $abbLines = @((& $abbLine 2.3 '[INFO] Backup task [PC-FRONTDESK] completed successfully.'), (& $abbLine 1.3 '[INFO] Backup task [PC-FRONTDESK] completed successfully.'),
+        (& $abbLine 0.3 '[ERROR] Backup task [PC-FRONTDESK] failed: unable to connect to the server (192.168.1.5:5510).'))
+    $checks.SynologyActiveBackup = Ok @(
+        [pscustomobject]@{ RecordType='Summary'; Installed=$true; Services=@([pscustomobject]@{ Name='ActiveBackupforBusinessAgentService'; DisplayName='Active Backup for Business Agent'; State='Running'; StartMode='Auto' })
+            Roots=@('C:\Program Files\Synology\ActiveBackupforBusinessAgent'); LogFilesFound=4; FilesScanned=120; FileScanTruncated=$false; NasConnections=@(); Coverage='sample' },
+        [pscustomobject]@{ RecordType='Log'; Path='C:\ProgramData\ActiveBackupforBusinessAgent\log\agent.log'; LastWriteTime=(Ago 0.3); Length=88231; Status='Collected'
+            Lines=@($abbLines | ForEach-Object { [pscustomobject]@{ Text=$_.Text; Time=[datetime]($_.Text.Substring(0,19)); Outcome=$(if ($_.Text -match 'failed') { 'Failure' } else { 'Success' }) } }) })
+    $checks.SynologyDriveInventory = Ok ([pscustomobject]@{ Product='Synology Drive Client'; Roots=@([pscustomobject]@{ Root='C:\Users\reception\AppData\Local\SynologyDrive'; Origin='LocalUserProfile'; Status='Present' })
+        ProfileLimit=20; ProfilesTruncated=$false; Processes=@(); Errors=@(); Coverage='sample' })
+    $checks.SynologyDriveDetails = Ok @([pscustomobject]@{ RecordType='Coverage' },
+        [pscustomobject]@{ Path='C:\Users\reception\AppData\Local\SynologyDrive\log\daemon.log'; Status='Collected'; Product='Synology Drive Client'; Lines=@(
+            [pscustomobject]@{ TailLine=1; Text=((Ago 6).ToString('yyyy-MM-dd HH:mm:ss') + ' [INFO] Backup task "Scans" completed.') },
+            [pscustomobject]@{ TailLine=2; Text=((Ago 2).ToString('yyyy-MM-dd HH:mm:ss') + ' [ERROR] Failed to connect to server nas01.local: connection timed out') }) })
+    $checks.OneDriveConfiguration = Ok @([pscustomobject]@{ RecordType='Profile'; SID='S-1-5-21-1-2-3-1001'; ProfilePath='C:\Users\reception'; Status='Collected'
+        Accounts=@([pscustomobject]@{ AccountSlot='Business1'; UserFolder='C:\Users\reception\OneDrive - Contoso Dental'; ConfiguredTenantName='Contoso Dental' })
+        KnownFolders=@([pscustomobject]@{ Folder='Desktop'; Assessment='PathUnderConfiguredOneDriveRoot' }, [pscustomobject]@{ Folder='Personal'; Assessment='NoPathMatchOrUnresolvedVariable' }, [pscustomobject]@{ Folder='My Pictures'; Assessment='NoPathMatchOrUnresolvedVariable' }) })
+    $checks.OneDriveActivity = Ok @([pscustomobject]@{ SID='S-1-5-21-1-2-3-1001'; ProfilePath='C:\Users\reception'; LastUseTime=(Ago 0.5); Loaded=$true; ClientVersion='25.180.0914.0001'
+        Accounts=@([pscustomobject]@{ Account='Business1'; LastLogWrite=(Ago 19) }); Coverage='sample' })
+    $report = [ordered]@{ SchemaVersion='1.14'; AuditId=[guid]::NewGuid().ToString('N'); Incomplete=$false; ClientName=''; Location=''
+        StartedAt=$now.AddMinutes(-5).ToString('o'); CompletedAt=$now.ToString('o'); Elevated=$true; PowerShellVersion='5.1'; Checks=$checks; DeepAuditRequested=$false }
+    $path = Join-Path $OutputDirectory ('WinFixAudit-FRONTDESK-PC-' + $now.ToString('yyyyMMdd-HHmmss') + '.json')
+    [IO.File]::WriteAllText($path, (ConvertTo-Json -InputObject $report -Depth 14 -Compress), (New-Object Text.UTF8Encoding($false)))
+    return $path
+}
 $checks.System = Ok ([pscustomobject]@{ ComputerName='DC01'; Manufacturer='Dell Inc.'; Model='PowerEdge R640'; Domain='contoso.local'; PartOfDomain=$true; DomainRole=5
     MemoryGB=127.86; OS='Microsoft Windows Server 2016 Standard'; Version='10.0.14393'; Build='14393'; Architecture='64-bit'
     InstallDate=[datetime]'2019-03-14 10:12'; LastBoot=(Ago 38.4); UptimeDays=38.4 })
@@ -140,7 +215,7 @@ $checks.LiveMissingUpdates = Fail 'TimedOut' 'Exceeded 90s; continuing. Any retu
 $checks.CertificateAuthority = Fail 'Unavailable' 'The term ''certutil'' returned no CA configuration.'
 
 # --- collector 1.13 checks -------------------------------------------------------
-$software = @('Veeam Agent for Microsoft Windows', 'NinjaRMMAgent', 'Huntress Agent', 'Microsoft Edge', '7-Zip 23.01 (x64)', 'Dell OpenManage Server Administrator')
+$software = @('Veeam Agent for Microsoft Windows', 'Veeam Backup & Replication', 'Microsoft SQL Server 2014 (64-bit)', 'NinjaRMMAgent', 'Huntress Agent', 'Microsoft Edge', '7-Zip 23.01 (x64)', 'Dell OpenManage Server Administrator')
 if (-not $prev) { $software += 'AnyDesk' }
 $checks.Software = Ok @($software | ForEach-Object { [pscustomobject]@{ DisplayName=$_; DisplayVersion='1.0'; Publisher='Sample'; InstallDate='20240101' } })
 $ports = @(53, 88, 135, 389, 445, 464, 636, 3268, 3389, 5985)
@@ -204,7 +279,23 @@ Destination DSA     largest delta    fails/total %%   error
 $checks.ExternalExposure = Ok ([pscustomobject]@{ PublicIP='203.0.113.25'; NotIndexed=$false; Ports=@(443, 3389); Vulns=@('CVE-2019-0708'); Hostnames=@('remote.contosodental.com'); Tags=@()
     Source='Shodan InternetDB (passive internet scan data; may be days or weeks old)' })
 
-$report = [ordered]@{ SchemaVersion='1.13'; AuditId=[guid]::NewGuid().ToString('N'); Incomplete=$false; ClientName=''; Location=''
+# --- collector 1.14 checks -------------------------------------------------------
+$checks.ClientPlatform = Ok ([pscustomobject]@{ ProductType=2; PowerScheme='Power Scheme GUID: 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c  (High performance) *'
+    Power=@([pscustomobject]@{ Setting='SleepAfter'; AcSeconds=0; DcSeconds=0; ExitCode=0 }, [pscustomobject]@{ Setting='HibernateAfter'; AcSeconds=0; DcSeconds=0; ExitCode=0 })
+    HibernateEnabled=0; FastStartup=$null; AutoAdminLogon='0'; AutoLogonUser=''; AutoLogonPasswordStored=$false; UacEnabled=1; UacAdminPrompt=5
+    UpdatesPausedUntil=''; FeatureUpdatesPausedUntil=''; QualityUpdatesPausedUntil=''; DeferFeatureDays=$null; DeferQualityDays=$null; TargetReleaseVersion=''
+    NoAutoRebootWithLoggedOnUsers=1; TpmSpecVersion='2.0, 0, 1.38'; Coverage='sample' })
+$checks.SynologyActiveBackup = Ok @([pscustomobject]@{ RecordType='Summary'; Installed=$false; Coverage='sample' })
+$checks.VeeamServerJobs = Ok @(
+    [pscustomobject]@{ RecordType='Job'; Name='DC01 Nightly'; JobType='EndpointBackup'; TypeText='Agent backup'; ScheduleEnabled=$true; LastResult=$(if ($prev) { 'Success' } else { 'Failed' }); LastStart=(Ago 0.6); LastEnd=(Ago 0.5); Repository='NAS01 Veeam'; RestorePoints=14; NewestRestorePoint=(Ago 2.5) },
+    [pscustomobject]@{ RecordType='Job'; Name='File shares'; JobType='Backup'; TypeText='Windows Agent Backup'; ScheduleEnabled=$false; LastResult='Success'; LastStart=(Ago 5.2); LastEnd=(Ago 5.1); Repository='NAS01 Veeam'; RestorePoints=9; NewestRestorePoint=(Ago 5.1) },
+    [pscustomobject]@{ RecordType='Job'; Name='Offsite copy'; JobType='BackupSync'; TypeText='Backup Copy'; ScheduleEnabled=$true; LastResult='Success'; LastStart=(Ago 0.3); LastEnd=(Ago 0.2); Repository='Wasabi immutable'; RestorePoints=30; NewestRestorePoint=(Ago 0.2) },
+    [pscustomobject]@{ RecordType='Repository'; Name='NAS01 Veeam'; Type='Nfs'; TotalGB=7450.0; FreeGB=$(if ($prev) { 1490.0 } else { 298.0 }) },
+    [pscustomobject]@{ RecordType='Repository'; Name='Wasabi immutable'; Type='AmazonS3Compatible'; TotalGB=$null; FreeGB=$null },
+    [pscustomobject]@{ RecordType='License'; Status='Valid'; Type='Subscription'; Edition='EnterprisePlus'; ExpirationDate=(Ago -20); SupportExpirationDate=(Ago -20) },
+    [pscustomobject]@{ RecordType='Coverage'; Coverage='sample' })
+
+$report = [ordered]@{ SchemaVersion='1.14'; AuditId=[guid]::NewGuid().ToString('N'); Incomplete=$false; ClientName=''; Location=''
     StartedAt=$now.AddMinutes(-7).ToString('o'); CompletedAt=$now.ToString('o'); Elevated=$true; PowerShellVersion='5.1'; Checks=$checks; DeepAuditRequested=$false }
 $path = Join-Path $OutputDirectory ('WinFixAudit-DC01-' + $now.ToString('yyyyMMdd-HHmmss') + '.json')
 [IO.File]::WriteAllText($path, (ConvertTo-Json -InputObject $report -Depth 14 -Compress), (New-Object Text.UTF8Encoding($false)))

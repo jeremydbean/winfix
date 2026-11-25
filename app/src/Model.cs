@@ -5,7 +5,7 @@ using System.IO;
 using System.Linq;
 using System.Text;
 
-namespace WinFixAudit
+namespace PolarniteAudit
 {
     internal enum Severity { Critical = 0, Warning = 1, Info = 2, Pass = 3, Unknown = 4 }
 
@@ -118,7 +118,7 @@ namespace WinFixAudit
             string text = File.ReadAllText(path, Encoding.UTF8);
             object root = J.Parse(text);
             if (J.Dict(root) == null || J.Dict(J.Get(root, "Checks")) == null)
-                throw new InvalidDataException("This file is not a WinFix audit JSON report (no Checks section).");
+                throw new InvalidDataException("This file is not an audit collector JSON report (no Checks section).");
             var r = new AuditReport();
             r.Path = path;
             r.Root = root;
@@ -168,6 +168,7 @@ namespace WinFixAudit
         public Severity OsSupportSeverity = Severity.Unknown;
         public bool IsDomainController;
         public bool IsVirtual;
+        public bool IsClientOs;   // Windows 10/11 used as a server
         public bool HasHyperVVMs;
         public bool OsNeedsEntitlementCheck;
         public bool BackupEvidenceFound;

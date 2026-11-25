@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-Builds WinFixAuditApp.exe with the C# compiler that ships with .NET Framework 4.x.
+Builds PolarniteServerAuditTool.exe with the C# compiler that ships with .NET Framework 4.x.
 No Visual Studio, SDK or NuGet packages are needed.
 
 .PARAMETER Collector
@@ -20,7 +20,7 @@ $ErrorActionPreference = 'Stop'
 # Defaults are resolved here: Windows PowerShell leaves $PSScriptRoot empty in param() defaults under -File.
 $here = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyInvocation.MyCommand.Path }
 if (-not $Collector) { $Collector = Join-Path (Split-Path $here -Parent) 'Export-WinFixAudit.ps1' }
-if (-not $Output) { $Output = Join-Path $here 'dist\WinFixAuditApp.exe' }
+if (-not $Output) { $Output = Join-Path $here 'dist\PolarniteServerAuditTool.exe' }
 
 $csc = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
 if (-not (Test-Path $csc)) { $csc = Join-Path $env:WINDIR 'Microsoft.NET\Framework\v4.0.30319\csc.exe' }
@@ -30,7 +30,7 @@ if (-not (Test-Path $Collector)) { throw "Collector script not found: $Collector
 $manifest = Join-Path $here 'app.manifest'
 $tempManifest = $null
 if ($AsInvoker) {
-    $tempManifest = Join-Path $env:TEMP ('WinFixAudit-asInvoker-' + [guid]::NewGuid().ToString('N') + '.manifest')
+    $tempManifest = Join-Path $env:TEMP ('PolarniteAudit-asInvoker-' + [guid]::NewGuid().ToString('N') + '.manifest')
     (Get-Content $manifest -Raw) -replace 'requireAdministrator', 'asInvoker' | Set-Content -Path $tempManifest -Encoding UTF8
     $manifest = $tempManifest
 }

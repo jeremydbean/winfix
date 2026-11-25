@@ -3,7 +3,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
 
-namespace WinFixAudit
+namespace PolarniteAudit
 {
     /// <summary>Lays out the audit as a branded, paginated PDF.</summary>
     internal sealed class ReportPdf

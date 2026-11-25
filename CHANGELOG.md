@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-11-25 — collector 1.14 and app renamed to Polarnite Server Audit Tool
+- The app is now `app/dist/PolarniteServerAuditTool.exe` ("Polarnite Server Audit Tool"). On first run it moves `C:\ProgramData\WinFixAudit` to `C:\ProgramData\PolarniteServerAudit` and replaces the `\WinFix\Monthly Server Audit` task with `\Polarnite\Monthly Server Audit`. The test override variable is now `POLARNITE_AUDIT_DATA`.
+- Windows 10/11 used as a server: new `ClientPlatform` check (sleep/hibernate on AC, fast startup, automatic sign-in with the stored-password flag read by value name only, UAC, paused/deferred updates, TPM spec version). `ServerRoles` uses optional features on client Windows. The app adds LTSC support dates, Extended Security Updates licence detection (auto-answers the OS entitlement check), Home edition and Windows 11 readiness.
+- Backups: new `SynologyActiveBackup` (agent service, NAS port 5510 connection, outcome lines from the newest agent logs), `VeeamServerJobs` (only on Backup & Replication servers: jobs, schedule, last result, restore points, copy jobs, repository space, licence) and `OneDriveActivity` (per-user log-folder times and client version, no log content). The app now reports the existing Synology Drive and OneDrive evidence too.
+- Installed software past or near end of support (Office, Exchange, SQL Server, SharePoint, Acrobat, Java, Python 2, QuickBooks).
+- Fix: a new month's draft no longer carries last month's automatic notes forward.
+
 ## 2026-11-25 — collector 1.13 and app: standard monthly checks
 - Collector adds Defender detection history, Veeam job results (event 190), RMM/EDR agent log activity, certificates expiring within 60 days, Windows activation, LAPS policy, protocol/credential hardening (TLS/SSL, LLMNR, NetBIOS, WDigest, NTLM level, LSA protection, update source), key services, Dell OpenManage / HPE Smart Storage hardware health and hardware error events.
 - On domain controllers it also collects AD hygiene (stale users/computers, never-expiring passwords, unsupported OS, krbtgt age, Recycle Bin), `dcdiag /q` and `repadmin /replsummary`.

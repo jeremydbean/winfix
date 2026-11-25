@@ -4,6 +4,18 @@ Detailed behaviour, limits and version notes for `Export-WinFixAudit.ps1`, `Star
 `Export-WinFixDiskDiagnostic.ps1` and `Export-WinFixBackupDiagnostic.ps1`. Moved from the main README.
 For a summary of every tool, see the [README](../README.md).
 
+## Collector 1.14: Windows 10/11 servers and backup products
+
+| Check | What is collected | Notes |
+| --- | --- | --- |
+| `ClientPlatform` | Active power plan; sleep, hibernate and disk-off timeouts (AC/DC, via `powercfg /query`); hibernation and fast startup; automatic sign-in and its user; whether `Winlogon\DefaultPassword` exists; UAC; Windows Update pause dates, deferrals and target release; TPM spec version | The stored password is detected by value name only and never read. powercfg values are parsed by position, so localized output works. |
+| `ServerRoles` | Windows Server: installed features. Windows 10/11: enabled optional features | |
+| `SynologyActiveBackup` | Active Backup for Business agent services, install/data folders, the newest three log files with outcome lines (`ConvertFrom-AuditBackupLogLine`), and established connections to TCP 5510 | Best-effort log parsing; task status, retention and restore points are on the NAS. |
+| `VeeamServerJobs` | Only when Backup & Replication is installed: `Get-VBRJob`, `Get-VBRComputerBackupJob`, `Get-VBRBackupCopyJob` (name, type, schedule, last result and session times, restore points), repositories (free space) and `Get-VBRInstalledLicense` | Read-only Veeam PowerShell. Methods differ between Veeam versions; anything unavailable is skipped. |
+| `OneDriveActivity` | Per profile: newest file time in each OneDrive `logs\Business*`/`Personal` folder, client version, profile last-use time | File times only; log contents are not opened. |
+
+Parsers for powercfg output and backup log lines are covered by `tests/Test-StandardChecks.ps1`.
+
 ## Collector 1.13: standard monthly-maintenance evidence
 
 | Check | What is collected | Notes |

@@ -14,14 +14,17 @@ using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
 
-namespace WinFixAudit
+namespace PolarniteAudit
 {
     internal static class AppPaths
     {
-        // WINFIXAUDIT_DATA redirects all state (used by tests); normally C:\ProgramData\WinFixAudit.
-        public static string Root = string.IsNullOrEmpty(Environment.GetEnvironmentVariable("WINFIXAUDIT_DATA"))
-            ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "WinFixAudit")
-            : Environment.GetEnvironmentVariable("WINFIXAUDIT_DATA");
+        // POLARNITE_AUDIT_DATA redirects all state (used by tests); normally C:\ProgramData\PolarniteServerAudit.
+        private const string DataOverride = "POLARNITE_AUDIT_DATA";
+        private static readonly string ProgramData = Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData);
+        public static string Root = string.IsNullOrEmpty(Environment.GetEnvironmentVariable(DataOverride))
+            ? Path.Combine(ProgramData, "PolarniteServerAudit")
+            : Environment.GetEnvironmentVariable(DataOverride);
+        private static string LegacyRoot { get { return Path.Combine(ProgramData, "WinFixAudit"); } }
         public static string SettingsFile { get { return Path.Combine(Root, "settings.json"); } }
         public static string StateDir { get { return Path.Combine(Root, "state"); } }
         public static string DraftFile { get { return Path.Combine(StateDir, "current.json"); } }
@@ -30,15 +33,36 @@ namespace WinFixAudit
         public static string RunsDir { get { return Path.Combine(Root, "runs"); } }
         public static string LogsDir { get { return Path.Combine(Root, "logs"); } }
         public static string BinDir { get { return Path.Combine(Root, "bin"); } }
-        public static string InstalledExe { get { return Path.Combine(BinDir, "WinFixAuditApp.exe"); } }
+        public static string InstalledExe { get { return Path.Combine(BinDir, AppInfo.ExeName); } }
 
         /// <summary>Creates the data folder and limits it to Administrators and SYSTEM (it holds the SMTP secret and audit data).</summary>
         public static void EnsureRoot()
         {
             bool created = !Directory.Exists(Root);
             Directory.CreateDirectory(Root);
-            if (created && string.IsNullOrEmpty(Environment.GetEnvironmentVariable("WINFIXAUDIT_DATA"))) Harden(Root);
+            if (created && string.IsNullOrEmpty(Environment.GetEnvironmentVariable(DataOverride))) Harden(Root);
             foreach (string d in new[] { StateDir, HistoryDir, RunsDir, LogsDir, BinDir }) Directory.CreateDirectory(d);
+        }
+
+        /// <summary>
+        /// One-time move from the app's earlier name (WinFix Server Audit): moves the data folder,
+        /// keeping settings, drafts and history, and re-creates the monthly task under the new name.
+        /// </summary>
+        public static void MigrateLegacy()
+        {
+            if (!string.IsNullOrEmpty(Environment.GetEnvironmentVariable(DataOverride))) return;
+            try
+            {
+                if (Directory.Exists(LegacyRoot) && !Directory.Exists(Root))
+                {
+                    Directory.Move(LegacyRoot, Root);
+                    string oldExe = Path.Combine(BinDir, "WinFixAuditApp.exe");
+                    if (File.Exists(oldExe)) File.Delete(oldExe);
+                    Log.Write("Moved data from " + LegacyRoot + " to " + Root + ".");
+                }
+                Scheduler.MigrateLegacyTask();
+            }
+            catch (Exception ex) { Log.Write("Migration from the earlier app name failed: " + ex.Message); }
         }
 
         public static void Harden(string dir)
@@ -99,7 +123,7 @@ namespace WinFixAudit
         public string SmtpUser = "";
         public string SmtpPasswordProtected = "";
         public string FromAddress = "";
-        public string FromName = "Server Audit";
+        public string FromName = "Polarnite Server Audit";
         public string ToAddress = "support@polarnite.com";
         public string CompanyName = "Polarnite";
         public string DefaultTenant = "";
@@ -235,7 +259,13 @@ namespace WinFixAudit
             if (last != null)
             {
                 d.ServerPurpose = last.ServerPurpose;
-                foreach (var kv in last.Manual) d.Manual[kv.Key] = new ManualAnswer { Status = ManualCatalog.NotChecked, Notes = kv.Value.Notes };
+                foreach (var kv in last.Manual)
+                {
+                    // Carry the technician's own notes only; automatic notes are rebuilt from this month's evidence.
+                    string notes = kv.Value.Notes ?? "";
+                    if (kv.Value.AutoSet || notes.StartsWith(ManualAnswer.AutoPrefix, StringComparison.Ordinal) || notes.StartsWith(ManualAnswer.HintPrefix, StringComparison.Ordinal)) notes = "";
+                    d.Manual[kv.Key] = new ManualAnswer { Status = ManualCatalog.NotChecked, Notes = notes };
+                }
             }
             return d;
         }
@@ -358,7 +388,8 @@ namespace WinFixAudit
 
     internal static class Scheduler
     {
-        public const string TaskName = @"\WinFix\Monthly Server Audit";
+        public const string TaskName = @"\Polarnite\Monthly Server Audit";
+        private const string LegacyTaskName = @"\WinFix\Monthly Server Audit";
 
         private static string Run(string args, out int exitCode)
         {
@@ -390,6 +421,17 @@ namespace WinFixAudit
             Log.Write("schtasks create: " + code + " " + output);
             if (code != 0) throw new InvalidOperationException("schtasks failed: " + output);
             return "Runs on day " + day + " of each month at " + t.ToString("HH:mm", CultureInfo.InvariantCulture) + " as SYSTEM.";
+        }
+
+        /// <summary>Replaces a task created under the earlier app name with one under the new name.</summary>
+        public static void MigrateLegacyTask()
+        {
+            int code;
+            Run("/Query /TN \"" + LegacyTaskName + "\"", out code);
+            if (code != 0) return;
+            Install(AppSettings.Load());
+            Run("/Delete /F /TN \"" + LegacyTaskName + "\"", out code);
+            Log.Write("Replaced the earlier scheduled task " + LegacyTaskName + " with " + TaskName + ".");
         }
 
         public static void Remove()

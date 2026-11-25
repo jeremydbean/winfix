@@ -4,7 +4,7 @@ using System.Globalization;
 using System.Linq;
 using System.Text.RegularExpressions;
 
-namespace WinFixAudit
+namespace PolarniteAudit
 {
     /// <summary>
     /// Turns collector evidence into findings and report sections. Rules are
@@ -183,7 +183,8 @@ namespace WinFixAudit
                 { "Print-Server", "Print server" }, { "RDS-RD-Server", "RD Session Host" }, { "RDS-Licensing", "RD Licensing" },
                 { "RDS-Gateway", "RD Gateway" }, { "ADCS-Cert-Authority", "Certificate Authority" },
                 { "Windows-Server-Backup", "Windows Server Backup" }, { "FS-DFS-Replication", "DFS Replication" },
-                { "FS-DFS-Namespace", "DFS Namespaces" }, { "UpdateServices", "WSUS" }, { "NPAS", "NPS" }
+                { "FS-DFS-Namespace", "DFS Namespaces" }, { "UpdateServices", "WSUS" }, { "NPAS", "NPS" },
+                { "Microsoft-Hyper-V-All", "Hyper-V" }, { "IIS-WebServer", "IIS" }, { "Microsoft-Windows-Subsystem-Linux", "WSL" }
             };
             var found = new List<string>();
             foreach (object row in C("ServerRoles").Data)
@@ -216,6 +217,9 @@ namespace WinFixAudit
             string edition = J.Str(osr, "EditionID");
             bool server = Match(caption, "Server") || Match(J.Str(osr, "InstallationType"), "Server");
             bool enterprise = Match(edition + " " + caption, "Enterprise|Education");
+            bool ltsc = Match(edition, "EnterpriseS");          // LTSB / LTSC editions
+            bool iot = Match(edition, "^IoT");
+            a.IsClientOs = !server;
 
             string name = null; DateTime? end = null;
             if (server)
@@ -231,7 +235,11 @@ namespace WinFixAudit
             }
             else
             {
-                if (build >= 10240 && build <= 19045) { name = "Windows 10"; end = new DateTime(2025, 10, 14); }
+                if (ltsc && build == 14393) { name = "Windows 10 Enterprise LTSB 2016"; end = new DateTime(2026, 10, 13); }
+                else if (ltsc && build == 17763) { name = "Windows 10 Enterprise LTSC 2019"; end = new DateTime(2029, 1, 9); }
+                else if (ltsc && build == 19044) { name = iot ? "Windows 10 IoT Enterprise LTSC 2021" : "Windows 10 Enterprise LTSC 2021"; end = iot ? new DateTime(2032, 1, 13) : new DateTime(2027, 1, 12); }
+                else if (ltsc && build == 26100) { name = iot ? "Windows 11 IoT Enterprise LTSC 2024" : "Windows 11 Enterprise LTSC 2024"; end = iot ? new DateTime(2034, 10, 10) : new DateTime(2029, 10, 9); }
+                else if (build >= 10240 && build <= 19045) { name = build == 19045 ? "Windows 10 22H2" : "Windows 10"; end = new DateTime(2025, 10, 14); }
                 else if (build == 22000) { name = "Windows 11 21H2"; end = new DateTime(2024, 10, 8); }
                 else if (build == 22621) { name = "Windows 11 22H2"; end = enterprise ? new DateTime(2025, 10, 14) : new DateTime(2024, 10, 8); }
                 else if (build == 22631) { name = "Windows 11 23H2"; end = enterprise ? new DateTime(2026, 11, 10) : new DateTime(2025, 11, 11); }
@@ -248,13 +256,54 @@ namespace WinFixAudit
                 return;
             }
             int daysLeft = (int)Math.Floor((end.Value - now.Date).TotalDays);
+
+            // Extended Security Updates: an activated ESU add-on licence extends security updates by year.
+            object esu = C("Activation").Data.FirstOrDefault(x => Match(J.Str(x, "Name") + " " + J.Str(x, "Description"), @"\bESU\b") && (J.Num(x, "LicenseStatus") ?? 0) == 1);
+            if (daysLeft < 0 && esu != null)
+            {
+                Match y = Regex.Match(J.Str(esu, "Name") + " " + J.Str(esu, "Description"), @"Year\s*(\d)", RegexOptions.IgnoreCase);
+                int year = y.Success ? int.Parse(y.Groups[1].Value, CultureInfo.InvariantCulture) : 0;
+                DateTime? esuEnd = null;
+                if (name.StartsWith("Windows 10", StringComparison.Ordinal))
+                    esuEnd = year == 1 ? new DateTime(2026, 10, 13) : year == 2 ? new DateTime(2027, 10, 12) : year == 3 ? new DateTime(2028, 10, 10) : (DateTime?)null;
+                else if (name.StartsWith("Windows Server 2012", StringComparison.Ordinal))
+                    esuEnd = year == 1 ? new DateTime(2024, 10, 8) : year == 2 ? new DateTime(2025, 10, 14) : year == 3 ? new DateTime(2026, 10, 13) : (DateTime?)null;
+                string esuName = year > 0 ? "ESU Year " + year : "an Extended Security Updates licence";
+                a.OsNeedsEntitlementCheck = true;
+                if (esuEnd.HasValue && esuEnd.Value >= now.Date)
+                {
+                    a.OsSupportSeverity = Severity.Warning;
+                    a.OsSupportText = "Extended Security Updates until " + J.FormatDate(esuEnd);
+                    Add("os-lifecycle", Severity.Warning, "Lifecycle", name + " is covered by " + esuName + " until " + J.FormatDate(esuEnd),
+                        "Mainstream support ended " + J.FormatDate(end) + ". The activated ESU licence keeps security updates coming until " + J.FormatDate(esuEnd) + ". Renew ESU each year or plan the upgrade.");
+                    Auto("os_entitlement", ManualCatalog.Pass, esuName + " licence is activated (" + J.Str(esu, "Name") + "); covered until " + J.FormatDate(esuEnd) + ".");
+                }
+                else if (esuEnd.HasValue)
+                {
+                    a.OsSupportSeverity = Severity.Critical;
+                    a.OsSupportText = "ESU ended " + J.FormatDate(esuEnd);
+                    Add("os-lifecycle", Severity.Critical, "Lifecycle", name + ": " + esuName + " coverage ended " + J.FormatDate(esuEnd),
+                        "The installed ESU licence no longer provides updates. Buy the next ESU year or upgrade.");
+                    Auto("os_entitlement", ManualCatalog.Issue, esuName + " licence found but its coverage ended " + J.FormatDate(esuEnd) + ".");
+                }
+                else
+                {
+                    a.OsSupportSeverity = Severity.Warning;
+                    a.OsSupportText = "Out of support; ESU licence present";
+                    Add("os-lifecycle", Severity.Warning, "Lifecycle", name + " is out of support; an ESU licence is activated",
+                        "Support ended " + J.FormatDate(end) + ". Confirm which ESU year the licence covers (" + J.Str(esu, "Name") + ").");
+                }
+                int esuIndex = a.Snapshot.Items.FindIndex(i => i.Key == "Build");
+                a.Snapshot.Items.Insert(esuIndex >= 0 ? esuIndex + 1 : a.Snapshot.Items.Count, new KeyValuePair<string, string>("Support status", a.OsSupportText));
+                return;
+            }
             if (daysLeft < 0)
             {
                 a.OsSupportSeverity = Severity.Critical;
                 a.OsSupportText = "Out of support since " + J.FormatDate(end);
                 a.OsNeedsEntitlementCheck = true;
                 Add("os-lifecycle", Severity.Critical, "Lifecycle", name + " is out of support",
-                    "Microsoft support ended " + J.FormatDate(end) + ". The server no longer receives security updates unless it is covered by Extended Security Updates. Plan an upgrade or replacement.");
+                    "Microsoft support ended " + J.FormatDate(end) + ". It no longer receives security updates, and no activated Extended Security Updates licence was found. Plan an upgrade or replacement.");
             }
             else if (daysLeft <= 365)
             {

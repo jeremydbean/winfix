@@ -1,4 +1,5 @@
-# Regression checks for collector 1.13 parsers (hardware vendor tools, Veeam job messages)
+# Regression checks for collector 1.13/1.14 parsers (hardware vendor tools, Veeam job messages,
+# powercfg values, backup-agent log lines)
 # and the presence of the new monthly-maintenance checks. Runs without Windows providers.
 $ErrorActionPreference = 'Stop'
 $path = Join-Path (Split-Path $PSScriptRoot) 'Export-WinFixAudit.ps1'
@@ -76,12 +77,55 @@ foreach ($case in $cases) {
 }
 if (ConvertFrom-AuditVeeamJobMessage -Message 'Job session started.') { throw 'Non-finish Veeam message produced a result.' }
 
+$powercfg = @"
+Power Scheme GUID: 381b4222-f694-41f0-9685-ff5bb260df2e  (Balanced)
+  GUID Alias: SCHEME_BALANCED
+  Subgroup GUID: 238c9fa8-0aad-41ed-83f4-97be242c8f20  (Sleep)
+    GUID Alias: SUB_SLEEP
+    Power Setting GUID: 29f6c1db-86da-48c5-9fdb-f2b67b1f44da  (Sleep after)
+      GUID Alias: STANDBYIDLE
+      Minimum Possible Setting: 0x00000000
+      Maximum Possible Setting: 0xffffffff
+      Possible Settings increment: 0x00000001
+      Possible Settings units: Seconds
+    Current AC Power Setting Index: 0x00000708
+    Current DC Power Setting Index: 0x00000384
+"@
+$power = ConvertFrom-AuditPowerSetting $powercfg
+if ($power.Ac -ne 1800 -or $power.Dc -ne 900) { throw "powercfg: expected AC 1800 / DC 900, got $($power.Ac) / $($power.Dc)." }
+# Localized labels (German) must parse by position.
+$power = ConvertFrom-AuditPowerSetting ($powercfg -replace 'Current AC Power Setting Index', 'Aktueller Wechselstrom-Energieeinstellungsindex' -replace 'Current DC Power Setting Index', 'Aktueller Gleichstrom-Energieeinstellungsindex')
+if ($power.Ac -ne 1800) { throw 'powercfg: localized output not parsed by position.' }
+$noBattery = ($powercfg -split "`n" | Where-Object { $_ -notmatch 'DC Power' }) -join "`n"
+$power = ConvertFrom-AuditPowerSetting $noBattery
+if ($power.Ac -ne 1800 -or $null -ne $power.Dc) { throw 'powercfg: AC value wrong when no DC value is listed.' }
+
+$lineCases = @(
+    @{ Text='2026-11-24 23:00:12 [INFO] Backup task [PC-FRONTDESK] completed successfully.'; Outcome='Success'; Day=24 },
+    @{ Text='2026/11/25 01:10:00 [ERROR] Backup task failed: unable to connect to the server'; Outcome='Failure'; Day=25 },
+    @{ Text='2026-11-23T08:00:00 Backup finished with 0 errors'; Outcome='Success'; Day=23 },
+    @{ Text='Backup partially completed'; Outcome='Failure'; Day=0 },
+    @{ Text='2026-11-22 10:00 Connecting to NAS'; Outcome='Other'; Day=22 }
+)
+foreach ($case in $lineCases) {
+    $r = ConvertFrom-AuditBackupLogLine $case.Text
+    if ($r.Outcome -ne $case.Outcome) { throw "Log line outcome: expected $($case.Outcome), got $($r.Outcome): $($case.Text)" }
+    if ($case.Day -and (-not $r.Time -or $r.Time.Day -ne $case.Day)) { throw "Log line time not parsed: $($case.Text)" }
+    if (-not $case.Day -and $r.Time) { throw "Log line without a date produced a time: $($case.Text)" }
+}
+
 foreach ($name in @('DefenderThreats', 'BackupJobResults', 'AgentActivity', 'CertificateExpiry', 'Activation', 'LAPS', 'SecurityHardening',
-        'KeyServices', 'HardwareVendorHealth', 'HardwareEvents', 'ADHygiene', 'DCDiag', 'ReplicationSummary', 'ExternalExposure')) {
+        'KeyServices', 'HardwareVendorHealth', 'HardwareEvents', 'ADHygiene', 'DCDiag', 'ReplicationSummary', 'ExternalExposure',
+        'ClientPlatform', 'SynologyActiveBackup', 'VeeamServerJobs', 'OneDriveActivity', 'ServerRoles')) {
     $assignment = $ast.Find({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq ('$checks.' + $name) }, $true)
     if (-not $assignment) { throw "Check $name is missing." }
     if ($assignment.Right.Extent.Text -notmatch '^Invoke-AuditCheck') { throw "Check $name must run through Invoke-AuditCheck." }
 }
 $exposure = $ast.Find({ param($n) $n -is [System.Management.Automation.Language.IfStatementAst] -and $n.Clauses[0].Item1.Extent.Text -eq '$ExternalExposureCheck' }, $true)
 if (-not $exposure) { throw 'ExternalExposure must stay behind the opt-in -ExternalExposureCheck switch.' }
-Write-Host 'PASS: OpenManage/ssacli/Veeam parsers and collector 1.13 check registration.'
+$veeam = $ast.Find({ param($n) $n -is [System.Management.Automation.Language.IfStatementAst] -and $n.Clauses[0].Item1.Extent.Text -match 'Veeam Backup and Replication' }, $true)
+if (-not $veeam -or $veeam.Clauses[0].Item2.Extent.Text -notmatch 'VeeamServerJobs') { throw 'VeeamServerJobs must only run when Backup & Replication is installed.' }
+$client = $ast.Find({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq '$checks.ClientPlatform' }, $true)
+if ($client.Extent.Text -match "Get-ItemProperty[^
+]*'DefaultPassword'") { throw 'ClientPlatform must not read the auto sign-in password value.' }
+Write-Host 'PASS: OpenManage/ssacli/Veeam/powercfg/log-line parsers and collector 1.13/1.14 check registration.'

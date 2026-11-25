@@ -5,13 +5,20 @@ using System.Text;
 using System.Threading;
 using System.Windows.Forms;
 
-[assembly: System.Reflection.AssemblyTitle("WinFix Server Audit")]
-[assembly: System.Reflection.AssemblyProduct("WinFix Server Audit")]
+[assembly: System.Reflection.AssemblyTitle("Polarnite Server Audit Tool")]
+[assembly: System.Reflection.AssemblyProduct("Polarnite Server Audit Tool")]
+[assembly: System.Reflection.AssemblyCompany("Polarnite")]
 [assembly: System.Reflection.AssemblyVersion("1.0.0.0")]
 [assembly: System.Reflection.AssemblyFileVersion("1.0.0.0")]
 
-namespace WinFixAudit
+namespace PolarniteAudit
 {
+    internal static class AppInfo
+    {
+        public const string Name = "Polarnite Server Audit Tool";
+        public const string ExeName = "PolarniteServerAuditTool.exe";
+    }
+
     internal static class Program
     {
         /// <summary>
@@ -32,18 +39,19 @@ namespace WinFixAudit
                 Application.SetCompatibleTextRenderingDefault(false);
                 if (mode == "--screenshot" && args.Length >= 3) return Screenshot(args[1], args[2]);
 
+                AppPaths.MigrateLegacy();
                 bool first;
-                using (var mutex = new Mutex(true, @"Global\WinFixServerAudit", out first))
+                using (var mutex = new Mutex(true, @"Global\PolarniteServerAudit", out first))
                 {
                     if (!first)
                     {
-                        MessageBox.Show("WinFix Server Audit is already open on this server.", "WinFix Server Audit", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                        MessageBox.Show(AppInfo.Name + " is already open on this computer.", AppInfo.Name, MessageBoxButtons.OK, MessageBoxIcon.Information);
                         return 0;
                     }
                     Application.ThreadException += (s, e) =>
                     {
                         Log.Write("UI error: " + e.Exception);
-                        MessageBox.Show(e.Exception.Message, "WinFix Server Audit", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                        MessageBox.Show(e.Exception.Message, AppInfo.Name, MessageBoxButtons.OK, MessageBoxIcon.Error);
                     };
                     Application.Run(new MainForm());
                 }
@@ -52,7 +60,7 @@ namespace WinFixAudit
             catch (Exception ex)
             {
                 Log.Write("Fatal (" + mode + "): " + ex);
-                if (mode == "") MessageBox.Show(ex.ToString(), "WinFix Server Audit", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                if (mode == "") MessageBox.Show(ex.ToString(), AppInfo.Name, MessageBoxButtons.OK, MessageBoxIcon.Error);
                 return 1;
             }
         }

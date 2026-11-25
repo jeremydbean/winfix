@@ -3,7 +3,7 @@ using System.Drawing;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 
-namespace WinFixAudit
+namespace PolarniteAudit
 {
     internal sealed class SettingsForm : Form
     {
@@ -109,7 +109,7 @@ namespace WinFixAudit
             var note = new Label
             {
                 AutoSize = true, MaximumSize = new Size(420, 0), ForeColor = MainForm.MutedText,
-                Text = "Scheduled runs collect the audit as SYSTEM and save it as a draft. Nothing is emailed until a technician completes the manual checks and presses Submit ticket. The app copies itself to C:\\ProgramData\\WinFixAudit\\bin for the task."
+                Text = "Scheduled runs collect the audit as SYSTEM and save it as a draft. Nothing is emailed until a technician completes the manual checks and presses Submit ticket. The app copies itself to C:\\ProgramData\\PolarniteServerAudit\\bin for the task."
             };
             Row("", note, null);
 
@@ -205,8 +205,8 @@ namespace WinFixAudit
             btnTest.Enabled = false;
             btnTest.Text = "Sending\u2026";
             Exception error = null;
-            string subject = "WinFix Server Audit test from " + Environment.MachineName;
-            string body = "This is a test message from WinFix Server Audit on " + Environment.MachineName + ". If it arrived, SMTP settings are working.";
+            string subject = AppInfo.Name + " test from " + Environment.MachineName;
+            string body = "This is a test message from " + AppInfo.Name + " on " + Environment.MachineName + ". If it arrived, SMTP settings are working.";
             try { await Task.Run(() => Mailer.Send(s, subject, "<p>" + J.HtmlEncode(body) + "</p>", body, null, null)); }
             catch (Exception ex) { error = ex; }
             btnTest.Enabled = true;
