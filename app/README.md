@@ -67,8 +67,16 @@ critical/warning counts, new and resolved findings, a disk-full forecast per dri
 3. **Run audit** (3–10 minutes). Progress shows in *Collection log*.
 4. Review **Findings**. You can add a technician note to any finding; notes appear in the PDF and the email.
 5. Complete **Manual checks**. Required items must be answered, and *Issue found* needs a note.
-6. Check **Overview**: tenant/client name (pre-filled from Entra tenant or AD domain), technician, server role and summary notes.
+6. Check **Overview**: tenant/client name, technician, server role and summary notes. The client name is filled in from the Entra tenant the machine is joined to; if it isn't joined, from the Microsoft 365 tenant its users are signed in to (OneDrive work accounts); otherwise last month's name, the Settings default or the AD domain. A name a technician types is kept in later months.
 7. **Preview PDF** if you like, then **Submit ticket**. The button shows how many items are left until the ticket is complete.
+
+### Updating the app
+
+**Check for updates** (toolbar) reads `app/dist/latest.json` from this repository on GitHub. If that build is newer, the app downloads `PolarniteServerAuditTool.exe`, checks its size and SHA-256 against `latest.json`, replaces the running exe (the old one is kept as `.old` until the new one starts) and restarts. The app also checks quietly at start-up and turns the button amber when an update is available. The copy used by the scheduled task is refreshed the next time the updated app opens.
+
+For RMM scripts: `PolarniteServerAuditTool.exe --update` updates without opening the app (exit code 0 updated, 2 already current, 1 failed; details in the app log).
+
+Publishing an update = run `.uild.ps1` and commit both `dist\PolarniteServerAuditTool.exe` and `dist\latest.json`. GitHub's raw-file cache can take up to 5 minutes to serve the new files. Anyone who can push to this repository can ship code to every server that updates, so protect the `main` branch (and consider signing the exe).
 
 ### Scheduled runs
 
@@ -134,5 +142,6 @@ The first time the renamed app runs on a server, it moves `C:\ProgramData\WinFix
 - Missing data is never counted as a pass. Checks that fail or time out are listed under *Collection coverage* at the end of the PDF.
 - SMTP port 465 (implicit TLS) is not supported by .NET's mail client. Use 587/STARTTLS or a port-25 relay.
 - The exe is unsigned, and it starts `powershell.exe -ExecutionPolicy Bypass` to run the embedded collector. EDR tools (including Huntress) may flag this. Sign the exe, or allow-list its hash, before a wide rollout.
+- Builds made before the updater existed (before collector 1.16) cannot update themselves; replace them once by hand.
 - Synology Active Backup results come from the agent's local log (about five days of rotated `log.txt_N` files plus older runs if still present). The NAS console is the source of truth for retention.
 - The PDF uses the built-in Helvetica fonts (Western European characters). Other characters print as `?`.

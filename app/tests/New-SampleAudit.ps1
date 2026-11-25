@@ -69,6 +69,7 @@ if ($Workstation) {
         [pscustomobject]@{ Name='Windows(R), Professional edition'; Description='Windows(R) Operating System, OEM_DM channel'; LicenseStatus=1; GracePeriodRemaining=0 },
         [pscustomobject]@{ Name='Windows(R), Client-ESU-Year2 add-on for Windows 10'; Description='Windows(R) Operating System, VOLUME_MAK channel'; LicenseStatus=1; GracePeriodRemaining=0 })
     $checks.KeyServices = Ok @([pscustomobject]@{ Name='wuauserv'; DisplayName='Windows Update'; State='Running'; StartMode='Manual' })
+    $checks.TenantIdentity = Ok ([pscustomobject]@{ DeviceJoined=$false; Tenants=@(); Coverage='sample' })
     $checks.ClientPlatform = Ok ([pscustomobject]@{ ProductType=1; PowerScheme='Power Scheme GUID: 381b4222-f694-41f0-9685-ff5bb260df2e  (Balanced) *'
         Power=@([pscustomobject]@{ Setting='SleepAfter'; AcSeconds=1800; DcSeconds=900; ExitCode=0 }, [pscustomobject]@{ Setting='HibernateAfter'; AcSeconds=0; DcSeconds=0; ExitCode=0 },
             [pscustomobject]@{ Setting='DiskOffAfter'; AcSeconds=1200; DcSeconds=600; ExitCode=0 })
@@ -80,7 +81,9 @@ if ($Workstation) {
         @(@(25, 18, 11) | ForEach-Object { [pscustomobject]@{ RecordType='Event'; Time=(Ago $_).Date.AddHours(3).AddMinutes(58); Kind='Success'; Source='backup-job.cpp'; Text=$null } }) +
         @([pscustomobject]@{ RecordType='Event'; Time=(Ago 4).Date.AddHours(4).AddMinutes(12); Kind='FailedVolumes'; Source='backup-job.cpp'
             Text=((Ago 4).ToString('MMM dd', [Globalization.CultureInfo]::InvariantCulture) + " 04:12:40 -0500 [INFO] backup-job.cpp (1418): in backup routine, has_fail_volume '1', miss_custome_volume '0', system_volume_excluded '0'") }) +
-        @([pscustomobject]@{ RecordType='ConnectionErrors'; Day=(Ago 2).Date; Count=6 })
+        @(@(25, 18, 11) | ForEach-Object { [pscustomobject]@{ RecordType='Event'; Time=(Ago $_).Date.AddHours(3).AddSeconds(5); Kind='BackupError'; Source='snapshot-controller.cpp'
+            Text=((Ago $_).ToString('MMM dd', [Globalization.CultureInfo]::InvariantCulture) + ' 03:00:05 -0500 [ERROR] snapshot-controller.cpp (487): Fail on backup_comp->BackupComplete(&pAsyncUniquePointer.m_ivssasync)') } }) +
+        @([pscustomobject]@{ RecordType='ConnectionErrors'; Day=(Ago 5).Date; Count=35 }, [pscustomobject]@{ RecordType='ConnectionErrors'; Day=(Ago 2).Date; Count=135 })
     $checks.SynologyActiveBackup = Ok (@([pscustomobject]@{ RecordType='Summary'; Installed=$true
             Services=@([pscustomobject]@{ Name='Synology Active Backup for Business Service'; DisplayName='Synology Active Backup for Business Service'; State='Running'; StartMode='Auto' })
             Roots=@('C:\ProgramData\ActiveBackupforBusinessAgent', 'C:\Program Files (x86)\Synology\ActiveBackupforBusinessAgent'); LogFilesFound=31; LogFilesRead=31; LogFilesUnreadable=0
@@ -96,7 +99,7 @@ if ($Workstation) {
         KnownFolders=@([pscustomobject]@{ Folder='Desktop'; Assessment='PathUnderConfiguredOneDriveRoot' }, [pscustomobject]@{ Folder='Personal'; Assessment='NoPathMatchOrUnresolvedVariable' }, [pscustomobject]@{ Folder='My Pictures'; Assessment='NoPathMatchOrUnresolvedVariable' }) })
     $checks.OneDriveActivity = Ok @([pscustomobject]@{ SID='S-1-5-21-1-2-3-1001'; ProfilePath='C:\Users\reception'; LastUseTime=(Ago 0.5); Loaded=$true; ClientVersion='25.180.0914.0001'
         Accounts=@([pscustomobject]@{ Account='Business1'; LastLogWrite=(Ago 19) }); Coverage='sample' })
-    $report = [ordered]@{ SchemaVersion='1.15'; AuditId=[guid]::NewGuid().ToString('N'); Incomplete=$false; ClientName=''; Location=''
+    $report = [ordered]@{ SchemaVersion='1.16'; AuditId=[guid]::NewGuid().ToString('N'); Incomplete=$false; ClientName=''; Location=''
         StartedAt=$now.AddMinutes(-5).ToString('o'); CompletedAt=$now.ToString('o'); Elevated=$true; PowerShellVersion='5.1'; Checks=$checks; DeepAuditRequested=$false }
     $path = Join-Path $OutputDirectory ('WinFixAudit-FRONTDESK-PC-' + $now.ToString('yyyyMMdd-HHmmss') + '.json')
     [IO.File]::WriteAllText($path, (ConvertTo-Json -InputObject $report -Depth 14 -Compress), (New-Object Text.UTF8Encoding($false)))
@@ -299,7 +302,7 @@ $checks.VeeamServerJobs = Ok @(
     [pscustomobject]@{ RecordType='License'; Status='Valid'; Type='Subscription'; Edition='EnterprisePlus'; ExpirationDate=(Ago -20); SupportExpirationDate=(Ago -20) },
     [pscustomobject]@{ RecordType='Coverage'; Coverage='sample' })
 
-$report = [ordered]@{ SchemaVersion='1.15'; AuditId=[guid]::NewGuid().ToString('N'); Incomplete=$false; ClientName=''; Location=''
+$report = [ordered]@{ SchemaVersion='1.16'; AuditId=[guid]::NewGuid().ToString('N'); Incomplete=$false; ClientName=''; Location=''
     StartedAt=$now.AddMinutes(-7).ToString('o'); CompletedAt=$now.ToString('o'); Elevated=$true; PowerShellVersion='5.1'; Checks=$checks; DeepAuditRequested=$false }
 $path = Join-Path $OutputDirectory ('WinFixAudit-DC01-' + $now.ToString('yyyyMMdd-HHmmss') + '.json')
 [IO.File]::WriteAllText($path, (ConvertTo-Json -InputObject $report -Depth 14 -Compress), (New-Object Text.UTF8Encoding($false)))

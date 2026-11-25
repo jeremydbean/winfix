@@ -160,8 +160,25 @@ namespace PolarniteAudit
             a.Snapshot.Add("Domain", a.PartOfDomain ? a.DomainName + (roleText.Length > 0 ? " — " + roleText : "") : "Workgroup (" + a.DomainName + ")");
 
             object reg = J.Get(C("DeviceRegistration").First, "Fields");
+            // Client name: Entra tenant from dsregcmd, then the Entra join registry, then the
+            // Microsoft 365 tenant most users are signed in to (OneDrive work accounts).
             a.EntraTenant = J.Str(reg, "TenantName");
-            if (a.EntraTenant.Length > 0) a.Snapshot.Add("Entra tenant", a.EntraTenant);
+            a.TenantSource = a.EntraTenant.Length > 0 ? "Entra join" : "";
+            if (a.EntraTenant.Length == 0)
+            {
+                object joined = J.List(J.Get(C("TenantIdentity").First, "Tenants")).FirstOrDefault(t => J.Str(t, "DisplayName").Trim().Length > 0);
+                if (joined != null) { a.EntraTenant = J.Str(joined, "DisplayName").Trim(); a.TenantSource = "Entra join"; }
+            }
+            if (a.EntraTenant.Length == 0)
+            {
+                var names = C("OneDriveConfiguration").Data.Where(p => J.Str(p, "RecordType") == "Profile")
+                    .SelectMany(p => J.List(J.Get(p, "Accounts")))
+                    .Where(x => J.Str(x, "AccountSlot").StartsWith("Business", StringComparison.OrdinalIgnoreCase))
+                    .Select(x => J.Str(x, "ConfiguredTenantName").Trim()).Where(n => n.Length > 0)
+                    .GroupBy(n => n, StringComparer.OrdinalIgnoreCase).OrderByDescending(g => g.Count()).ToList();
+                if (names.Count > 0) { a.EntraTenant = names[0].Key; a.TenantSource = "Microsoft 365 sign-in"; }
+            }
+            if (a.EntraTenant.Length > 0) a.Snapshot.Add("Entra tenant", a.EntraTenant + (a.TenantSource == "Entra join" ? "" : " (from a " + a.TenantSource + ")"));
 
             string hw = (manufacturer + " " + model).Trim();
             if (a.IsVirtual) hw += " (virtual machine)";

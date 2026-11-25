@@ -58,7 +58,7 @@ namespace PolarniteAudit
             Row("Send tickets to", txtTo = new TextBox(), "Helpdesk mailbox that turns emails into tickets.");
             Row("Company name", txtCompany = new TextBox(), "Shown on the PDF cover and footer.");
             Row("Subject template", txtSubject = new TextBox(), "Placeholders: {tenant} {server} {month} {status}");
-            Row("Default tenant / client", txtTenant = new TextBox(), "Used when the server has no Entra tenant or domain name. Can be changed per audit.");
+            Row("Default tenant / client", txtTenant = new TextBox(), "Used when no Entra tenant is found (device join or Microsoft 365 sign-in) and the server has no domain. Can be changed per audit.");
             Row("Required agents", txtAgents = new TextBox(), "Comma-separated service names to require, e.g. Ninja, Huntress. A missing or stopped agent is a critical finding.");
 
             Heading("SMTP (sending)");

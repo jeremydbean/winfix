@@ -254,7 +254,10 @@ namespace PolarniteAudit
         {
             var d = new DraftState { ReportPath = reportPath, MonthKey = a.MonthKey, Source = source, CreatedAt = DateTime.Now.ToString("o", CultureInfo.InvariantCulture) };
             DraftState last = LoadLastAnswers();
-            d.Tenant = !string.IsNullOrEmpty(last == null ? "" : last.Tenant) ? last.Tenant : (!string.IsNullOrEmpty(s.DefaultTenant) ? s.DefaultTenant : a.DefaultTenant);
+            // Client name: a name a technician typed last month, else the Entra tenant, else last month's, the Settings default or the AD domain.
+            if (last != null && last.TenantSource == "Technician" && !string.IsNullOrEmpty(last.Tenant)) { d.Tenant = last.Tenant; d.TenantSource = "Technician"; }
+            else if (!string.IsNullOrEmpty(a.EntraTenant)) { d.Tenant = a.EntraTenant; d.TenantSource = a.TenantSource; }
+            else d.Tenant = !string.IsNullOrEmpty(last == null ? "" : last.Tenant) ? last.Tenant : (!string.IsNullOrEmpty(s.DefaultTenant) ? s.DefaultTenant : a.DefaultTenant);
             d.Technician = s.LastTechnician;
             if (last != null)
             {

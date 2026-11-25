@@ -36,7 +36,12 @@ if ($AsInvoker) {
 }
 
 New-Item -ItemType Directory -Force -Path (Split-Path $Output) | Out-Null
-$sources = Get-ChildItem (Join-Path $here 'src') -Filter *.cs | ForEach-Object { $_.FullName }
+$version = if ((Get-Content $Collector -Raw) -match 'WinFix audit (\d+(\.\d+)*)') { $Matches[1] } else { 'unknown' }
+$built = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+# Build stamp used by the in-app updater to tell whether the build on GitHub is newer.
+$buildInfo = Join-Path $env:TEMP ('PolarniteAudit-BuildInfo-' + [guid]::NewGuid().ToString('N') + '.cs')
+[IO.File]::WriteAllText($buildInfo, "namespace PolarniteAudit { internal static class BuildInfo { public const string BuiltUtc = `"$built`"; public const string Collector = `"$version`"; } }")
+$sources = @(Get-ChildItem (Join-Path $here 'src') -Filter *.cs | ForEach-Object { $_.FullName }) + $buildInfo
 $references = 'System.dll', 'System.Core.dll', 'System.Drawing.dll', 'System.Windows.Forms.dll', 'System.Web.Extensions.dll', 'System.Security.dll'
 $arguments = @('/nologo', '/codepage:65001', '/target:winexe', '/platform:anycpu', '/optimize+', '/warn:4',
     "/out:$Output", "/win32manifest:$manifest", "/resource:$Collector,Export-WinFixAudit.ps1") +
@@ -47,10 +52,14 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "Compilation failed (exit $LASTEXITCODE)." }
 } finally {
     if ($tempManifest) { Remove-Item $tempManifest -ErrorAction SilentlyContinue }
+    Remove-Item $buildInfo -ErrorAction SilentlyContinue
 }
 
 $hash = (Get-FileHash $Output -Algorithm SHA256).Hash
-$version = if ((Get-Content $Collector -Raw) -match 'WinFix audit (\d+(\.\d+)*)') { $Matches[1] } else { 'unknown' }
+# latest.json next to the exe: what the app's "Check for updates" reads from GitHub. Commit it with the exe.
+$latest = [ordered]@{ File=(Split-Path $Output -Leaf); BuiltUtc=$built; Collector=$version; Sha256=$hash; Size=(Get-Item $Output).Length }
+[IO.File]::WriteAllText((Join-Path (Split-Path $Output) 'latest.json'), ($latest | ConvertTo-Json), (New-Object Text.UTF8Encoding($false)))
 Write-Host "Built $Output"
 Write-Host "  Collector version: $version"
+Write-Host "  Built (UTC): $built"
 Write-Host "  SHA256: $hash"

@@ -26,6 +26,8 @@ namespace PolarniteAudit
         ///   --scheduled                        collect and save a draft (used by the monthly task)
         ///   --render &lt;report.json&gt; &lt;dir&gt;      test: write PDF, email bodies and an .eml for a sample-completed draft
         ///   --screenshot &lt;report.json&gt; &lt;dir&gt;  test: save PNGs of the main window tabs
+        ///   --update                           download the newest build from GitHub and replace this exe (for RMM scripts; exit 0 updated, 2 already current, 1 failed)
+        ///   --after-update                     GUI started by the updater: waits for the old version to close
         /// </summary>
         [STAThread]
         private static int Main(string[] args)
@@ -34,15 +36,22 @@ namespace PolarniteAudit
             try
             {
                 if (mode == "--scheduled") return Workflow.RunScheduled();
+                if (mode == "--update") return Updater.UpdateFromCommandLine();
                 if (mode == "--render" && args.Length >= 3) return Render(args[1], args[2], args.Length >= 4 ? args[3] : null);
                 Application.EnableVisualStyles();
                 Application.SetCompatibleTextRenderingDefault(false);
                 if (mode == "--screenshot" && args.Length >= 3) return Screenshot(args[1], args[2]);
 
                 AppPaths.MigrateLegacy();
+                bool afterUpdate = mode == "--after-update";
                 bool first;
                 using (var mutex = new Mutex(true, @"Global\PolarniteServerAudit", out first))
                 {
+                    if (!first && afterUpdate)
+                    {
+                        try { first = mutex.WaitOne(TimeSpan.FromSeconds(30)); }
+                        catch (AbandonedMutexException) { first = true; }
+                    }
                     if (!first)
                     {
                         MessageBox.Show(AppInfo.Name + " is already open on this computer.", AppInfo.Name, MessageBoxButtons.OK, MessageBoxIcon.Information);
@@ -53,6 +62,8 @@ namespace PolarniteAudit
                         Log.Write("UI error: " + e.Exception);
                         MessageBox.Show(e.Exception.Message, AppInfo.Name, MessageBoxButtons.OK, MessageBoxIcon.Error);
                     };
+                    if (afterUpdate) { Updater.CleanupOld(); Log.Write("Started after an update; build " + Updater.CurrentBuiltText + "."); }
+                    Updater.RefreshScheduledCopy();
                     Application.Run(new MainForm());
                 }
                 return 0;

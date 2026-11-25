@@ -133,7 +133,7 @@ if (ConvertFrom-AuditAbbLogLine -Text $noise -FileTime $fileTime) { throw 'Statu
 
 foreach ($name in @('DefenderThreats', 'BackupJobResults', 'AgentActivity', 'CertificateExpiry', 'Activation', 'LAPS', 'SecurityHardening',
         'KeyServices', 'HardwareVendorHealth', 'HardwareEvents', 'ADHygiene', 'DCDiag', 'ReplicationSummary', 'ExternalExposure',
-        'ClientPlatform', 'SynologyActiveBackup', 'VeeamServerJobs', 'OneDriveActivity', 'ServerRoles')) {
+        'ClientPlatform', 'SynologyActiveBackup', 'VeeamServerJobs', 'OneDriveActivity', 'ServerRoles', 'TenantIdentity')) {
     $assignment = $ast.Find({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq ('$checks.' + $name) }, $true)
     if (-not $assignment) { throw "Check $name is missing." }
     if ($assignment.Right.Extent.Text -notmatch '^Invoke-AuditCheck') { throw "Check $name must run through Invoke-AuditCheck." }
@@ -145,4 +145,4 @@ if (-not $veeam -or $veeam.Clauses[0].Item2.Extent.Text -notmatch 'VeeamServerJo
 $client = $ast.Find({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq '$checks.ClientPlatform' }, $true)
 if ($client.Extent.Text -match "Get-ItemProperty[^
 ]*'DefaultPassword'") { throw 'ClientPlatform must not read the auto sign-in password value.' }
-Write-Host 'PASS: OpenManage/ssacli/Veeam/powercfg/log-line/Active Backup parsers and collector 1.13-1.15 check registration.'
+Write-Host 'PASS: OpenManage/ssacli/Veeam/powercfg/log-line/Active Backup parsers and collector 1.13-1.16 check registration.'

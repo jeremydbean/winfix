@@ -338,7 +338,9 @@ namespace PolarniteAudit
             double allowed = gaps.Count > 0 ? Math.Max(2, usual * 1.5 + 1) : 8;
             string cadence = usual >= 1 ? "usually every " + (usual == 1 ? "day" : usual == 7 ? "week" : Math.Round(usual) + " days") : "";
 
-            int connErrors = abb.Data.Where(d => J.Str(d, "RecordType") == "ConnectionErrors" && DaysSince(J.Date(d, "Day")) <= 7).Sum(d => (int)(J.Num(d, "Count") ?? 0));
+            var connDays = abb.Data.Where(d => J.Str(d, "RecordType") == "ConnectionErrors" && DaysSince(J.Date(d, "Day")) <= 7 && (J.Num(d, "Count") ?? 0) > 0)
+                .Select(d => J.Date(d, "Day").Value).OrderBy(x => x).ToList();
+            int connErrors = connDays.Count;
             var conns = J.List(J.Get(sum, "NasConnections")).Select(x => J.Str(x, "RemoteAddress")).Where(x => x.Length > 0).Distinct().ToList();
 
             bool failOpen = lastFail.HasValue && (!lastOk.HasValue || lastFail > lastOk);
@@ -351,7 +353,7 @@ namespace PolarniteAudit
                 t.Add("Backup in progress or stopped", new Cell(AgeText(lastStart), DaysSince(lastStart) >= 1 ? Severity.Warning : Severity.Info), "Started " + J.FormatDateTime(lastStart) + " with no finish line yet");
             t.Add("Successful backups in logs", J.Plural(ok.Count, "run", "runs"), oldest.HasValue ? "Logs cover " + J.FormatDate(oldest) + " to " + J.FormatDate(newestLog) : "");
             t.Add("NAS connection", new Cell(conns.Count > 0 ? "Connected" : connErrors > 0 ? "Errors" : "Idle", conns.Count > 0 ? Severity.Pass : connErrors > 0 ? Severity.Warning : Severity.Info),
-                (conns.Count > 0 ? string.Join(", ", conns.ToArray()) + " on port 5510. " : "") + (connErrors > 0 ? J.Plural(connErrors, "connection error", "connection errors") + " in the last 7 days." : ""));
+                (conns.Count > 0 ? string.Join(", ", conns.ToArray()) + " on port 5510. " : "") + (connErrors > 0 ? "Could not reach the NAS on " + string.Join(", ", connDays.Select(x => x.ToString("d MMM", CultureInfo.InvariantCulture)).ToArray()) + "." : ""));
             BackupBlock(t);
 
             var summary = new List<string>();
@@ -385,8 +387,21 @@ namespace PolarniteAudit
             if (lastErr.HasValue && lastOk.HasValue && lastErr > lastOk && !failOpen)
                 Add("abb-errors", Severity.Warning, "Backups", "Synology Active Backup logged errors after its last success", J.Shorten(J.Str(errors[errors.Count - 1], "Text"), 200));
             if (connErrors > 0)
-                Add("abb-connection", Severity.Warning, "Backups", "Synology Active Backup agent lost its NAS connection " + J.Plural(connErrors, "time", "times") + " this week",
-                    "Connection errors to the NAS in the last 7 days. Usually network or NAS restarts; check if backups were affected.");
+                Add("abb-connection", Severity.Warning, "Backups", "Synology Active Backup agent could not reach the NAS on " + J.Plural(connErrors, "day", "days") + " this week",
+                    string.Join(", ", connDays.Select(x => x.ToString("d MMM", CultureInfo.InvariantCulture)).ToArray()) + ". Usually a NAS restart, update or network outage; backups that were due then may have been delayed.");
+
+            // Errors inside runs that still finished (for example VSS BackupComplete failing every week).
+            int runsWithErrors = 0; object runError = null;
+            foreach (DateTime done in ok.Skip(Math.Max(0, ok.Count - 4)))
+            {
+                DateTime begin = starts.Where(x => x <= done && x > done.AddDays(-1)).DefaultIfEmpty(done.AddHours(-6)).Max();
+                object err = errors.LastOrDefault(e => J.Date(e, "Time") >= begin && J.Date(e, "Time") <= done);
+                if (err != null) { runsWithErrors++; runError = err; }
+            }
+            if (runsWithErrors >= 2)
+                Add("abb-run-errors", Severity.Warning, "Backups", "Synology Active Backup logs an error during each run",
+                    runsWithErrors + " of the last " + Math.Min(4, ok.Count) + " runs finished but logged: " + J.Shorten(J.Str(runError, "Text"), 160) +
+                    (J.Str(runError, "Text").IndexOf("BackupComplete", StringComparison.OrdinalIgnoreCase) >= 0 ? " VSS writers are not told the backup completed, so SQL or Exchange logs may not truncate. Check vssadmin list writers." : ""));
 
             abbHealthy = !failOpen && lastOk.HasValue && age <= allowed;
             abbFailureOpen = failOpen;

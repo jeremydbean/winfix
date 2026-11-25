@@ -163,6 +163,7 @@ namespace PolarniteAudit
         public string DomainName = "";
         public bool PartOfDomain;
         public string EntraTenant = "";
+        public string TenantSource = "";   // "Entra join" or "Microsoft 365 sign-in"
         public string OsName = "";
         public string OsSupportText = "";
         public Severity OsSupportSeverity = Severity.Unknown;
@@ -286,6 +287,7 @@ namespace PolarniteAudit
         public string MonthKey = "";
         public string CreatedAt = "";
         public string Tenant = "";
+        public string TenantSource = "";   // "Technician" once someone types the name; otherwise it follows the Entra tenant
         public string Technician = "";
         public string ServerPurpose = "";
         public string Summary = "";
@@ -314,7 +316,7 @@ namespace PolarniteAudit
             return new Dictionary<string, object>
             {
                 { "Status", Status }, { "Source", Source }, { "ReportPath", ReportPath }, { "MonthKey", MonthKey },
-                { "CreatedAt", CreatedAt }, { "Tenant", Tenant }, { "Technician", Technician },
+                { "CreatedAt", CreatedAt }, { "Tenant", Tenant }, { "TenantSource", TenantSource }, { "Technician", Technician },
                 { "ServerPurpose", ServerPurpose }, { "Summary", Summary }, { "SubmittedAt", SubmittedAt },
                 { "SubmittedTo", SubmittedTo }, { "PdfPath", PdfPath }, { "Manual", manual }, { "FindingNotes", notes }
             };
@@ -330,6 +332,7 @@ namespace PolarniteAudit
             d.MonthKey = J.Str(o, "MonthKey");
             d.CreatedAt = J.Str(o, "CreatedAt");
             d.Tenant = J.Str(o, "Tenant");
+            d.TenantSource = J.Str(o, "TenantSource");
             d.Technician = J.Str(o, "Technician");
             d.ServerPurpose = J.Str(o, "ServerPurpose");
             d.Summary = J.Str(o, "Summary");
@@ -353,6 +356,8 @@ namespace PolarniteAudit
         /// </summary>
         public void ApplyAuto(AuditAnalysis a)
         {
+            // The client name follows the Entra tenant unless a technician typed one.
+            if (TenantSource != "Technician" && !string.IsNullOrEmpty(a.EntraTenant)) { Tenant = a.EntraTenant; TenantSource = a.TenantSource; }
             foreach (ManualItemDef item in ManualCatalog.Items)
             {
                 ManualAnswer ans = Answer(item.Id);

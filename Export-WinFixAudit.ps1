@@ -568,7 +568,7 @@ function Save-AuditCheckpoint {
     if ($script:checkpointPath) {
         $tempPath = $script:checkpointPath + '.tmp'
         try {
-            $snapshot = [ordered]@{ SchemaVersion='1.15'; AuditId=$script:auditId; Incomplete=$true
+            $snapshot = [ordered]@{ SchemaVersion='1.16'; AuditId=$script:auditId; Incomplete=$true
                 SavedAt=(Get-Date).ToString('o'); ClientName=$ClientName; Location=$Location; Elevated=$elevated
                 Checks=$script:checks; DeepAuditRequested=[bool]$DeepAudit; ExportWarnings=@($script:checkpointWarnings) }
             $checkpointJson = ConvertTo-AuditJson -InputObject $snapshot
@@ -1036,7 +1036,7 @@ $OutputDirectory = Initialize-AuditOutputDirectory -Path $OutputDirectory
 $prefix = 'WinFixAudit-' + $env:COMPUTERNAME + '-' + $started.ToString('yyyyMMdd-HHmmss')
 $script:checkpointPath = Join-Path $OutputDirectory "$prefix-PARTIAL.json"
 $BackupPattern = 'Synology (Drive|Active Backup)|cloud.?drive|Veeam|Acronis|Macrium|Datto|Carbonite|Veritas|CrashPlan|\bCove\b|Axcient|Rubrik|Backup|StorageCraft|ShadowProtect|Arcserve|MSP360|CloudBerry|Druva|Commvault|NAKIVO|Retrospect|UrBackup|Duplicati|Duplicacy|Restic|rclone|IDrive|Backblaze|GoodSync|SyncBack|EaseUS|AOMEI|OneDrive'
-Write-Host "WinFix audit 1.15. Completed checks are saved to $script:checkpointPath"
+Write-Host "WinFix audit 1.16. Completed checks are saved to $script:checkpointPath"
 if (-not $elevated) { Write-Warning 'Run ISE as Administrator for the fullest audit.' }
 Save-AuditCheckpoint
 $checks.System = Invoke-AuditCheck System {
@@ -1584,6 +1584,17 @@ $checks.DeviceRegistration = Invoke-AuditCheck DeviceRegistration {
     }
     if (-not $fields.Count) { throw 'No recognized device-registration fields returned.' }
     [pscustomobject]@{ Fields=[pscustomobject]$fields; Coverage='Current elevated user context only. Registration and PRT presence do not prove MFA enforcement.' }
+}
+$checks.TenantIdentity = Invoke-AuditCheck TenantIdentity {
+    # Entra-joined and hybrid-joined devices keep the tenant's display name here, also where dsregcmd is missing.
+    # JoinInfo is only counted (it holds the joining user's e-mail address, which is not exported).
+    $base = 'HKLM:\SYSTEM\CurrentControlSet\Control\CloudDomainJoin'
+    $tenants = @(foreach ($k in @(Get-ChildItem -LiteralPath "$base\TenantInfo" -ErrorAction SilentlyContinue)) {
+        $p = Get-ItemProperty -LiteralPath $k.PSPath -ErrorAction SilentlyContinue
+        [pscustomobject]@{ TenantId=$k.PSChildName; DisplayName=[string]$p.DisplayName }
+    })
+    [pscustomobject]@{ DeviceJoined=(@(Get-ChildItem -LiteralPath "$base\JoinInfo" -ErrorAction SilentlyContinue).Count -gt 0); Tenants=$tenants
+        Coverage='Device-level Entra join only. User sign-ins to Microsoft 365 are read from OneDrive account settings (OneDriveConfiguration).' }
 }
 $checks.RemoteAccessFirewall = Invoke-AuditCheck RemoteAccessFirewall {
     # ActiveStore merges local and applied policy. Include Any and numeric port
@@ -2220,7 +2231,7 @@ $checks.ExternalEvidence = Invoke-AuditCheck ExternalEvidence -Context @{
     Read-ExternalEvidence -Path $EvidencePath -Template $Template
 }
 $report = [ordered]@{
-    SchemaVersion = '1.15'; AuditId = $script:auditId; Incomplete = $false; ClientName = $ClientName; Location = $Location
+    SchemaVersion = '1.16'; AuditId = $script:auditId; Incomplete = $false; ClientName = $ClientName; Location = $Location
     StartedAt = $started.ToString('o'); CompletedAt = (Get-Date).ToString('o'); Elevated = $elevated
     PowerShellVersion = $PSVersionTable.PSVersion.ToString(); Checks = $checks
     ExportWarnings = @($script:checkpointWarnings)

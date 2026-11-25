@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-11-25 — collector 1.16, in-app updates and client name from Entra
+- App: **Check for updates** downloads the newest `PolarniteServerAuditTool.exe` from GitHub (`app/dist/latest.json` gives the build time, size and SHA-256), verifies it, swaps it in and restarts; `--update` does the same unattended for RMM scripts. `build.ps1` stamps each build and writes `latest.json`.
+- Client name: taken from the Entra tenant (dsregcmd, or the new `TenantIdentity` check reading `HKLM\SYSTEM\CurrentControlSet\Control\CloudDomainJoin\TenantInfo`, which also works where dsregcmd is missing), then from the Microsoft 365 tenant users are signed in to (OneDrive work accounts). A technician-typed name is kept.
+- Synology Active Backup (checked on a second live server, agent 3.2 on Server 2025): errors that repeat inside every successful run (for example VSS `BackupComplete` failures) are a warning, and NAS outages are reported by day.
+
 ## 2026-11-25 — collector 1.15: checked against real Veeam and Synology servers
 - Synology Active Backup for Business: the agent rotates `log.txt_0 … log.txt_N` and writes `Nov 21 03:59:27 -0500` timestamps without a year; most lines are once-a-minute status calls. The collector now reads backup runs from `backup-job.cpp` lines (start, `in backup routine, has_fail_volume 'N'`), backup ERROR lines and NAS connection errors (`ConvertFrom-AuditAbbLogLine`), across the newest 40 log files. The app learns the usual interval from past runs (weekly schedules are not flagged) and auto-answers the backup checks.
 - Veeam Backup & Replication 12.2: confirmed `Get-VBRJob`, restore points, repositories and licence on a live server. Jobs set to run manually are no longer flagged as stale; backup copy jobs with no new copy in 7 days are a warning; licence expiry warns 60 days ahead.

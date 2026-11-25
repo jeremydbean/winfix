@@ -29,7 +29,7 @@ namespace PolarniteAudit
         private readonly System.Windows.Forms.Timer saveTimer = new System.Windows.Forms.Timer { Interval = 800 };
 
         private Label lblServer, lblSub, lblPill, lblBanner, lblProgress, lblReady, lblSubject, lblCounts;
-        private Button btnRun, btnCancel, btnOpen, btnSettings, btnPreview, btnSubmit;
+        private Button btnRun, btnCancel, btnOpen, btnSettings, btnUpdate, btnPreview, btnSubmit;
         private CheckBox chkDeep, chkOnline, chkShowPassed;
         private TabControl tabs;
         private TabPage tabOverview, tabFindings, tabManual, tabLog;
@@ -123,7 +123,9 @@ namespace PolarniteAudit
             btnSettings = NewButton("Settings && schedule…", false);
             chkDeep = new CheckBox { Text = "Deep audit (DC / server roles)", AutoSize = true, Margin = new Padding(18, 13, 4, 4) };
             chkOnline = new CheckBox { Text = "Online update scan", AutoSize = true, Margin = new Padding(8, 13, 4, 4) };
-            toolbar.Controls.AddRange(new Control[] { btnRun, btnCancel, btnOpen, btnSettings, chkDeep, chkOnline });
+            btnUpdate = NewButton("Check for updates", false);
+            toolbar.Controls.AddRange(new Control[] { btnRun, btnCancel, btnOpen, btnSettings, btnUpdate, chkDeep, chkOnline });
+            tips.SetToolTip(btnUpdate, "This build: " + Updater.CurrentBuiltText + ". Downloads the newest version from GitHub and restarts the app.");
             tips.SetToolTip(chkDeep, "Adds AD, DNS, DHCP, certificate and storage-usage checks. Takes several minutes longer.");
             tips.SetToolTip(chkOnline, "Contacts Windows Update / WSUS for a current missing-updates list (90 s limit). Nothing is installed.");
 
@@ -164,6 +166,7 @@ namespace PolarniteAudit
             btnCancel.Click += (s, e) => { if (cts != null) { cts.Cancel(); btnCancel.Enabled = false; lblProgress.Text = "Cancelling…"; } };
             btnOpen.Click += (s, e) => OpenReport();
             btnSettings.Click += (s, e) => OpenSettings();
+            btnUpdate.Click += (s, e) => UpdateApp();
             btnPreview.Click += (s, e) => PreviewPdf();
             btnSubmit.Click += (s, e) => Submit();
             UpdateEnabled();
@@ -194,7 +197,7 @@ namespace PolarniteAudit
             form.Controls.Add(txtSummary);
             form.Controls.Add(lblSubject);
             for (int i = 0; i < form.Controls.Count; i++) form.RowStyles.Add(new RowStyle(form.Controls[i] == txtSummary ? SizeType.Percent : SizeType.AutoSize, 100));
-            tips.SetToolTip(txtTenant, "Used in the email subject, the PDF and the file name. Pre-filled from the Entra tenant or AD domain.");
+            tips.SetToolTip(txtTenant, "Used in the email subject, the PDF and the file name. Pre-filled from the Entra tenant (device join or Microsoft 365 sign-in), else the AD domain. A name you type here is kept.");
             tips.SetToolTip(txtPurpose, "For example: Domain controller / file server. Carried forward to next month.");
 
             var rightPane = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 3 };
@@ -225,6 +228,7 @@ namespace PolarniteAudit
                 Changed();
             };
             txtTenant.TextChanged += changed;
+            txtTenant.TextChanged += (s, e) => { if (!loading && draft != null) draft.TenantSource = "Technician"; };
             txtTech.TextChanged += changed;
             txtPurpose.TextChanged += changed;
             txtSummary.TextChanged += changed;
@@ -386,6 +390,60 @@ namespace PolarniteAudit
                 Log.Write("Startup load failed: " + ex);
                 lblProgress.Text = "Could not load the saved draft: " + ex.Message;
             }
+            CheckForUpdateQuietly();
+        }
+
+        // ------------------------------------------------------------ updates
+
+        private void CheckForUpdateQuietly()
+        {
+            Task.Factory.StartNew(() => Updater.Check()).ContinueWith(t =>
+            {
+                if (IsDisposed) return;
+                if (t.IsFaulted) { Log.Write("Update check failed: " + t.Exception.GetBaseException().Message); return; }
+                if (!Updater.IsNewer(t.Result)) return;
+                btnUpdate.Text = "Update available  \u2193";
+                btnUpdate.BackColor = Color.FromArgb(254, 243, 199);
+                btnUpdate.FlatAppearance.BorderColor = Color.FromArgb(217, 119, 6);
+                btnUpdate.Font = new Font("Segoe UI", 9F, FontStyle.Bold);
+                tips.SetToolTip(btnUpdate, "Build " + t.Result.BuiltText + " is on GitHub (this build: " + Updater.CurrentBuiltText + "). Click to download it and restart.");
+            }, TaskScheduler.FromCurrentSynchronizationContext());
+        }
+
+        private async void UpdateApp()
+        {
+            if (busy) { MessageBox.Show(this, "Wait for the current operation to finish first.", AppInfo.Name, MessageBoxButtons.OK, MessageBoxIcon.Information); return; }
+            btnUpdate.Enabled = false;
+            string before = lblProgress.Text;
+            try
+            {
+                lblProgress.Text = "Checking GitHub for a newer version…";
+                UpdateInfo u = await Task.Run(() => Updater.Check());
+                if (!Updater.IsNewer(u))
+                {
+                    lblProgress.Text = before;
+                    MessageBox.Show(this, "You have the latest version (built " + Updater.CurrentBuiltText + ").", AppInfo.Name, MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    return;
+                }
+                if (MessageBox.Show(this, "A newer version is on GitHub.\n\nNew build: " + u.BuiltText + " (collector " + u.Collector + ")\nThis build: " + Updater.CurrentBuiltText +
+                        "\n\nDownload it and restart the app now? Your draft is saved first.", AppInfo.Name, MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes)
+                {
+                    lblProgress.Text = before;
+                    return;
+                }
+                lblProgress.Text = "Downloading the update…";
+                string file = await Task.Run(() => Updater.Download(u));
+                SaveDraft();
+                Updater.InstallAndStart(file, true);
+                Close();
+            }
+            catch (Exception ex)
+            {
+                Log.Write("Update failed: " + ex);
+                lblProgress.Text = before;
+                MessageBox.Show(this, "The update did not complete:\n\n" + ex.Message, AppInfo.Name, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
+            finally { if (!IsDisposed) btnUpdate.Enabled = !busy; }
         }
 
         protected override void OnFormClosing(FormClosingEventArgs e)
@@ -600,6 +658,7 @@ namespace PolarniteAudit
             btnRun.Enabled = !busy;
             btnOpen.Enabled = !busy;
             btnSettings.Enabled = !busy;
+            btnUpdate.Enabled = !busy;
             btnPreview.Enabled = !busy && loaded;
             btnSubmit.Enabled = !busy && loaded;
             btnCancel.Enabled = busy && cts != null && !cts.IsCancellationRequested;
