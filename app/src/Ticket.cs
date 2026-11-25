@@ -80,6 +80,11 @@ namespace WinFixAudit
                   .Append(kpis[i].Value.ToUpperInvariant()).Append("</div></td>");
             sb.Append("</tr></table>");
 
+            if (a.PreviousAuditTime.HasValue)
+                sb.Append("<p style=\"margin:6px 0 2px;color:#374151\"><b>Since the last audit</b> (").Append(J.HtmlEncode(J.FormatDate(a.PreviousAuditTime))).Append("): critical ")
+                  .Append(a.PreviousCritical).Append(" \u2192 ").Append(a.Count(Severity.Critical)).Append(", warnings ").Append(a.PreviousWarning).Append(" \u2192 ").Append(a.Count(Severity.Warning))
+                  .Append(", ").Append(J.HtmlEncode(J.Plural(a.Resolved.Count, "issue", "issues"))).Append(" resolved, ").Append(a.Findings.Count(f => f.IsNew)).Append(" new.</p>");
+
             // Snapshot line
             sb.Append("<p style=\"margin:8px 0 4px;color:#374151\">");
             sb.Append(J.HtmlEncode(a.OsName));
@@ -105,6 +110,7 @@ namespace WinFixAudit
                     string note = d.FindingNotes.ContainsKey(f.Key) ? d.FindingNotes[f.Key] : "";
                     sb.Append("<tr><td style=\"padding:8px 10px 8px 0;border-bottom:1px solid #E5E7EB;vertical-align:top;width:96px\">").Append(Chip(Sev.Label(f.Severity), f.Severity))
                       .Append("</td><td style=\"padding:8px 0;border-bottom:1px solid #E5E7EB\"><b>").Append(J.HtmlEncode(f.Title)).Append("</b>");
+                    if (f.IsNew) sb.Append(" ").Append(Chip("New", Severity.Info));
                     if (f.Detail.Length > 0) sb.Append("<br><span style=\"color:#6B7280;font-size:13px\">").Append(J.HtmlEncode(f.Detail)).Append("</span>");
                     if (!string.IsNullOrWhiteSpace(note)) sb.Append("<br><i style=\"color:#2563EB;font-size:13px\">Technician: ").Append(J.HtmlEncode(note.Trim())).Append("</i>");
                     sb.Append("</td></tr>");
@@ -142,6 +148,9 @@ namespace WinFixAudit
             sb.AppendLine("Overall: " + ReportPdf.OverallLabel(ReportPdf.Overall(a, d)) + " | Critical " + a.Count(Severity.Critical) + " | Warnings " + a.Count(Severity.Warning) + " | Passed " + a.Count(Severity.Pass));
             sb.AppendLine(a.OsName + (string.IsNullOrEmpty(a.OsSupportText) ? "" : " - " + a.OsSupportText));
             sb.AppendLine("Audited " + J.FormatDateTime(a.AuditTime) + " by " + d.Technician);
+            if (a.PreviousAuditTime.HasValue)
+                sb.AppendLine("Since the last audit (" + J.FormatDate(a.PreviousAuditTime) + "): critical " + a.PreviousCritical + " -> " + a.Count(Severity.Critical) +
+                              ", warnings " + a.PreviousWarning + " -> " + a.Count(Severity.Warning) + ", " + a.Resolved.Count + " resolved, " + a.Findings.Count(f => f.IsNew) + " new");
             if (!string.IsNullOrWhiteSpace(d.Summary)) { sb.AppendLine(); sb.AppendLine("TECHNICIAN NOTES"); sb.AppendLine(d.Summary.Trim()); }
             sb.AppendLine();
             sb.AppendLine("FINDINGS NEEDING ATTENTION");
@@ -149,7 +158,7 @@ namespace WinFixAudit
             if (priority.Count == 0) sb.AppendLine("  None.");
             foreach (Finding f in priority)
             {
-                sb.AppendLine("  [" + Sev.Label(f.Severity).ToUpperInvariant() + "] " + f.Title);
+                sb.AppendLine("  [" + Sev.Label(f.Severity).ToUpperInvariant() + "] " + f.Title + (f.IsNew ? " (new)" : ""));
                 if (f.Detail.Length > 0) sb.AppendLine("      " + f.Detail);
                 string note;
                 if (d.FindingNotes.TryGetValue(f.Key, out note) && !string.IsNullOrWhiteSpace(note)) sb.AppendLine("      Technician: " + note.Trim());
@@ -170,6 +179,21 @@ namespace WinFixAudit
     /// <summary>The audit lifecycle shared by the GUI and the command-line modes.</summary>
     internal static class Workflow
     {
+        /// <summary>Analyses a report against the last submitted audit, when one is available.</summary>
+        public static AuditAnalysis Analyze(AuditReport report, AppSettings s)
+        {
+            AuditReport previous = null;
+            try
+            {
+                DraftState last = DraftStore.LoadLastAnswers();
+                if (last != null && !string.IsNullOrEmpty(last.ReportPath) && File.Exists(last.ReportPath) &&
+                    !string.Equals(Path.GetFullPath(last.ReportPath), Path.GetFullPath(report.Path), StringComparison.OrdinalIgnoreCase))
+                    previous = AuditReport.Load(last.ReportPath);
+            }
+            catch (Exception ex) { Log.Write("Previous audit unavailable for comparison: " + ex.Message); }
+            return Analyzer.Run(report, s.ExpectedAgentList, previous);
+        }
+
         /// <summary>Scheduled (SYSTEM) run: collect, analyse and save a draft. Nothing is sent.</summary>
         public static int RunScheduled()
         {
@@ -178,9 +202,9 @@ namespace WinFixAudit
                 AppPaths.EnsureRoot();
                 AppSettings s = AppSettings.Load();
                 Log.Write("Scheduled audit starting.");
-                string report = CollectorRunner.Run(new CollectorOptions { DeepAudit = s.DeepAudit, OnlineUpdateScan = s.OnlineUpdateScan },
+                string report = CollectorRunner.Run(new CollectorOptions { DeepAudit = s.DeepAudit, OnlineUpdateScan = s.OnlineUpdateScan, ExternalExposureCheck = s.ExternalExposureCheck },
                     line => { }, System.Threading.CancellationToken.None);
-                AuditAnalysis a = Analyzer.Run(AuditReport.Load(report), s.ExpectedAgentList);
+                AuditAnalysis a = Analyze(AuditReport.Load(report), s);
                 DraftState existing = DraftStore.Load();
                 DraftState d;
                 if (existing != null && !existing.IsSubmitted && existing.MonthKey == a.MonthKey)
@@ -191,6 +215,7 @@ namespace WinFixAudit
                     d.Source = "Scheduled";
                 }
                 else d = DraftStore.NewDraft(report, a, s, "Scheduled");
+                d.ApplyAuto(a);
                 DraftStore.Save(d);
                 CollectorRunner.PruneRuns(s.KeepRunsMonths, report);
                 Log.Write("Scheduled audit saved as draft: " + report);

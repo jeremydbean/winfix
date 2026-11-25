@@ -4,6 +4,25 @@ Detailed behaviour, limits and version notes for `Export-WinFixAudit.ps1`, `Star
 `Export-WinFixDiskDiagnostic.ps1` and `Export-WinFixBackupDiagnostic.ps1`. Moved from the main README.
 For a summary of every tool, see the [README](../README.md).
 
+## Collector 1.13: standard monthly-maintenance evidence
+
+| Check | What is collected | Notes |
+| --- | --- | --- |
+| `DefenderThreats` | Defender detections in the lookback (threat name, severity, status, action result, resource count) | File paths are not exported. Third-party antivirus needs its own console. |
+| `BackupJobResults` | Event 190 from the *Veeam Agent* and *Veeam Backup* logs, parsed into job / result / end time | Event-based; job scope, retention and offsite copies still need the console. |
+| `AgentActivity` | Newest log write time for NinjaRMM and Huntress agents | Shows local activity only, not console alerts. |
+| `CertificateExpiry` | LocalMachine *My*, *Remote Desktop* and *WebHosting* certificates expiring within 60 days, plus the RDP certificate | Self-signed certificates are reported but not flagged by the app. |
+| `Activation` | Windows licence status | |
+| `LAPS` | Legacy LAPS client and policy, Windows LAPS backup directory | Policy only; rotation success is visible in AD/Entra. |
+| `SecurityHardening` | SCHANNEL server protocols, LLMNR policy, NetBIOS per adapter, WDigest, LmCompatibilityLevel, NoLMHash, RunAsPPL, RestrictAnonymous, Windows Update policy | Null means the OS default applies. |
+| `KeyServices` | State of Spooler, Remote Registry, WinRM, RDP, time, Windows Update, Defender, firewall, Event Log, Task Scheduler, Server, BITS | |
+| `HardwareVendorHealth` | `omreport chassis` / `omreport storage vdisk` (Dell OpenManage) and `ssacli ctrl all show status/config` (HPE), each with a bounded reader | Without these tools, check iDRAC/iLO or the hypervisor. |
+| `HardwareEvents` | System-log errors from server-management, RAID, WHEA and UPS providers | |
+| `ADHygiene`, `DCDiag`, `ReplicationSummary` | Domain controllers only: enabled/stale users and computers, never-expiring passwords, unsupported OS, krbtgt password age, Recycle Bin; `dcdiag /q`; `repadmin /replsummary` | Up to 20,000 objects each; lastLogonTimestamp can lag 14 days. |
+| `ExternalExposure` | **Opt-in** (`-ExternalExposureCheck`): public IPv4 via api.ipify.org, then open ports, CVEs and hostnames from Shodan InternetDB | Sends the site's public IP to two third parties. Passive data; a shared NAT can include other devices. |
+
+Parsers for the vendor tools and Veeam messages are covered by `tests/Test-StandardChecks.ps1`.
+
 ## Collect audit evidence for a polished report
 
 Run the standalone `Export-WinFixAudit.ps1` on the Windows computer in

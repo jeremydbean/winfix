@@ -29,6 +29,7 @@ param(
     [ValidateRange(128,1024)][int]$VeeamLogTailKiB = 256,
     [switch]$DeepAudit,
     [switch]$SkipOnlineUpdateScan,
+    [switch]$ExternalExposureCheck,
     [switch]$NoOpen,
     [switch]$CopyToClipboard
 )
@@ -567,7 +568,7 @@ function Save-AuditCheckpoint {
     if ($script:checkpointPath) {
         $tempPath = $script:checkpointPath + '.tmp'
         try {
-            $snapshot = [ordered]@{ SchemaVersion='1.12'; AuditId=$script:auditId; Incomplete=$true
+            $snapshot = [ordered]@{ SchemaVersion='1.13'; AuditId=$script:auditId; Incomplete=$true
                 SavedAt=(Get-Date).ToString('o'); ClientName=$ClientName; Location=$Location; Elevated=$elevated
                 Checks=$script:checks; DeepAuditRequested=[bool]$DeepAudit; ExportWarnings=@($script:checkpointWarnings) }
             $checkpointJson = ConvertTo-AuditJson -InputObject $snapshot
@@ -751,6 +752,51 @@ function Invoke-AuditNativeReader {
     }
 }
 
+function ConvertFrom-AuditOmReport {
+    # Dell OpenManage 'omreport chassis' lines look like "Ok            : Fans".
+    param([string]$Text)
+    foreach ($line in ([string]$Text -split "`r?`n")) {
+        if ($line -match '^\s*(Ok|Non-Critical|Critical|Unknown|Not Applicable)\s*:\s*(\S.*?)\s*$') {
+            [pscustomobject]@{ Component=$matches[2]; Status=$matches[1] }
+        }
+    }
+}
+function ConvertFrom-AuditOmVdisk {
+    # 'omreport storage vdisk' prints one "Key : Value" block per virtual disk, starting with ID.
+    param([string]$Text)
+    $current = $null
+    foreach ($line in ([string]$Text -split "`r?`n")) {
+        if ($line -notmatch '^\s*([A-Za-z][A-Za-z /]*?)\s*:\s*(.*?)\s*$') { continue }
+        $key = $matches[1]; $value = $matches[2]
+        if ($key -eq 'ID') {
+            if ($current) { [pscustomobject]$current }
+            $current = [ordered]@{ ID=$value; Status=$null; Name=$null; State=$null; Layout=$null; Size=$null }
+        } elseif ($current -and $current.Contains($key)) { $current[$key] = $value }
+    }
+    if ($current) { [pscustomobject]$current }
+}
+function ConvertFrom-AuditSsacli {
+    # HPE ssacli/hpssacli 'ctrl all show config' and 'ctrl all show status' output.
+    param([string]$Text)
+    $controller = $null
+    foreach ($line in ([string]$Text -split "`r?`n")) {
+        if ($line -match '^\s*(Smart (Array|HBA)|HPE? ).* in Slot\s+\S+') { $controller = $line.Trim(); continue }
+        if ($line -match '^\s*((Controller|Cache|Battery/Capacitor) Status)\s*:\s*(\S.*?)\s*$') {
+            [pscustomobject]@{ Controller=$controller; Component=$matches[1]; Status=$matches[3] }
+        } elseif ($line -match '^\s*((logical|physical)drive\s+\S+)\s+\((.*),\s*([^,()]+?)\)\s*$') {
+            [pscustomobject]@{ Controller=$controller; Component=($matches[1] + ' (' + $matches[3] + ')'); Status=$matches[4].Trim() }
+        }
+    }
+}
+function ConvertFrom-AuditVeeamJobMessage {
+    # Veeam Agent / Backup & Replication event 190: "... 'Job name' finished with Success."
+    param([string]$Message)
+    if ([string]$Message -match "'(?<job>[^']+)'.*?\bfinished with (?<result>Success|Warning|Failed|Failure)") {
+        $result = $matches['result']
+        if ($result -eq 'Failure') { $result = 'Failed' }
+        [pscustomobject]@{ Job=$matches['job']; Result=$result }
+    }
+}
 function Assert-AuditLocalMetadataPath {
     param([string]$Path)
     $provider=$null; $drive=$null
@@ -944,7 +990,7 @@ $OutputDirectory = Initialize-AuditOutputDirectory -Path $OutputDirectory
 $prefix = 'WinFixAudit-' + $env:COMPUTERNAME + '-' + $started.ToString('yyyyMMdd-HHmmss')
 $script:checkpointPath = Join-Path $OutputDirectory "$prefix-PARTIAL.json"
 $BackupPattern = 'Synology (Drive|Active Backup)|cloud.?drive|Veeam|Acronis|Macrium|Datto|Carbonite|Veritas|CrashPlan|\bCove\b|Axcient|Rubrik|Backup|StorageCraft|ShadowProtect|Arcserve|MSP360|CloudBerry|Druva|Commvault|NAKIVO|Retrospect|UrBackup|Duplicati|Duplicacy|Restic|rclone|IDrive|Backblaze|GoodSync|SyncBack|EaseUS|AOMEI|OneDrive'
-Write-Host "WinFix audit 1.12. Completed checks are saved to $script:checkpointPath"
+Write-Host "WinFix audit 1.13. Completed checks are saved to $script:checkpointPath"
 if (-not $elevated) { Write-Warning 'Run ISE as Administrator for the fullest audit.' }
 Save-AuditCheckpoint
 $checks.System = Invoke-AuditCheck System {
@@ -1565,6 +1611,186 @@ $checks.MachineIdentity = Invoke-AuditCheck MachineIdentity {
     Get-CimInstance Win32_BIOS | Select-Object Manufacturer,SMBIOSBIOSVersion,SerialNumber
     [pscustomobject]@{Coverage='Match guest UUID and inventory path in the hypervisor/backup console. VMware UUID byte ordering can differ; hostname alone is not proof of backup coverage.'}
 }
+# --- Collector 1.13: standard monthly-maintenance evidence -----------------------
+$checks.DefenderThreats = Invoke-AuditCheck DefenderThreats {
+    if (-not (Get-Command Get-MpThreatDetection -ErrorAction SilentlyContinue)) { throw 'Microsoft Defender threat history cmdlets are not available on this system.' }
+    $names = @{}
+    foreach ($t in @(Get-MpThreat -ErrorAction SilentlyContinue)) { $names[[string]$t.ThreatID] = $t }
+    $rows = @(Get-MpThreatDetection -ErrorAction Stop | Where-Object { $_.InitialDetectionTime -ge $since -or $_.LastThreatStatusChangeTime -ge $since } |
+        Sort-Object InitialDetectionTime -Descending | Select-Object -First 51)
+    foreach ($d in ($rows | Select-Object -First 50)) {
+        $threat = $names[[string]$d.ThreatID]
+        [pscustomobject]@{ RecordType='Detection'; ThreatID=[string]$d.ThreatID
+            ThreatName=$(if ($threat) { [string]$threat.ThreatName } else { $null }); SeverityID=$(if ($threat) { $threat.SeverityID } else { $null })
+            InitialDetectionTime=$d.InitialDetectionTime; LastThreatStatusChangeTime=$d.LastThreatStatusChangeTime
+            ThreatStatusID=$d.ThreatStatusID; ActionSuccess=$d.ActionSuccess; ResourceCount=@($d.Resources).Count }
+    }
+    [pscustomobject]@{ RecordType='Coverage'; Since=$since; OutputTruncated=($rows.Count -gt 50)
+        Coverage='Microsoft Defender detection history only; third-party antivirus detections need that product''s console. Affected file paths are not exported. ThreatStatusID: 1 detected, 2 cleaned, 3 quarantined, 4 removed, 5 allowed, 6 blocked, 102-107 action failed.' }
+}
+$checks.BackupJobResults = Invoke-AuditCheck BackupJobResults -TimeoutSeconds 60 -Context @{ ParserCode=${function:ConvertFrom-AuditVeeamJobMessage}.ToString() } -Collect {
+    Set-Item Function:ConvertFrom-AuditVeeamJobMessage ([scriptblock]::Create($ParserCode))
+    $found = $false
+    foreach ($log in @('Veeam Agent', 'Veeam Backup')) {
+        try { $null = Get-WinEvent -ListLog $log -ErrorAction Stop } catch { continue }
+        $found = $true
+        $events = @()
+        try { $events = @(Get-WinEvent -FilterHashtable @{ LogName=$log; Id=190; StartTime=$since } -MaxEvents 400 -ErrorAction Stop) }
+        catch { if ($_.FullyQualifiedErrorId -notlike 'NoMatchingEventsFound*') { throw } }
+        foreach ($e in $events) {
+            $parsed = ConvertFrom-AuditVeeamJobMessage -Message ([string]$e.Message)
+            if ($parsed) { [pscustomobject]@{ RecordType='Session'; Product=$log; Job=$parsed.Job; Result=$parsed.Result; EndTime=$e.TimeCreated } }
+        }
+        [pscustomobject]@{ RecordType='Coverage'; Product=$log; EventsRead=$events.Count; QueryLimitReached=($events.Count -ge 400) }
+    }
+    if (-not $found) { [pscustomobject]@{ RecordType='Coverage'; Product='None'; Coverage='No Veeam Agent or Veeam Backup & Replication event log on this server.' } }
+}
+$checks.AgentActivity = Invoke-AuditCheck AgentActivity {
+    $roots = @(@{ Agent='NinjaRMM'; Path=(Join-Path $env:ProgramData 'NinjaRMMAgent\logs') }, @{ Agent='Huntress'; Path=(Join-Path $env:ProgramFiles 'Huntress') })
+    if (${env:ProgramFiles(x86)}) { $roots += @{ Agent='Huntress'; Path=(Join-Path ${env:ProgramFiles(x86)} 'Huntress') } }
+    foreach ($root in $roots) {
+        if (-not (Test-Path -LiteralPath $root.Path -PathType Container)) { continue }
+        $newest = @(Get-ChildItem -LiteralPath $root.Path -Recurse -File -ErrorAction SilentlyContinue | Where-Object { $_.Name -match '\.(log|txt)$' } |
+            Sort-Object LastWriteTime -Descending | Select-Object -First 1)
+        [pscustomobject]@{ Agent=$root.Agent; Root=$root.Path; NewestLog=$(if ($newest.Count) { $newest[0].Name } else { $null })
+            LastWriteTime=$(if ($newest.Count) { $newest[0].LastWriteTime } else { $null })
+            Coverage='Local log write time only: shows the agent is active on this server, not console health or open alerts.' }
+    }
+}
+$checks.CertificateExpiry = Invoke-AuditCheck CertificateExpiry {
+    $rdpThumb = $null
+    try { $rdpThumb = [string](Get-CimInstance -Namespace root/cimv2/TerminalServices -ClassName Win32_TSGeneralSetting -Filter "TerminalName='RDP-Tcp'" -ErrorAction Stop).SSLCertificateSHA1Hash } catch { }
+    $horizon = (Get-Date).AddDays(60)
+    foreach ($store in @('My', 'Remote Desktop', 'WebHosting')) {
+        $path = 'Cert:\LocalMachine\' + $store
+        if (-not (Test-Path -LiteralPath $path)) { continue }
+        foreach ($c in @(Get-ChildItem -LiteralPath $path -ErrorAction SilentlyContinue)) {
+            $usedForRdp = ($rdpThumb -and $c.Thumbprint -eq $rdpThumb)
+            if ($c.NotAfter -gt $horizon -and -not $usedForRdp) { continue }
+            [pscustomobject]@{ Store=$store; Subject=[string]$c.Subject; Issuer=[string]$c.Issuer; NotAfter=$c.NotAfter; Thumbprint=$c.Thumbprint
+                HasPrivateKey=$c.HasPrivateKey; SelfSigned=($c.Subject -eq $c.Issuer); UsedForRdp=[bool]$usedForRdp }
+        }
+    }
+}
+$checks.Activation = Invoke-AuditCheck Activation -TimeoutSeconds 60 -Collect {
+    Get-CimInstance SoftwareLicensingProduct -Filter "ApplicationID='55c92734-d682-4d71-983e-d6ec3f16059f' AND PartialProductKey IS NOT NULL" -ErrorAction Stop |
+        Select-Object Name, Description, LicenseStatus, GracePeriodRemaining
+}
+$checks.LAPS = Invoke-AuditCheck LAPS {
+    $legacy = Get-ItemProperty 'HKLM:\SOFTWARE\Policies\Microsoft Services\AdmPwd' -ErrorAction SilentlyContinue
+    $backup = $null
+    foreach ($key in @('HKLM:\SOFTWARE\Microsoft\Policies\LAPS', 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\LAPS', 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\LAPS')) {
+        $item = Get-ItemProperty $key -ErrorAction SilentlyContinue
+        if ($item -and $null -ne $item.BackupDirectory) { $backup = $item.BackupDirectory; break }
+    }
+    [pscustomobject]@{ LegacyCseInstalled=(Test-Path (Join-Path $env:ProgramFiles 'LAPS\CSE\AdmPwd.dll'))
+        LegacyPolicyEnabled=[bool]($legacy -and $legacy.AdmPwdEnabled -eq 1); WindowsLapsBackupDirectory=$backup
+        Coverage='Local policy only. WindowsLapsBackupDirectory: 0 disabled, 1 Entra ID, 2 Active Directory. Password rotation success is visible in AD/Entra.' }
+}
+$checks.SecurityHardening = Invoke-AuditCheck SecurityHardening {
+    function Get-AuditRegValue([string]$Path, [string]$Name) {
+        try { (Get-ItemProperty -LiteralPath $Path -Name $Name -ErrorAction Stop).$Name } catch { $null }
+    }
+    $schannel = 'HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols'
+    $lsa = 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa'
+    [pscustomobject]@{
+        SchannelServer=@(foreach ($p in @('SSL 3.0', 'TLS 1.0', 'TLS 1.1', 'TLS 1.2')) {
+            [pscustomobject]@{ Protocol=$p; Enabled=(Get-AuditRegValue "$schannel\$p\Server" 'Enabled'); DisabledByDefault=(Get-AuditRegValue "$schannel\$p\Server" 'DisabledByDefault') } })
+        LLMNREnableMulticast=(Get-AuditRegValue 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\DNSClient' 'EnableMulticast')
+        NetbiosOptions=@(Get-CimInstance Win32_NetworkAdapterConfiguration -Filter 'IPEnabled=True' | Select-Object Description, TcpipNetbiosOptions)
+        WDigestUseLogonCredential=(Get-AuditRegValue 'HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\WDigest' 'UseLogonCredential')
+        LmCompatibilityLevel=(Get-AuditRegValue $lsa 'LmCompatibilityLevel'); NoLMHash=(Get-AuditRegValue $lsa 'NoLMHash')
+        RunAsPPL=(Get-AuditRegValue $lsa 'RunAsPPL'); RestrictAnonymous=(Get-AuditRegValue $lsa 'RestrictAnonymous')
+        AutoUpdatePolicy=[pscustomobject]@{ WUServer=(Get-AuditRegValue 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate' 'WUServer')
+            NoAutoUpdate=(Get-AuditRegValue 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU' 'NoAutoUpdate')
+            AUOptions=(Get-AuditRegValue 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU' 'AUOptions') }
+        Coverage='Registry configuration only. A null value means the operating-system default applies (for example TLS 1.0/1.1 remain enabled on Windows Server 2022 and earlier).' }
+}
+$checks.KeyServices = Invoke-AuditCheck KeyServices {
+    Get-CimInstance Win32_Service | Where-Object { $_.Name -in @('Spooler', 'RemoteRegistry', 'WinRM', 'TermService', 'W32Time', 'wuauserv', 'WinDefend', 'MpsSvc', 'EventLog', 'Schedule', 'LanmanServer', 'BITS') } |
+        Select-Object Name, DisplayName, State, StartMode
+}
+$checks.HardwareVendorHealth = Invoke-AuditCheck HardwareVendorHealth -TimeoutSeconds 120 -Context @{
+    NativeCode=${function:Invoke-AuditNativeReader}.ToString(); OmCode=${function:ConvertFrom-AuditOmReport}.ToString()
+    VdiskCode=${function:ConvertFrom-AuditOmVdisk}.ToString(); SsaCode=${function:ConvertFrom-AuditSsacli}.ToString()
+} -Collect {
+    Set-Item Function:Invoke-AuditNativeReader ([scriptblock]::Create($NativeCode))
+    Set-Item Function:ConvertFrom-AuditOmReport ([scriptblock]::Create($OmCode))
+    Set-Item Function:ConvertFrom-AuditOmVdisk ([scriptblock]::Create($VdiskCode))
+    Set-Item Function:ConvertFrom-AuditSsacli ([scriptblock]::Create($SsaCode))
+    $bases = @(@($env:ProgramFiles, ${env:ProgramFiles(x86)}) | Where-Object { $_ })
+    $om = @(foreach ($b in $bases) { Join-Path $b 'Dell\SysMgt\oma\bin\omreport.exe' }) | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+    $ssa = @(foreach ($b in $bases) { foreach ($rel in @('Smart Storage Administrator\ssacli\bin\ssacli.exe', 'HP\hpssacli\bin\hpssacli.exe', 'Compaq\Hpacucli\Bin\hpacucli.exe')) { Join-Path $b $rel } }) |
+        Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+    if ($om) {
+        $chassis = Invoke-AuditNativeReader -FilePath $om -Arguments 'chassis' -Seconds 40
+        [pscustomobject]@{ RecordType='Section'; Tool='Dell OpenManage'; Section='Chassis'; Items=@(ConvertFrom-AuditOmReport $chassis.StandardOutput); ExitCode=$chassis.ExitCode; ReaderTimeLimitReached=$chassis.ReaderTimeLimitReached }
+        $vdisk = Invoke-AuditNativeReader -FilePath $om -Arguments 'storage vdisk' -Seconds 40
+        [pscustomobject]@{ RecordType='Section'; Tool='Dell OpenManage'; Section='Virtual disks'; Items=@(ConvertFrom-AuditOmVdisk $vdisk.StandardOutput); ExitCode=$vdisk.ExitCode; ReaderTimeLimitReached=$vdisk.ReaderTimeLimitReached }
+    }
+    if ($ssa) {
+        $status = Invoke-AuditNativeReader -FilePath $ssa -Arguments 'ctrl all show status' -Seconds 30
+        $config = Invoke-AuditNativeReader -FilePath $ssa -Arguments 'ctrl all show config' -Seconds 40
+        [pscustomobject]@{ RecordType='Section'; Tool='HPE Smart Storage'; Section='Controllers and drives'
+            Items=@(@(ConvertFrom-AuditSsacli $status.StandardOutput) + @(ConvertFrom-AuditSsacli $config.StandardOutput)); ExitCode=$config.ExitCode
+            ReaderTimeLimitReached=($config.ReaderTimeLimitReached -or $status.ReaderTimeLimitReached) }
+    }
+    [pscustomobject]@{ RecordType='Coverage'; ToolsFound=@(@($om, $ssa) | Where-Object { $_ } | ForEach-Object { Split-Path $_ -Leaf })
+        Coverage='Dell OpenManage (omreport) and HPE Smart Storage (ssacli) only. Without them, check iDRAC/iLO or the hypervisor console. Read-only queries.' }
+}
+$checks.HardwareEvents = Invoke-AuditCheck HardwareEvents {
+    Get-AuditEvents -LogName System -Levels 1,2 -ProviderPattern 'Server Administrator|iDRAC|Dell|HP Insight|HPE|iLO|\bAMS\b|Cpq|SmartArray|HpCISSs|LSI|MegaRAID|megasas|percsas|arcsas|mpt3sas|WHEA-Logger|PowerChute|APC' -IncludeMessage
+}
+if ($checks.System.Status -eq 'Collected' -and $checks.System.Data[0].DomainRole -ge 4) {
+    $checks.ADHygiene = Invoke-AuditCheck ADHygiene -TimeoutSeconds 120 -Collect {
+        Import-Module ActiveDirectory -ErrorAction Stop
+        $cutoff = (Get-Date).AddDays(-90)
+        $users = @(Get-ADUser -Server localhost -Filter 'Enabled -eq $true' -Properties LastLogonDate, PasswordNeverExpires, whenCreated -ResultSetSize 20000 -ErrorAction Stop)
+        $computers = @(Get-ADComputer -Server localhost -Filter 'Enabled -eq $true' -Properties LastLogonDate, OperatingSystem, whenCreated -ResultSetSize 20000 -ErrorAction Stop)
+        $krbtgt = Get-ADUser -Server localhost -Identity krbtgt -Properties PasswordLastSet -ErrorAction Stop
+        $recycle = $null
+        try { $recycle = @((Get-ADOptionalFeature -Server localhost -Filter "Name -eq 'Recycle Bin Feature'" -ErrorAction Stop).EnabledScopes).Count -gt 0 } catch { }
+        $isStale = { param($o) (-not $o.LastLogonDate -and $o.whenCreated -lt $cutoff) -or ($o.LastLogonDate -and $o.LastLogonDate -lt $cutoff) }
+        $staleUsers = @($users | Where-Object { $_.SamAccountName -ne 'krbtgt' -and (& $isStale $_) })
+        $staleComputers = @($computers | Where-Object { & $isStale $_ })
+        $neverExpires = @($users | Where-Object { $_.PasswordNeverExpires })
+        $oldOs = @($computers | Where-Object { [string]$_.OperatingSystem -match 'Windows (XP|Vista|7|8|8\.1|10)\b|Server (2003|2008|2012)' })
+        [pscustomobject]@{ EnabledUsers=$users.Count; StaleUsers=$staleUsers.Count
+            StaleUserSample=@($staleUsers | Sort-Object LastLogonDate | Select-Object -First 25 SamAccountName, LastLogonDate)
+            EnabledComputers=$computers.Count; StaleComputers=$staleComputers.Count
+            StaleComputerSample=@($staleComputers | Sort-Object LastLogonDate | Select-Object -First 25 Name, LastLogonDate, OperatingSystem)
+            PasswordNeverExpires=$neverExpires.Count; PasswordNeverExpiresSample=@($neverExpires | Select-Object -First 25 -ExpandProperty SamAccountName)
+            UnsupportedOsComputers=$oldOs.Count; UnsupportedOsSample=@($oldOs | Select-Object -First 25 Name, OperatingSystem)
+            KrbtgtPasswordLastSet=$krbtgt.PasswordLastSet; RecycleBinEnabled=$recycle
+            Coverage='Enabled objects only, up to 20,000 each. LastLogonDate is replicated lastLogonTimestamp and can lag by up to 14 days. Windows 10 is listed because it is out of support.' }
+    }
+    $checks.DCDiag = Invoke-AuditCheck DCDiag -TimeoutSeconds 150 -Context @{ NativeCode=${function:Invoke-AuditNativeReader}.ToString() } -Collect {
+        Set-Item Function:Invoke-AuditNativeReader ([scriptblock]::Create($NativeCode))
+        Invoke-AuditNativeReader -FilePath "$env:SystemRoot\System32\dcdiag.exe" -Arguments '/q' -Seconds 120
+    }
+    $checks.ReplicationSummary = Invoke-AuditCheck ReplicationSummary -TimeoutSeconds 90 -Context @{ NativeCode=${function:Invoke-AuditNativeReader}.ToString() } -Collect {
+        Set-Item Function:Invoke-AuditNativeReader ([scriptblock]::Create($NativeCode))
+        Invoke-AuditNativeReader -FilePath "$env:SystemRoot\System32\repadmin.exe" -Arguments '/replsummary' -Seconds 60
+    }
+}
+if ($ExternalExposureCheck) {
+    # Opt-in only: sends this site's public IP address to ipify and Shodan InternetDB.
+    $checks.ExternalExposure = Invoke-AuditCheck ExternalExposure -TimeoutSeconds 60 -Collect {
+        [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor 3072
+        $ip = [string](Invoke-RestMethod -Uri 'https://api.ipify.org?format=json' -TimeoutSec 20 -ErrorAction Stop).ip
+        if ($ip -notmatch '^\d{1,3}(\.\d{1,3}){3}$') { throw 'The public IPv4 address could not be determined.' }
+        $notIndexed = $false; $result = $null
+        try { $result = Invoke-RestMethod -Uri ('https://internetdb.shodan.io/' + $ip) -TimeoutSec 25 -ErrorAction Stop }
+        catch {
+            $response = $_.Exception.Response
+            if ($response -and [int]$response.StatusCode -eq 404) { $notIndexed = $true } else { throw }
+        }
+        [pscustomobject]@{ PublicIP=$ip; NotIndexed=$notIndexed; Ports=@($result.ports); Vulns=@($result.vulns | Select-Object -First 50)
+            Hostnames=@($result.hostnames | Select-Object -First 20); Tags=@($result.tags)
+            Source='Shodan InternetDB (passive internet scan data; may be days or weeks old)'
+            Coverage='Ports seen on the public IP this server uses for outbound traffic. A shared NAT address can include other devices; no entry is not proof that nothing is exposed.' }
+    }
+}
 if ($DeepAudit) {
     $checks.CriticalServices = Invoke-AuditCheck CriticalServices {
         Get-CimInstance Win32_Service | Where-Object {$_.Name -match '^(NTDS|DNS|DHCPServer|DFSR|Netlogon|Kdc|W32Time|CertSvc|Spooler|RemoteAccess|IAS|W3SVC|ADSync|VSS|swprv|VMTools|AADConnect.*|AzureADConnect.*)$'} |
@@ -1758,12 +1984,13 @@ $checks.ExternalEvidence = Invoke-AuditCheck ExternalEvidence -Context @{
     Read-ExternalEvidence -Path $EvidencePath -Template $Template
 }
 $report = [ordered]@{
-    SchemaVersion = '1.12'; AuditId = $script:auditId; Incomplete = $false; ClientName = $ClientName; Location = $Location
+    SchemaVersion = '1.13'; AuditId = $script:auditId; Incomplete = $false; ClientName = $ClientName; Location = $Location
     StartedAt = $started.ToString('o'); CompletedAt = (Get-Date).ToString('o'); Elevated = $elevated
     PowerShellVersion = $PSVersionTable.PSVersion.ToString(); Checks = $checks
     ExportWarnings = @($script:checkpointWarnings)
     DeepAuditRequested = [bool]$DeepAudit
     OnlineUpdateScanRequested = (-not $SkipOnlineUpdateScan)
+    ExternalExposureCheckRequested = [bool]$ExternalExposureCheck
     ExternalEvidenceTemplate = $evidenceTemplatePath
     BackupLogsNotQueried = @($backupLogs | Select-Object -Skip 12)
     InterpretationNotes = @(

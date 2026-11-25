@@ -32,6 +32,7 @@ namespace WinFixAudit
         public string Title;
         public string Detail;
         public string TechNote = "";
+        public bool IsNew;   // not a critical/warning finding in the previous audit
     }
 
     /// <summary>One table cell. When Chip is set the renderers draw a colored pill.</summary>
@@ -177,6 +178,11 @@ namespace WinFixAudit
         public readonly KeyValueBlock Snapshot = new KeyValueBlock();
         public readonly List<Finding> Findings = new List<Finding>();
         public readonly List<Section> Sections = new List<Section>();
+        public readonly Dictionary<string, ManualAnswer> AutoAnswers = new Dictionary<string, ManualAnswer>();
+        public readonly Dictionary<string, string> AutoHints = new Dictionary<string, string>();
+        public DateTime? PreviousAuditTime;
+        public int PreviousCritical = -1, PreviousWarning = -1;
+        public readonly List<string> Resolved = new List<string>();
         public readonly TableBlock Coverage = new TableBlock("Checks that returned no or partial data",
             new[] { "Check", "Status", "Reason" }, new[] { 2.2, 1.45, 5.0 });
 
@@ -263,8 +269,11 @@ namespace WinFixAudit
 
     internal sealed class ManualAnswer
     {
+        public const string AutoPrefix = "Auto-verified: ";
+        public const string HintPrefix = "Local evidence: ";
         public string Status = ManualCatalog.NotChecked;
         public string Notes = "";
+        public bool AutoSet;   // set by the app from collected evidence; cleared when a technician edits it
     }
 
     /// <summary>
@@ -301,7 +310,7 @@ namespace WinFixAudit
         {
             var manual = new Dictionary<string, object>();
             foreach (var kv in Manual)
-                manual[kv.Key] = new Dictionary<string, object> { { "Status", kv.Value.Status }, { "Notes", kv.Value.Notes } };
+                manual[kv.Key] = new Dictionary<string, object> { { "Status", kv.Value.Status }, { "Notes", kv.Value.Notes }, { "AutoSet", kv.Value.AutoSet } };
             var notes = new Dictionary<string, object>();
             foreach (var kv in FindingNotes) if (!string.IsNullOrWhiteSpace(kv.Value)) notes[kv.Key] = kv.Value;
             return new Dictionary<string, object>
@@ -332,13 +341,46 @@ namespace WinFixAudit
             var manual = J.Dict(J.Get(o, "Manual"));
             if (manual != null)
                 foreach (var kv in manual)
-                    d.Manual[kv.Key] = new ManualAnswer { Status = Or(J.Str(kv.Value, "Status"), ManualCatalog.NotChecked), Notes = J.Str(kv.Value, "Notes") };
+                    d.Manual[kv.Key] = new ManualAnswer { Status = Or(J.Str(kv.Value, "Status"), ManualCatalog.NotChecked), Notes = J.Str(kv.Value, "Notes"), AutoSet = J.Bool(kv.Value, "AutoSet") ?? false };
             var notes = J.Dict(J.Get(o, "FindingNotes"));
             if (notes != null) foreach (var kv in notes) d.FindingNotes[kv.Key] = J.Str(kv.Value);
             return d;
         }
 
         private static string Or(string a, string b) { return string.IsNullOrEmpty(a) ? b : a; }
+
+        /// <summary>
+        /// Applies answers derived from collected evidence. A technician's own answer always wins;
+        /// an earlier automatic answer is refreshed, or cleared when the evidence is gone.
+        /// </summary>
+        public void ApplyAuto(AuditAnalysis a)
+        {
+            foreach (ManualItemDef item in ManualCatalog.Items)
+            {
+                ManualAnswer ans = Answer(item.Id);
+                ManualAnswer auto;
+                if (a.AutoAnswers.TryGetValue(item.Id, out auto))
+                {
+                    if (ans.Status == ManualCatalog.NotChecked || ans.AutoSet)
+                    {
+                        ans.Status = auto.Status;
+                        ans.Notes = auto.Notes;
+                        ans.AutoSet = true;
+                    }
+                }
+                else if (ans.AutoSet)
+                {
+                    ans.Status = ManualCatalog.NotChecked;
+                    ans.Notes = "";
+                    ans.AutoSet = false;
+                }
+                string hint;
+                bool hintable = ans.Status == ManualCatalog.NotChecked && !ans.AutoSet &&
+                    (string.IsNullOrWhiteSpace(ans.Notes) || ans.Notes.StartsWith(ManualAnswer.HintPrefix, StringComparison.Ordinal));
+                if (hintable)
+                    ans.Notes = a.AutoHints.TryGetValue(item.Id, out hint) ? ManualAnswer.HintPrefix + hint : (ans.Notes.StartsWith(ManualAnswer.HintPrefix, StringComparison.Ordinal) ? "" : ans.Notes);
+            }
+        }
 
         /// <summary>Returns the problems that block submission; empty when complete.</summary>
         public List<string> Validate(AuditAnalysis a)

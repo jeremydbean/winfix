@@ -12,18 +12,22 @@ Build without the administrator prompt. For local testing only.
 #>
 [CmdletBinding()]
 param(
-    [string]$Collector = (Join-Path (Split-Path $PSScriptRoot -Parent) 'Export-WinFixAudit.ps1'),
-    [string]$Output = (Join-Path $PSScriptRoot 'dist\WinFixAuditApp.exe'),
+    [string]$Collector = '',
+    [string]$Output = '',
     [switch]$AsInvoker
 )
 $ErrorActionPreference = 'Stop'
+# Defaults are resolved here: Windows PowerShell leaves $PSScriptRoot empty in param() defaults under -File.
+$here = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyInvocation.MyCommand.Path }
+if (-not $Collector) { $Collector = Join-Path (Split-Path $here -Parent) 'Export-WinFixAudit.ps1' }
+if (-not $Output) { $Output = Join-Path $here 'dist\WinFixAuditApp.exe' }
 
 $csc = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
 if (-not (Test-Path $csc)) { $csc = Join-Path $env:WINDIR 'Microsoft.NET\Framework\v4.0.30319\csc.exe' }
 if (-not (Test-Path $csc)) { throw 'csc.exe from .NET Framework 4.x was not found.' }
 if (-not (Test-Path $Collector)) { throw "Collector script not found: $Collector" }
 
-$manifest = Join-Path $PSScriptRoot 'app.manifest'
+$manifest = Join-Path $here 'app.manifest'
 $tempManifest = $null
 if ($AsInvoker) {
     $tempManifest = Join-Path $env:TEMP ('WinFixAudit-asInvoker-' + [guid]::NewGuid().ToString('N') + '.manifest')
@@ -32,9 +36,9 @@ if ($AsInvoker) {
 }
 
 New-Item -ItemType Directory -Force -Path (Split-Path $Output) | Out-Null
-$sources = Get-ChildItem (Join-Path $PSScriptRoot 'src') -Filter *.cs | ForEach-Object { $_.FullName }
+$sources = Get-ChildItem (Join-Path $here 'src') -Filter *.cs | ForEach-Object { $_.FullName }
 $references = 'System.dll', 'System.Core.dll', 'System.Drawing.dll', 'System.Windows.Forms.dll', 'System.Web.Extensions.dll', 'System.Security.dll'
-$arguments = @('/nologo', '/target:winexe', '/platform:anycpu', '/optimize+', '/warn:4',
+$arguments = @('/nologo', '/codepage:65001', '/target:winexe', '/platform:anycpu', '/optimize+', '/warn:4',
     "/out:$Output", "/win32manifest:$manifest", "/resource:$Collector,Export-WinFixAudit.ps1") +
     ($references | ForEach-Object { "/reference:$_" }) + $sources
 

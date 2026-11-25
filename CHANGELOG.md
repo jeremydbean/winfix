@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-11-25 — collector 1.13 and app: standard monthly checks
+- Collector adds Defender detection history, Veeam job results (event 190), RMM/EDR agent log activity, certificates expiring within 60 days, Windows activation, LAPS policy, protocol/credential hardening (TLS/SSL, LLMNR, NetBIOS, WDigest, NTLM level, LSA protection, update source), key services, Dell OpenManage / HPE Smart Storage hardware health and hardware error events.
+- On domain controllers it also collects AD hygiene (stale users/computers, never-expiring passwords, unsupported OS, krbtgt age, Recycle Bin), `dcdiag /q` and `repadmin /replsummary`.
+- New opt-in `-ExternalExposureCheck` looks up the site's public IP in Shodan InternetDB. It is the only check that contacts a third party, and the app leaves it off unless enabled in Settings.
+- App answers manual checks from evidence where it can (antivirus detections, last backup and failures, hardware health, internet exposure), marked "Auto-verified" and always overridable. It also adds local agent evidence as hints for the NinjaOne and Huntress checks.
+- App compares each audit with the last submitted one: new and resolved findings, disk-full forecasts, new administrators, newly installed software (remote-access tools flagged) and new listening ports. Findings new since last month are marked NEW in the app, PDF and email.
+- Fixes `app/build.ps1` and the sample generator under `powershell -File` (empty `$PSScriptRoot` in parameter defaults). The compiler now reads source as UTF-8.
+
 ## 2026-11-25 — Server Audit app
 - Adds `app/`: WinFixAuditApp.exe, a standalone Windows app that runs the embedded collector, turns evidence into scored findings, records technician-verified manual checks (backup console, RMM, EDR, AV, hardware, MFA, exposure), builds a branded PDF report and emails a summary ticket with the PDF attached. Monthly scheduled runs save drafts only; nothing is sent until a technician submits.
 - Settings and drafts live in `C:\ProgramData\WinFixAudit` (Administrators/SYSTEM only); the SMTP password is DPAPI-encrypted.

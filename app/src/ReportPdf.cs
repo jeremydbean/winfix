@@ -223,8 +223,8 @@ namespace WinFixAudit
             int issues = items.Count(i => d.Answer(i.Id).Status == ManualCatalog.Issue);
             var cards = new[]
             {
-                new { Value = a.Count(Severity.Critical).ToString(CultureInfo.InvariantCulture), Label = "Critical", Sub = "need action now", Sev = Severity.Critical },
-                new { Value = a.Count(Severity.Warning).ToString(CultureInfo.InvariantCulture), Label = "Warnings", Sub = "review this month", Sev = Severity.Warning },
+                new { Value = a.Count(Severity.Critical).ToString(CultureInfo.InvariantCulture), Label = "Critical", Sub = a.PreviousCritical >= 0 ? "was " + a.PreviousCritical + " last audit" : "need action now", Sev = Severity.Critical },
+                new { Value = a.Count(Severity.Warning).ToString(CultureInfo.InvariantCulture), Label = "Warnings", Sub = a.PreviousWarning >= 0 ? "was " + a.PreviousWarning + " last audit" : "review this month", Sev = Severity.Warning },
                 new { Value = a.Count(Severity.Pass).ToString(CultureInfo.InvariantCulture), Label = "Passed", Sub = "checks healthy", Sev = Severity.Pass },
                 new { Value = answered + "/" + items.Count, Label = "Manual checks", Sub = issues > 0 ? J.Plural(issues, "issue", "issues") + " noted" : "verified by technician", Sev = Severity.Info },
             };
@@ -294,10 +294,14 @@ namespace WinFixAudit
             if (crit > 0) s += "Most urgent: " + string.Join("; ", critical.ToArray()) + ". ";
             else if (warn > 0) s += "There are no critical issues; the warnings below should be addressed during normal maintenance. ";
             else s += "No issues requiring action were found. ";
+            if (a.PreviousAuditTime.HasValue)
+                s += "Since the last audit (" + J.FormatDate(a.PreviousAuditTime) + "), " + J.Plural(a.Resolved.Count, "issue was", "issues were") + " resolved and " +
+                     J.Plural(a.Findings.Count(f => f.IsNew), "new issue appeared", "new issues appeared") + ". ";
+            int auto = items.Count(i => d.Answer(i.Id).AutoSet);
             if (items.Count > 0)
             {
-                s += "The technician completed " + answered + " of " + items.Count + " manual console checks";
-                s += issues > 0 ? ", noting " + J.Plural(issues, "issue", "issues") + "." : (answered == items.Count ? " with no issues." : ".");
+                s += answered + " of " + items.Count + " manual checks are complete" + (auto > 0 ? " (" + auto + " verified automatically from server evidence)" : "");
+                s += issues > 0 ? ", with " + J.Plural(issues, "issue", "issues") + " noted." : (answered == items.Count ? ", with no issues." : ".");
             }
             return s;
         }
@@ -368,12 +372,13 @@ namespace WinFixAudit
             string noteText = d.FindingNotes.ContainsKey(f.Key) ? d.FindingNotes[f.Key] : "";
             var note = string.IsNullOrWhiteSpace(noteText) ? new List<string>() : PdfDoc.Wrap("Technician: " + noteText.Trim(), PdfFont.Italic, 8.7, inner);
             double body = title.Count * 13.2 + (detail.Count > 0 ? 2 + detail.Count * 11.6 : 0) + (note.Count > 0 ? 5 + note.Count * 11.6 : 0);
-            double h = Math.Max(36, body) + 20;
+            double h = Math.Max(f.IsNew ? 42 : 36, body) + 20;
             Ensure(h + 7);
             pdf.StrokeRoundRect(M, y, CW, h, 7, Border, 0.8);
             pdf.FillRoundRect(M + 8, y + 9, 3.5, h - 18, 1.75, Strong(f.Severity));
             Chip(M + 22, y + 10, Sev.Label(f.Severity), f.Severity);
             pdf.Text(M + 23, y + 35, f.Area.ToUpperInvariant(), PdfFont.Bold, 6.8, Faint, 0.6);
+            if (f.IsNew) Chip(M + 22, y + 42, "New", Severity.Info);
             double ty = y + 10;
             foreach (string l in title) { pdf.Text(textX, ty + 9.6, l, PdfFont.Bold, 10.2, Ink); ty += 13.2; }
             if (detail.Count > 0) { ty += 2; foreach (string l in detail) { pdf.Text(textX, ty + 8.8, l, PdfFont.Regular, 8.8, Muted); ty += 11.6; } }

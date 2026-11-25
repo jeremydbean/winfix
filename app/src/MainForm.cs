@@ -308,6 +308,7 @@ namespace WinFixAudit
                 if (e.ColumnIndex == 3) ans.Status = Convert.ToString(gridManual.Rows[e.RowIndex].Cells[3].Value);
                 else if (e.ColumnIndex == 4) ans.Notes = Convert.ToString(gridManual.Rows[e.RowIndex].Cells[4].Value);
                 else return;
+                ans.AutoSet = false; // the technician's answer now stands
                 gridManual.InvalidateRow(e.RowIndex);
                 Changed();
             };
@@ -315,7 +316,7 @@ namespace WinFixAudit
             var hint = new Label
             {
                 Dock = DockStyle.Top, AutoSize = false, Height = 40, ForeColor = MutedText, Padding = new Padding(2, 0, 0, 8),
-                Text = "Things the server can't report on itself. Check each in its console. Required items must be answered, and \"Issue found\" needs a note, before the ticket can be submitted. Notes from last month are pre-filled; statuses start as \"Not checked\"."
+                Text = "Things the server can't fully report on itself. Items marked \"Auto-verified\" were answered from collected evidence; change them if the console says otherwise. Required items must be answered, and \"Issue found\" needs a note, before the ticket can be submitted."
             };
             tabManual.Controls.Add(gridManual);
             tabManual.Controls.Add(hint);
@@ -369,8 +370,9 @@ namespace WinFixAudit
                 if (d != null && File.Exists(d.ReportPath))
                 {
                     report = AuditReport.Load(d.ReportPath);
-                    analysis = Analyzer.Run(report, settings.ExpectedAgentList);
+                    analysis = Workflow.Analyze(report, settings);
                     draft = d;
+                    if (!draft.IsSubmitted) draft.ApplyAuto(analysis);
                     Populate();
                     tabs.SelectedTab = d.IsSubmitted ? tabOverview : tabManual;
                 }
@@ -405,8 +407,9 @@ namespace WinFixAudit
         public void LoadForPreview(string reportPath, DraftState d)
         {
             report = AuditReport.Load(reportPath);
-            analysis = Analyzer.Run(report, settings.ExpectedAgentList);
+            analysis = Workflow.Analyze(report, settings);
             draft = d ?? DraftStore.NewDraft(reportPath, analysis, settings, "Manual");
+            draft.ApplyAuto(analysis);
             Populate();
         }
 
@@ -415,7 +418,7 @@ namespace WinFixAudit
             try
             {
                 report = AuditReport.Load(path);
-                analysis = Analyzer.Run(report, settings.ExpectedAgentList);
+                analysis = Workflow.Analyze(report, settings);
             }
             catch (Exception ex)
             {
@@ -434,6 +437,7 @@ namespace WinFixAudit
             else
                 draft = DraftStore.NewDraft(path, analysis, settings, source);
             if (string.IsNullOrWhiteSpace(draft.Technician)) draft.Technician = settings.LastTechnician;
+            if (!draft.IsSubmitted) draft.ApplyAuto(analysis);
             SaveDraft();
             Populate();
         }
@@ -501,7 +505,7 @@ namespace WinFixAudit
             {
                 string note;
                 draft.FindingNotes.TryGetValue(f.Key, out note);
-                int i = gridFindings.Rows.Add(Sev.Label(f.Severity).ToUpperInvariant(), f.Area, f.Title, f.Detail, note ?? "");
+                int i = gridFindings.Rows.Add(Sev.Label(f.Severity).ToUpperInvariant() + (f.IsNew ? "  \u2022 NEW" : ""), f.Area, f.Title, f.Detail, note ?? "");
                 gridFindings.Rows[i].Tag = f;
             }
             loading = wasLoading;
@@ -630,7 +634,7 @@ namespace WinFixAudit
             cts = new CancellationTokenSource();
             SetBusy(true, "Starting the collector… (typically 3–10 minutes)");
             tabs.SelectedTab = tabLog;
-            var opts = new CollectorOptions { DeepAudit = chkDeep.Checked, OnlineUpdateScan = chkOnline.Checked };
+            var opts = new CollectorOptions { DeepAudit = chkDeep.Checked, OnlineUpdateScan = chkOnline.Checked, ExternalExposureCheck = settings.ExternalExposureCheck };
             string path = null; Exception error = null;
             try { path = await Task.Run(() => CollectorRunner.Run(opts, OnCollectorLine, cts.Token)); }
             catch (Exception ex) { error = ex; }
@@ -690,7 +694,8 @@ namespace WinFixAudit
                 chkOnline.Checked = settings.OnlineUpdateScan;
                 if (report != null)
                 {
-                    analysis = Analyzer.Run(report, settings.ExpectedAgentList);
+                    analysis = Workflow.Analyze(report, settings);
+                    if (!draft.IsSubmitted) draft.ApplyAuto(analysis);
                     Populate();
                 }
             }

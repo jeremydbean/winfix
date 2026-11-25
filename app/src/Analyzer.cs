@@ -11,12 +11,15 @@ namespace WinFixAudit
     /// deliberately conservative: a check that was not collected never counts as
     /// a pass, it is listed under collection coverage instead.
     /// </summary>
-    internal sealed class Analyzer
+    internal sealed partial class Analyzer
     {
         private readonly AuditReport r;
         private readonly AuditAnalysis a = new AuditAnalysis();
         private readonly string[] expectedAgents;
         private readonly DateTime now;
+        private List<string> otherAntivirus = new List<string>();
+        private DateTime? wsbLastSuccess;
+        private bool wsbScheduled;
 
         private Analyzer(AuditReport report, string[] expectedAgents)
         {
@@ -26,6 +29,12 @@ namespace WinFixAudit
         }
 
         public static AuditAnalysis Run(AuditReport report, string[] expectedAgents)
+        {
+            return Run(report, expectedAgents, null);
+        }
+
+        /// <summary>Analyses a report; when <paramref name="previous"/> is given, adds month-over-month changes.</summary>
+        public static AuditAnalysis Run(AuditReport report, string[] expectedAgents, AuditReport previous)
         {
             var an = new Analyzer(report, expectedAgents);
             an.a.AuditTime = report.AuditTime;
@@ -41,7 +50,10 @@ namespace WinFixAudit
             an.Backups();
             an.Accounts();
             an.Events();
+            an.StandardChecks();
+            an.AutoVerify();
             an.Coverage();
+            if (previous != null) an.CompareWith(previous, Run(previous, expectedAgents, null));
             an.a.Findings.Sort((x, y) =>
             {
                 int c = ((int)x.Severity).CompareTo((int)y.Severity);
@@ -432,7 +444,7 @@ namespace WinFixAudit
             }
 
             // Defender / antivirus.
-            var thirdPartyAv = new List<string>();
+            var thirdPartyAv = otherAntivirus;
             foreach (object p in C("Antivirus").Data)
             {
                 string n = J.Str(p, "displayName");
@@ -534,7 +546,7 @@ namespace WinFixAudit
                 {
                     object ps = J.Get(osVol, "ProtectionStatus");
                     bool on = J.Str(ps) == "On" || (!(ps is string) && J.Num(ps) == 1);
-                    controls.Add("BitLocker (system drive)", new Cell(on ? "On" : "Off", on ? Severity.Pass : (a.IsVirtual ? Severity.Info : Severity.Warning)), J.Str(osVol, "EncryptionMethod"));
+                    controls.Add("BitLocker (system drive)", new Cell(on ? "On" : "Off", on ? Severity.Pass : (a.IsVirtual ? Severity.Info : Severity.Warning)), (J.Num(J.Get(osVol, "EncryptionMethod")) ?? 0) == 0 && !(J.Get(osVol, "EncryptionMethod") is string) ? "" : J.Str(osVol, "EncryptionMethod"));
                     if (!on && !a.IsVirtual) Add("bitlocker", Severity.Warning, "Security", "System drive is not BitLocker-encrypted", "Physical server disks hold unencrypted data if a drive is removed or the server is stolen.");
                 }
             }
@@ -773,12 +785,15 @@ namespace WinFixAudit
 
             // Windows Server Backup.
             bool wsbConfigured = false;
+            wsbScheduled = false;
             CheckResult wsbPolicy = C("WindowsBackupPolicy");
             if (wsbPolicy.Ok) wsbConfigured = J.Bool(wsbPolicy.First, "PolicyConfigured") == true;
+            wsbScheduled = wsbConfigured;
             CheckResult wsb = C("WindowsBackupSummary");
             if (wsb.Ok && wsb.First != null)
             {
                 DateTime? lastOk = J.Date(wsb.First, "LastSuccessfulBackupTime");
+                wsbLastSuccess = lastOk;
                 DateTime? last = J.Date(wsb.First, "LastBackupTime");
                 double hr = J.Num(wsb.First, "LastBackupResultHR") ?? 0;
                 if (lastOk.HasValue || wsbConfigured)

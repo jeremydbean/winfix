@@ -3,11 +3,14 @@
 Writes a synthetic WinFix collector report for testing the app's rules, PDF and email.
 Run in Windows PowerShell 5.1 so dates/enums serialize exactly as the real collector's do.
 The server is fictional (DC01 at "Contoso Dental") and deliberately has a mix of problems.
+-PreviousMonth writes the same server 30 days earlier (for testing the month-over-month comparison).
 #>
-param([string]$OutputDirectory = (Join-Path $PSScriptRoot 'sample'))
+param([string]$OutputDirectory = '', [switch]$PreviousMonth)
 $ErrorActionPreference = 'Stop'
+if (-not $OutputDirectory) { $OutputDirectory = Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) 'sample' }
+$prev = [bool]$PreviousMonth
 New-Item -ItemType Directory -Force -Path $OutputDirectory | Out-Null
-$now = [datetime]::Now
+$now = if ($prev) { [datetime]::Now.AddDays(-30) } else { [datetime]::Now }
 function Ago([double]$days) { [datetime]$now.AddDays(-$days) }
 function Ok($data) { [pscustomobject][ordered]@{ Status='Collected'; Count=@($data).Count; Data=@($data); Error=$null; DurationSeconds=1.2; TimeoutSeconds=25 } }
 function Fail($status, $err) { [pscustomobject][ordered]@{ Status=$status; Count=0; Data=@(); Error=$err; DurationSeconds=25; TimeoutSeconds=25 } }
@@ -32,7 +35,7 @@ $checks.Hardware = Ok @(
 $checks.ServerRoles = Ok @('AD-Domain-Services','DNS','FS-FileServer','Hyper-V','Windows-Server-Backup','RSAT' | ForEach-Object { [pscustomobject]@{ Name=$_; DisplayName=$_ } })
 $checks.AgentServices = Ok @(
     [pscustomobject]@{ Name='NinjaRMMAgent'; DisplayName='NinjaRMMAgent'; State='Running'; StartMode='Auto' },
-    [pscustomobject]@{ Name='HuntressAgent'; DisplayName='Huntress Agent'; State='Stopped'; StartMode='Auto' },
+    [pscustomobject]@{ Name='HuntressAgent'; DisplayName='Huntress Agent'; State=$(if ($prev) { 'Running' } else { 'Stopped' }); StartMode='Auto' },
     [pscustomobject]@{ Name='HuntressUpdater'; DisplayName='Huntress Updater'; State='Running'; StartMode='Auto' },
     [pscustomobject]@{ Name='TeamViewer'; DisplayName='TeamViewer'; State='Running'; StartMode='Auto' },
     [pscustomobject]@{ Name='VeeamEndpointBackupSvc'; DisplayName='Veeam Agent for Microsoft Windows'; State='Running'; StartMode='Auto' })
@@ -48,7 +51,7 @@ $checks.TPM = Ok ([pscustomobject]@{ TpmPresent=$true; TpmReady=$true; TpmEnable
 $checks.SecureBoot = Ok ([pscustomobject]@{ Enabled=$true })
 $checks.Disks = Ok @(
     [pscustomobject]@{ DeviceID='C:'; VolumeName='System'; FileSystem='NTFS'; SizeGB=279.4; FreeGB=50.3; FreePercent=18 },
-    [pscustomobject]@{ DeviceID='D:'; VolumeName='Data'; FileSystem='NTFS'; SizeGB=1862.9; FreeGB=130.4; FreePercent=7 },
+    [pscustomobject]@{ DeviceID='D:'; VolumeName='Data'; FileSystem='NTFS'; SizeGB=1862.9; FreeGB=$(if ($prev) { 214.6 } else { 130.4 }); FreePercent=$(if ($prev) { 11.5 } else { 7 }) },
     [pscustomobject]@{ DeviceID='E:'; VolumeName='VMs'; FileSystem='ReFS'; SizeGB=3725.9; FreeGB=1620.8; FreePercent=43.5 })
 $checks.Volumes = Ok @([pscustomobject]@{ DriveLetter='C'; FileSystemLabel='System'; FileSystem='NTFS'; DriveType='Fixed'; HealthStatus='Healthy'; OperationalStatus='OK'; Size=300000000000; SizeRemaining=54000000000 })
 $checks.PhysicalDisks = Ok @(
@@ -59,7 +62,8 @@ $checks.Administrators = Ok ([pscustomobject]@{ Source='ActiveDirectory'; GroupS
     Members=@([pscustomobject]@{ Name='Administrator'; SamAccountName='Administrator'; ObjectClass='user'; SID='S-1-5-21-1-500' },
               [pscustomobject]@{ Name='Domain Admins'; SamAccountName='Domain Admins'; ObjectClass='group'; SID='S-1-5-21-1-512' },
               [pscustomobject]@{ Name='Enterprise Admins'; SamAccountName='Enterprise Admins'; ObjectClass='group'; SID='S-1-5-21-1-519' },
-              [pscustomobject]@{ Name='MSP Admin'; SamAccountName='msp.admin'; ObjectClass='user'; SID='S-1-5-21-1-1104' }) })
+              [pscustomobject]@{ Name='MSP Admin'; SamAccountName='msp.admin'; ObjectClass='user'; SID='S-1-5-21-1-1104' }) +
+              @(if (-not $prev) { [pscustomobject]@{ Name='Temp Vendor'; SamAccountName='temp.vendor'; ObjectClass='user'; SID='S-1-5-21-1-1188' } }) })
 $checks.SecurityPolicy = Ok @(
     [pscustomobject]@{ Name='MinimumPasswordLength'; Value='7' }, [pscustomobject]@{ Name='PasswordComplexity'; Value='1' },
     [pscustomobject]@{ Name='LockoutBadCount'; Value='0' }, [pscustomobject]@{ Name='MaximumPasswordAge'; Value='42' })
@@ -74,7 +78,7 @@ $checks.SharePermissions = Ok @(
     [pscustomobject]@{ Name='Shared'; AccountName='CONTOSO\Staff'; AccessControlType=0; AccessRight=1 },
     [pscustomobject]@{ Name='Scans'; AccountName='Everyone'; AccessControlType=0; AccessRight=0 },
     [pscustomobject]@{ Name='SYSVOL'; AccountName='Everyone'; AccessControlType=0; AccessRight=2 })
-$checks.SMB = Ok ([pscustomobject]@{ EnableSMB1Protocol=$false; EnableSMB2Protocol=$true; EncryptData=$false; RequireSecuritySignature=$true; EnableSecuritySignature=$true })
+$checks.SMB = Ok ([pscustomobject]@{ EnableSMB1Protocol=$prev; EnableSMB2Protocol=$true; EncryptData=$false; RequireSecuritySignature=$true; EnableSecuritySignature=$true })
 $checks.StorageReliability = Fail 'Unavailable' 'The requested operation is not supported (RAID controller).'
 $checks.StorageErrorDetails = Ok (EvSet @((Ev 153 'disk' 3 2 'The IO operation at logical block address 0x1a2b was retried.'), (Ev 7 'disk' 2 4 'The device, \Device\Harddisk1\DR1, has a bad block.'), (Ev 7 'disk' 2 9 'The device, \Device\Harddisk1\DR1, has a bad block.')))
 $checks.UnexpectedShutdowns = Ok (EvSet @((Ev 41 'Microsoft-Windows-Kernel-Power' 1 38.5 'The system has rebooted without cleanly shutting down first.')))
@@ -88,7 +92,7 @@ $checks.CachedMissingUpdates = Ok ([pscustomobject]@{ ResultCode=2; Source='Loca
     [pscustomobject]@{ Title='2026-11 Cumulative Update for Windows Server 2016 for x64-based Systems (KB5068864)'; MsrcSeverity='Critical'; KBArticleIDs=@('5068864'); RebootRequired=$false },
     [pscustomobject]@{ Title='2026-11 Servicing Stack Update for Windows Server 2016 (KB5068011)'; MsrcSeverity='Important'; KBArticleIDs=@('5068011'); RebootRequired=$false }) })
 $checks.TimeService = Ok @("Leap Indicator: 0(no warning)`r`nStratum: 1 (primary reference - syncd by radio clock)`r`nSource: Local CMOS Clock`r`nLast Successful Sync Time: $($now.ToString('g'))")
-$checks.PendingReboot = Ok ([pscustomobject]@{ ComponentServicing=$false; WindowsUpdate=$true; PendingFileRename=$true })
+$checks.PendingReboot = Ok ([pscustomobject]@{ ComponentServicing=$false; WindowsUpdate=(-not $prev); PendingFileRename=(-not $prev) })
 $checks.SystemEvents = Ok (EvSet @((Ev 41 'Microsoft-Windows-Kernel-Power' 1 38.5 'x'), (Ev 7 'disk' 2 4 'x'), (Ev 7 'disk' 2 9 'x'), (Ev 1129 'Microsoft-Windows-GroupPolicy' 2 3 'x'), (Ev 36887 'Schannel' 2 1 'x'), (Ev 36887 'Schannel' 2 2 'x')))
 $checks.ApplicationEvents = Ok (EvSet @((Ev 1000 'Application Error' 2 6 'x'), (Ev 8193 'VSS' 2 4 'x')))
 $checks.FailedLogons = Ok (EvSet -Targeted -Truncated @(1..20 | ForEach-Object {
@@ -135,7 +139,72 @@ $checks.MachineIdentity = Ok @([pscustomobject]@{ Vendor='Dell Inc.'; Name='Powe
 $checks.LiveMissingUpdates = Fail 'TimedOut' 'Exceeded 90s; continuing. Any returned data is incomplete.'
 $checks.CertificateAuthority = Fail 'Unavailable' 'The term ''certutil'' returned no CA configuration.'
 
-$report = [ordered]@{ SchemaVersion='1.12'; AuditId=[guid]::NewGuid().ToString('N'); Incomplete=$false; ClientName=''; Location=''
+# --- collector 1.13 checks -------------------------------------------------------
+$software = @('Veeam Agent for Microsoft Windows', 'NinjaRMMAgent', 'Huntress Agent', 'Microsoft Edge', '7-Zip 23.01 (x64)', 'Dell OpenManage Server Administrator')
+if (-not $prev) { $software += 'AnyDesk' }
+$checks.Software = Ok @($software | ForEach-Object { [pscustomobject]@{ DisplayName=$_; DisplayVersion='1.0'; Publisher='Sample'; InstallDate='20240101' } })
+$ports = @(53, 88, 135, 389, 445, 464, 636, 3268, 3389, 5985)
+if (-not $prev) { $ports += 8443 }
+$checks.ListeningPorts = Ok @($ports | ForEach-Object { [pscustomobject]@{ LocalAddress='0.0.0.0'; LocalPort=$_; OwningProcess=4 } })
+$checks.DefenderThreats = Ok @(
+    [pscustomobject]@{ RecordType='Detection'; ThreatID='2147735505'; ThreatName='Trojan:Win32/Wacatac.B!ml'; SeverityID=5; InitialDetectionTime=(Ago 6); LastThreatStatusChangeTime=(Ago 6); ThreatStatusID=3; ActionSuccess=$true; ResourceCount=1 },
+    [pscustomobject]@{ RecordType='Detection'; ThreatID='2147812345'; ThreatName='HackTool:Win32/Mimikatz'; SeverityID=5; InitialDetectionTime=(Ago 2); LastThreatStatusChangeTime=(Ago 2); ThreatStatusID=$(if ($prev) { 3 } else { 1 }); ActionSuccess=$false; ResourceCount=1 },
+    [pscustomobject]@{ RecordType='Coverage'; Since=(Ago 30); OutputTruncated=$false })
+$checks.BackupJobResults = Ok (@(1..12 | ForEach-Object { [pscustomobject]@{ RecordType='Session'; Product='Veeam Agent'; Job='DC01 Nightly'; Result=$(if (-not $prev -and $_ -le 2) { 'Failed' } else { 'Success' }); EndTime=(Ago ($_ - 0.5)) } }) +
+    @(1..12 | ForEach-Object { [pscustomobject]@{ RecordType='Session'; Product='Veeam Agent'; Job='SQL01 VM'; Result=$(if ($_ -eq 5) { 'Warning' } else { 'Success' }); EndTime=(Ago ($_ - 0.6)) } }) +
+    @([pscustomobject]@{ RecordType='Coverage'; Product='Veeam Agent'; EventsRead=24; QueryLimitReached=$false }))
+$checks.AgentActivity = Ok @(
+    [pscustomobject]@{ Agent='NinjaRMM'; Root='C:\ProgramData\NinjaRMMAgent\logs'; NewestLog='ninjarmm.log'; LastWriteTime=(Ago 0.003) },
+    [pscustomobject]@{ Agent='Huntress'; Root='C:\Program Files\Huntress'; NewestLog='HuntressAgent.log'; LastWriteTime=(Ago 3.2) })
+$checks.CertificateExpiry = Ok @(
+    [pscustomobject]@{ Store='My'; Subject='CN=remote.contosodental.com'; Issuer='CN=R11, O=Let''s Encrypt, C=US'; NotAfter=(Ago -12); Thumbprint='A1B2C3'; HasPrivateKey=$true; SelfSigned=$false; UsedForRdp=$false },
+    [pscustomobject]@{ Store='Remote Desktop'; Subject='CN=DC01.contoso.local'; Issuer='CN=DC01.contoso.local'; NotAfter=(Ago -40); Thumbprint='D4E5F6'; HasPrivateKey=$true; SelfSigned=$true; UsedForRdp=$true })
+$checks.Activation = Ok @([pscustomobject]@{ Name='Windows(R), ServerStandard edition'; Description='Windows(R) Operating System, VOLUME_KMSCLIENT channel'; LicenseStatus=1; GracePeriodRemaining=0 })
+$checks.LAPS = Ok ([pscustomobject]@{ LegacyCseInstalled=$false; LegacyPolicyEnabled=$false; WindowsLapsBackupDirectory=$null })
+$checks.SecurityHardening = Ok ([pscustomobject]@{
+    SchannelServer=@('SSL 3.0', 'TLS 1.0', 'TLS 1.1', 'TLS 1.2' | ForEach-Object { [pscustomobject]@{ Protocol=$_; Enabled=$null; DisabledByDefault=$null } })
+    LLMNREnableMulticast=$null; NetbiosOptions=@([pscustomobject]@{ Description='Broadcom NetXtreme'; TcpipNetbiosOptions=0 })
+    WDigestUseLogonCredential=$null; LmCompatibilityLevel=1; NoLMHash=1; RunAsPPL=$null; RestrictAnonymous=0
+    AutoUpdatePolicy=[pscustomobject]@{ WUServer=$null; NoAutoUpdate=1; AUOptions=$null } })
+$checks.KeyServices = Ok @(
+    [pscustomobject]@{ Name='Spooler'; DisplayName='Print Spooler'; State='Running'; StartMode='Auto' },
+    [pscustomobject]@{ Name='MpsSvc'; DisplayName='Windows Defender Firewall'; State='Running'; StartMode='Auto' },
+    [pscustomobject]@{ Name='wuauserv'; DisplayName='Windows Update'; State='Stopped'; StartMode='Manual' },
+    [pscustomobject]@{ Name='W32Time'; DisplayName='Windows Time'; State='Running'; StartMode='Auto' })
+$checks.HardwareVendorHealth = Ok @(
+    [pscustomobject]@{ RecordType='Section'; Tool='Dell OpenManage'; Section='Chassis'; ExitCode=0; Items=@(
+        [pscustomobject]@{ Component='Fans'; Status='Ok' }, [pscustomobject]@{ Component='Memory'; Status='Ok' },
+        [pscustomobject]@{ Component='Power Supplies'; Status=$(if ($prev) { 'Ok' } else { 'Non-Critical' }) }, [pscustomobject]@{ Component='Temperatures'; Status='Ok' }) },
+    [pscustomobject]@{ RecordType='Section'; Tool='Dell OpenManage'; Section='Virtual disks'; ExitCode=0; Items=@(
+        [pscustomobject]@{ ID='0'; Status='Ok'; Name='OS'; State='Ready'; Layout='RAID-1'; Size='278.88 GB' },
+        [pscustomobject]@{ ID='1'; Status='Non-Critical'; Name='Data'; State='Degraded'; Layout='RAID-5'; Size='5,587.00 GB' }) },
+    [pscustomobject]@{ RecordType='Coverage'; ToolsFound=@('omreport.exe') })
+$checks.HardwareEvents = Ok (EvSet @((Ev 2048 'Server Administrator' 2 3 'Device failed: Physical Disk 0:1:3 Controller 0, Connector 0')))
+$checks.ADHygiene = Ok ([pscustomobject]@{ EnabledUsers=58; StaleUsers=7; StaleUserSample=@('jsmith','old.frontdesk','temp2019','scanner.svc','rlopez','kpatel','intern' | ForEach-Object { [pscustomobject]@{ SamAccountName=$_; LastLogonDate=(Ago 140) } })
+    EnabledComputers=41; StaleComputers=12; StaleComputerSample=@('WS-OLD01','WS-OLD02','LAPTOP-3' | ForEach-Object { [pscustomobject]@{ Name=$_; LastLogonDate=(Ago 200); OperatingSystem='Windows 10 Pro' } })
+    PasswordNeverExpires=4; PasswordNeverExpiresSample=@('svc.veeam','svc.scan','administrator','jsmith')
+    UnsupportedOsComputers=2; UnsupportedOsSample=@([pscustomobject]@{ Name='XRAY-PC'; OperatingSystem='Windows 7 Professional' }, [pscustomobject]@{ Name='FRONT-02'; OperatingSystem='Windows 10 Pro' })
+    KrbtgtPasswordLastSet=[datetime]'2019-03-14 11:02'; RecycleBinEnabled=$false })
+$checks.DCDiag = Ok ([pscustomobject]@{ Command='dcdiag.exe /q'; ExitCode=0; ReaderTimeLimitReached=$false; StandardOutput=@"
+         There are warning or error events within the last 24 hours after the
+         SYSVOL has been shared.
+         ......................... DC01 failed test DFSREvent
+"@ })
+$checks.ReplicationSummary = Ok ([pscustomobject]@{ Command='repadmin.exe /replsummary'; ExitCode=0; ReaderTimeLimitReached=$false; StandardOutput=@"
+Replication Summary Start Time: 2026-11-25 08:00:00
+
+Source DSA          largest delta    fails/total %%   error
+ DC01                      12m:04s    0 /   5    0
+ DC02                      11m:52s    0 /   5    0
+
+Destination DSA     largest delta    fails/total %%   error
+ DC01                      11m:52s    0 /   5    0
+ DC02                      12m:04s    0 /   5    0
+"@ })
+$checks.ExternalExposure = Ok ([pscustomobject]@{ PublicIP='203.0.113.25'; NotIndexed=$false; Ports=@(443, 3389); Vulns=@('CVE-2019-0708'); Hostnames=@('remote.contosodental.com'); Tags=@()
+    Source='Shodan InternetDB (passive internet scan data; may be days or weeks old)' })
+
+$report = [ordered]@{ SchemaVersion='1.13'; AuditId=[guid]::NewGuid().ToString('N'); Incomplete=$false; ClientName=''; Location=''
     StartedAt=$now.AddMinutes(-7).ToString('o'); CompletedAt=$now.ToString('o'); Elevated=$true; PowerShellVersion='5.1'; Checks=$checks; DeepAuditRequested=$false }
 $path = Join-Path $OutputDirectory ('WinFixAudit-DC01-' + $now.ToString('yyyyMMdd-HHmmss') + '.json')
 [IO.File]::WriteAllText($path, (ConvertTo-Json -InputObject $report -Depth 14 -Compress), (New-Object Text.UTF8Encoding($false)))

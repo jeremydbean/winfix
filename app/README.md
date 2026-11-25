@@ -10,6 +10,29 @@
 
 It needs nothing installed on the server beyond .NET Framework 4.5+ and Windows PowerShell 4+, which come with Windows Server 2012 R2 and later.
 
+### What it checks
+
+- **Patching and lifecycle:** missing and failed updates, last install, pending restart, uptime, OS support dates, update service and source.
+- **Security:** required agents (NinjaOne, Huntress), Defender status, signatures and detection history, firewall, RDP/NLA, SMBv1/signing, BitLocker, Secure Boot/TPM, TLS/SSL protocols, LLMNR/NetBIOS, WDigest, NTLM level, LSA protection, PowerShell 2.0, LAPS, open shares, remote-access tools, failed logons, certificates expiring within 60 days and, if enabled, internet exposure (Shodan InternetDB).
+- **Backups:** Veeam job results, Windows Server Backup, backup tasks, VSS writers, backup and VSS errors, Hyper-V checkpoints and replication.
+- **Storage and hardware:** drive space and growth forecast, disk health, Dell OpenManage / HPE Smart Storage status, hardware and disk error events, unexpected shutdowns.
+- **Accounts and AD:** Administrators membership and changes, password and lockout policy, local accounts; on domain controllers stale users/computers, never-expiring passwords, unsupported OS, krbtgt age, Recycle Bin, dcdiag and replication.
+- **System:** Windows activation, time sync, key services, critical event-log errors.
+
+### Auto-verified manual checks
+
+When the evidence is there, the app answers manual checks itself and marks the note **Auto-verified**:
+antivirus detections (Defender), last successful backup and unresolved failures (Veeam events, Windows Server Backup),
+hardware health (vendor tools, or N/A on a VM) and internet exposure (when enabled).
+A technician can change any of them, and the technician's answer always wins.
+For NinjaOne and Huntress the app adds the local agent state as a hint, because open alerts are only visible in the console.
+
+### Compared with last month
+
+Each audit is compared with the last submitted one. The PDF gets a *Changes since the last audit* section, and findings that are new are marked **NEW**. It covers:
+critical/warning counts, new and resolved findings, a disk-full forecast per drive, administrators added or removed, software installed or removed
+(new remote-access tools are flagged) and new listening ports.
+
 | Manual checks | Sample report |
 | --- | --- |
 | ![Manual checks tab](docs/app-manual-checks.png) | [Sample-Report-DC01.pdf](docs/Sample-Report-DC01.pdf) (fictional server) and the [ticket email](docs/ticket-email.png) |
@@ -21,6 +44,7 @@ It needs nothing installed on the server beyond .NET Framework 4.5+ and Windows 
    - SMTP server, port (587 + STARTTLS, or 25 for a relay), username/password, From address.
      **Send test email** checks the settings.
    - Optional: **Create / update schedule** sets up a monthly run (day 1–28, time).
+   - Optional: **Internet exposure check**. It sends the site's public IP to ipify.org and Shodan InternetDB, so it is off by default.
 3. **Run audit** (3–10 minutes). Progress shows in *Collection log*.
 4. Review **Findings**. You can add a technician note to any finding; notes appear in the PDF and the email.
 5. Complete **Manual checks**. Required items must be answered, and *Issue found* needs a note.
@@ -61,10 +85,12 @@ This uses the C# compiler included in .NET Framework 4.x (`csc.exe`). No Visual 
 
 ```powershell
 cd app
-.\tests\New-SampleAudit.ps1                       # synthetic DC01 report with planted issues
+.\tests\New-SampleAudit.ps1 -PreviousMonth        # last month's audit of the same fictional server
+.\tests\New-SampleAudit.ps1                       # this month's, with planted issues
 .\build.ps1 -AsInvoker -Output .\test-build\app.exe
 $env:WINFIXAUDIT_DATA = "$env:TEMP\wfa-test"      # keep test state out of ProgramData
-.\test-build\app.exe --render (Get-ChildItem .\tests\sample\*.json)[0].FullName $env:TEMP\wfa-out
+$reports = Get-ChildItem .\tests\sample\*.json | Sort-Object Name
+.\test-build\app.exe --render $reports[1].FullName $env:TEMP\wfa-out $reports[0].FullName   # 3rd path (optional): previous audit
 ```
 
 `--render` builds the PDF, the email bodies and an `.eml` file (in `mail\`) instead of sending anything.

@@ -107,6 +107,7 @@ namespace WinFixAudit
         public string SubjectTemplate = "Monthly Server Audit - {tenant} - {server} - {month}";
         public bool DeepAudit = false;
         public bool OnlineUpdateScan = true;
+        public bool ExternalExposureCheck = false;
         public int ScheduleDay = 1;
         public string ScheduleTime = "06:00";
         public int KeepRunsMonths = 6;
@@ -156,6 +157,7 @@ namespace WinFixAudit
             s.SubjectTemplate = Or(J.Str(o, "SubjectTemplate"), s.SubjectTemplate);
             s.DeepAudit = J.Bool(o, "DeepAudit") ?? false;
             s.OnlineUpdateScan = J.Bool(o, "OnlineUpdateScan") ?? true;
+            s.ExternalExposureCheck = J.Bool(o, "ExternalExposureCheck") ?? false;
             s.ScheduleDay = (int)(J.Num(o, "ScheduleDay") ?? 1);
             s.ScheduleTime = Or(J.Str(o, "ScheduleTime"), "06:00");
             s.KeepRunsMonths = (int)(J.Num(o, "KeepRunsMonths") ?? 6);
@@ -172,7 +174,7 @@ namespace WinFixAudit
                 { "SmtpPasswordProtected", SmtpPasswordProtected }, { "FromAddress", FromAddress }, { "FromName", FromName },
                 { "ToAddress", ToAddress }, { "CompanyName", CompanyName }, { "DefaultTenant", DefaultTenant },
                 { "ExpectedAgents", ExpectedAgents }, { "SubjectTemplate", SubjectTemplate }, { "DeepAudit", DeepAudit },
-                { "OnlineUpdateScan", OnlineUpdateScan }, { "ScheduleDay", ScheduleDay }, { "ScheduleTime", ScheduleTime },
+                { "OnlineUpdateScan", OnlineUpdateScan }, { "ExternalExposureCheck", ExternalExposureCheck }, { "ScheduleDay", ScheduleDay }, { "ScheduleTime", ScheduleTime },
                 { "KeepRunsMonths", KeepRunsMonths }, { "LastTechnician", LastTechnician }
             });
         }
@@ -243,6 +245,7 @@ namespace WinFixAudit
     {
         public bool DeepAudit;
         public bool OnlineUpdateScan = true;
+        public bool ExternalExposureCheck;
     }
 
     /// <summary>Runs the embedded Export-WinFixAudit.ps1 in Windows PowerShell and returns the report path.</summary>
@@ -285,6 +288,7 @@ namespace WinFixAudit
             var args = new StringBuilder("-NoProfile -NonInteractive -ExecutionPolicy Bypass -File \"" + script + "\" -NoOpen -OutputDirectory \"" + runDir + "\"");
             if (options.DeepAudit) args.Append(" -DeepAudit");
             if (!options.OnlineUpdateScan) args.Append(" -SkipOnlineUpdateScan");
+            if (options.ExternalExposureCheck) args.Append(" -ExternalExposureCheck");
 
             var psi = new ProcessStartInfo(PowerShellPath(), args.ToString())
             {

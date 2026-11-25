@@ -10,7 +10,7 @@ namespace WinFixAudit
         private readonly AppSettings original;
         private TextBox txtCompany, txtTo, txtFrom, txtFromName, txtHost, txtUser, txtPassword, txtSubject, txtTenant, txtAgents, txtTime;
         private NumericUpDown numPort, numDay;
-        private CheckBox chkTls, chkClearPassword, chkDeep, chkOnline;
+        private CheckBox chkTls, chkClearPassword, chkDeep, chkOnline, chkExposure;
         private Label lblSchedule, lblPasswordState;
         private Button btnTest, btnSchedule, btnUnschedule, btnOk, btnCancel;
 
@@ -96,6 +96,8 @@ namespace WinFixAudit
             chkOnline = new CheckBox { Text = "Online Windows Update scan", AutoSize = true };
             Row("Options", chkDeep, null);
             Row("", chkOnline, null);
+            chkExposure = new CheckBox { Text = "Internet exposure check (sends this site's public IP to ipify.org and Shodan InternetDB)", AutoSize = true, MaximumSize = new Size(420, 0) };
+            Row("", chkExposure, "Looks up which ports Shodan has seen open on the site's public IP and fills in the exposure manual check. Off by default because it shares the client's IP with third parties.");
             var schedButtons = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Margin = new Padding(0) };
             btnSchedule = new Button { Text = "Create / update schedule", AutoSize = true };
             btnUnschedule = new Button { Text = "Remove schedule", AutoSize = true };
@@ -146,6 +148,7 @@ namespace WinFixAudit
             txtTime.Text = s.ScheduleTime;
             chkDeep.Checked = s.DeepAudit;
             chkOnline.Checked = s.OnlineUpdateScan;
+            chkExposure.Checked = s.ExternalExposureCheck;
         }
 
         /// <summary>Copies the form into a settings object (starting from the saved one so unknown fields survive).</summary>
@@ -169,6 +172,7 @@ namespace WinFixAudit
             s.ScheduleTime = txtTime.Text.Trim();
             s.DeepAudit = chkDeep.Checked;
             s.OnlineUpdateScan = chkOnline.Checked;
+            s.ExternalExposureCheck = chkExposure.Checked;
             s.LastTechnician = original.LastTechnician;
             return s;
         }
