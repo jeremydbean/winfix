@@ -52,6 +52,7 @@ namespace PolarniteAudit
             an.Events();
             an.StandardChecks();
             an.AutoVerify();
+            an.Retier();
             an.Coverage();
             if (previous != null) an.CompareWith(previous, Run(previous, expectedAgents, null));
             an.a.Findings.Sort((x, y) =>
@@ -60,6 +61,27 @@ namespace PolarniteAudit
                 return c != 0 ? c : string.Compare(x.Area, y.Area, StringComparison.Ordinal);
             });
             return an.a;
+        }
+
+        // ---------------------------------------------------------------- tiers
+
+        // Critical = fix with a ticket. Warning = noted, fix during normal maintenance.
+        // Info ("Best practice") = hardening recommendations; no ticket needed.
+        private static readonly HashSet<string> BestPracticeKeys = new HashSet<string>(StringComparer.Ordinal)
+        {
+            "smb-signing", "bitlocker", "share-everyone", "password-length", "password-complexity", "lockout",
+            "ssl3", "ntlmv1", "lmhash", "psv2", "dc-spooler", "krbtgt", "ad-recycle", "unsupported-os-computers",
+            "home-edition", "win11-ready", "updates-deferred", "veeam-support", "power-hibernate"
+        };
+        private static readonly HashSet<string> TicketKeys = new HashSet<string>(StringComparer.Ordinal) { "wuauserv-disabled" };
+
+        private void Retier()
+        {
+            foreach (Finding f in a.Findings)
+            {
+                if (f.Severity == Severity.Warning && BestPracticeKeys.Contains(f.Key)) f.Severity = Severity.Info;
+                else if (f.Severity == Severity.Warning && TicketKeys.Contains(f.Key)) f.Severity = Severity.Critical;
+            }
         }
 
         // ---------------------------------------------------------------- helpers

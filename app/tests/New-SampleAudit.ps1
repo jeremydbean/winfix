@@ -75,14 +75,16 @@ if ($Workstation) {
         HibernateEnabled=1; FastStartup=1; AutoAdminLogon='1'; AutoLogonUser='reception'; AutoLogonPasswordStored=$true; UacEnabled=1; UacAdminPrompt=5
         UpdatesPausedUntil=(Ago -12).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ'); FeatureUpdatesPausedUntil=''; QualityUpdatesPausedUntil=''
         DeferFeatureDays=$null; DeferQualityDays=$null; TargetReleaseVersion=''; NoAutoRebootWithLoggedOnUsers=$null; TpmSpecVersion='1.2, 2, 3'; Coverage='sample' })
-    $abbLine = { param($days, $text) [pscustomobject]@{ Text=((Ago $days).ToString('yyyy-MM-dd HH:mm:ss') + ' ' + $text) } }
-    $abbLines = @((& $abbLine 2.3 '[INFO] Backup task [PC-FRONTDESK] completed successfully.'), (& $abbLine 1.3 '[INFO] Backup task [PC-FRONTDESK] completed successfully.'),
-        (& $abbLine 0.3 '[ERROR] Backup task [PC-FRONTDESK] failed: unable to connect to the server (192.168.1.5:5510).'))
-    $checks.SynologyActiveBackup = Ok @(
-        [pscustomobject]@{ RecordType='Summary'; Installed=$true; Services=@([pscustomobject]@{ Name='ActiveBackupforBusinessAgentService'; DisplayName='Active Backup for Business Agent'; State='Running'; StartMode='Auto' })
-            Roots=@('C:\Program Files\Synology\ActiveBackupforBusinessAgent'); LogFilesFound=4; FilesScanned=120; FileScanTruncated=$false; NasConnections=@(); Coverage='sample' },
-        [pscustomobject]@{ RecordType='Log'; Path='C:\ProgramData\ActiveBackupforBusinessAgent\log\agent.log'; LastWriteTime=(Ago 0.3); Length=88231; Status='Collected'
-            Lines=@($abbLines | ForEach-Object { [pscustomobject]@{ Text=$_.Text; Time=[datetime]($_.Text.Substring(0,19)); Outcome=$(if ($_.Text -match 'failed') { 'Failure' } else { 'Success' }) } }) })
+    # Real agent format: weekly backups on Fridays; the latest run reported a failed volume.
+    $abbEvents = @(@(25, 18, 11, 4) | ForEach-Object { [pscustomobject]@{ RecordType='Event'; Time=(Ago ($_ + 0.04)).Date.AddHours(3); Kind='Start'; Source='backup-job.cpp'; Text=$null } }) +
+        @(@(25, 18, 11) | ForEach-Object { [pscustomobject]@{ RecordType='Event'; Time=(Ago $_).Date.AddHours(3).AddMinutes(58); Kind='Success'; Source='backup-job.cpp'; Text=$null } }) +
+        @([pscustomobject]@{ RecordType='Event'; Time=(Ago 4).Date.AddHours(4).AddMinutes(12); Kind='FailedVolumes'; Source='backup-job.cpp'
+            Text=((Ago 4).ToString('MMM dd', [Globalization.CultureInfo]::InvariantCulture) + " 04:12:40 -0500 [INFO] backup-job.cpp (1418): in backup routine, has_fail_volume '1', miss_custome_volume '0', system_volume_excluded '0'") }) +
+        @([pscustomobject]@{ RecordType='ConnectionErrors'; Day=(Ago 2).Date; Count=6 })
+    $checks.SynologyActiveBackup = Ok (@([pscustomobject]@{ RecordType='Summary'; Installed=$true
+            Services=@([pscustomobject]@{ Name='Synology Active Backup for Business Service'; DisplayName='Synology Active Backup for Business Service'; State='Running'; StartMode='Auto' })
+            Roots=@('C:\ProgramData\ActiveBackupforBusinessAgent', 'C:\Program Files (x86)\Synology\ActiveBackupforBusinessAgent'); LogFilesFound=31; LogFilesRead=31; LogFilesUnreadable=0
+            FilesScanned=140; FileScanTruncated=$false; NewestLogTime=(Ago 0.01); OldestLogTime=(Ago 27); NasConnections=@(); Coverage='sample' }) + $abbEvents)
     $checks.SynologyDriveInventory = Ok ([pscustomobject]@{ Product='Synology Drive Client'; Roots=@([pscustomobject]@{ Root='C:\Users\reception\AppData\Local\SynologyDrive'; Origin='LocalUserProfile'; Status='Present' })
         ProfileLimit=20; ProfilesTruncated=$false; Processes=@(); Errors=@(); Coverage='sample' })
     $checks.SynologyDriveDetails = Ok @([pscustomobject]@{ RecordType='Coverage' },
@@ -94,7 +96,7 @@ if ($Workstation) {
         KnownFolders=@([pscustomobject]@{ Folder='Desktop'; Assessment='PathUnderConfiguredOneDriveRoot' }, [pscustomobject]@{ Folder='Personal'; Assessment='NoPathMatchOrUnresolvedVariable' }, [pscustomobject]@{ Folder='My Pictures'; Assessment='NoPathMatchOrUnresolvedVariable' }) })
     $checks.OneDriveActivity = Ok @([pscustomobject]@{ SID='S-1-5-21-1-2-3-1001'; ProfilePath='C:\Users\reception'; LastUseTime=(Ago 0.5); Loaded=$true; ClientVersion='25.180.0914.0001'
         Accounts=@([pscustomobject]@{ Account='Business1'; LastLogWrite=(Ago 19) }); Coverage='sample' })
-    $report = [ordered]@{ SchemaVersion='1.14'; AuditId=[guid]::NewGuid().ToString('N'); Incomplete=$false; ClientName=''; Location=''
+    $report = [ordered]@{ SchemaVersion='1.15'; AuditId=[guid]::NewGuid().ToString('N'); Incomplete=$false; ClientName=''; Location=''
         StartedAt=$now.AddMinutes(-5).ToString('o'); CompletedAt=$now.ToString('o'); Elevated=$true; PowerShellVersion='5.1'; Checks=$checks; DeepAuditRequested=$false }
     $path = Join-Path $OutputDirectory ('WinFixAudit-FRONTDESK-PC-' + $now.ToString('yyyyMMdd-HHmmss') + '.json')
     [IO.File]::WriteAllText($path, (ConvertTo-Json -InputObject $report -Depth 14 -Compress), (New-Object Text.UTF8Encoding($false)))
@@ -290,12 +292,14 @@ $checks.VeeamServerJobs = Ok @(
     [pscustomobject]@{ RecordType='Job'; Name='DC01 Nightly'; JobType='EndpointBackup'; TypeText='Agent backup'; ScheduleEnabled=$true; LastResult=$(if ($prev) { 'Success' } else { 'Failed' }); LastStart=(Ago 0.6); LastEnd=(Ago 0.5); Repository='NAS01 Veeam'; RestorePoints=14; NewestRestorePoint=(Ago 2.5) },
     [pscustomobject]@{ RecordType='Job'; Name='File shares'; JobType='Backup'; TypeText='Windows Agent Backup'; ScheduleEnabled=$false; LastResult='Success'; LastStart=(Ago 5.2); LastEnd=(Ago 5.1); Repository='NAS01 Veeam'; RestorePoints=9; NewestRestorePoint=(Ago 5.1) },
     [pscustomobject]@{ RecordType='Job'; Name='Offsite copy'; JobType='BackupSync'; TypeText='Backup Copy'; ScheduleEnabled=$true; LastResult='Success'; LastStart=(Ago 0.3); LastEnd=(Ago 0.2); Repository='Wasabi immutable'; RestorePoints=30; NewestRestorePoint=(Ago 0.2) },
+    [pscustomobject]@{ RecordType='Job'; Name='Practice DB (manual)'; JobType='Backup'; TypeText='VMware Backup'; ScheduleEnabled=$true; RunManually=$true; LastResult='Success'; LastStart=(Ago 128); LastEnd=(Ago 128); Repository='NAS01 Veeam'; RestorePoints=3; NewestRestorePoint=(Ago 128) },
+    [pscustomobject]@{ RecordType='Job'; Name='Practice DB remote copy'; JobType='SimpleBackupCopyPolicy'; TypeText='Backup Copy'; ScheduleEnabled=$true; LastResult='Success'; LastStart=(Ago 128); LastEnd=(Ago 128); Repository='Default Backup Repository'; RestorePoints=6; NewestRestorePoint=(Ago 128) },
     [pscustomobject]@{ RecordType='Repository'; Name='NAS01 Veeam'; Type='Nfs'; TotalGB=7450.0; FreeGB=$(if ($prev) { 1490.0 } else { 298.0 }) },
     [pscustomobject]@{ RecordType='Repository'; Name='Wasabi immutable'; Type='AmazonS3Compatible'; TotalGB=$null; FreeGB=$null },
     [pscustomobject]@{ RecordType='License'; Status='Valid'; Type='Subscription'; Edition='EnterprisePlus'; ExpirationDate=(Ago -20); SupportExpirationDate=(Ago -20) },
     [pscustomobject]@{ RecordType='Coverage'; Coverage='sample' })
 
-$report = [ordered]@{ SchemaVersion='1.14'; AuditId=[guid]::NewGuid().ToString('N'); Incomplete=$false; ClientName=''; Location=''
+$report = [ordered]@{ SchemaVersion='1.15'; AuditId=[guid]::NewGuid().ToString('N'); Incomplete=$false; ClientName=''; Location=''
     StartedAt=$now.AddMinutes(-7).ToString('o'); CompletedAt=$now.ToString('o'); Elevated=$true; PowerShellVersion='5.1'; Checks=$checks; DeepAuditRequested=$false }
 $path = Join-Path $OutputDirectory ('WinFixAudit-DC01-' + $now.ToString('yyyyMMdd-HHmmss') + '.json')
 [IO.File]::WriteAllText($path, (ConvertTo-Json -InputObject $report -Depth 14 -Compress), (New-Object Text.UTF8Encoding($false)))

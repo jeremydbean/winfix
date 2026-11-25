@@ -17,7 +17,7 @@ namespace PolarniteAudit
             {
                 case Severity.Critical: return "Critical";
                 case Severity.Warning: return "Warning";
-                case Severity.Info: return "Info";
+                case Severity.Info: return "Best practice";
                 case Severity.Pass: return "Pass";
                 default: return "Unknown";
             }
@@ -236,9 +236,6 @@ namespace PolarniteAudit
             new ManualItemDef { Id = "hyperv_coverage", Area = "Backups", Required = true,
                 Title = "Every Hyper-V VM is included in a backup job",
                 Guidance = "List any VMs excluded on purpose.", AppliesTo = a => a.HasHyperVVMs },
-            new ManualItemDef { Id = "restore_test", Area = "Backups", Required = false,
-                Title = "Test restore performed",
-                Guidance = "What was restored, from which restore point, and the result. Mark N/A if not due this month." },
             new ManualItemDef { Id = "rmm_health", Area = "Monitoring", Required = true,
                 Title = "RMM (NinjaOne): device online, no open alerts, patch policy applied",
                 Guidance = "Note any open alerts or patch policy exceptions." },

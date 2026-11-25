@@ -4,7 +4,7 @@
 
 1. Runs the repository's read-only collector, [`Export-WinFixAudit.ps1`](../Export-WinFixAudit.ps1), which is embedded in the exe.
 2. Turns the evidence into **findings** (critical / warning / info / pass).
-3. Lets the technician fill in what a script can't check: backup console, restore test, NinjaOne, Huntress, antivirus, hardware, MFA and exposure.
+3. Lets the technician fill in what a script can't check: backup console, NinjaOne, Huntress, antivirus, hardware, MFA and exposure.
 4. Builds a branded **PDF report** and emails a **summary ticket** with the PDF attached to `support@polarnite.com`:
    `Monthly Server Audit - <tenant> - <server> - <month>`
 
@@ -15,8 +15,8 @@ It needs nothing installed on the server beyond .NET Framework 4.5+ and Windows 
 - **Patching and lifecycle:** missing and failed updates, last install, pending restart, uptime, OS support dates, update service and source.
 - **Security:** required agents (NinjaOne, Huntress), Defender status, signatures and detection history, firewall, RDP/NLA, SMBv1/signing, BitLocker, Secure Boot/TPM, TLS/SSL protocols, LLMNR/NetBIOS, WDigest, NTLM level, LSA protection, PowerShell 2.0, LAPS, open shares, remote-access tools, failed logons, certificates expiring within 60 days and, if enabled, internet exposure (Shodan InternetDB).
 - **Backups:**
-  - *Veeam:* job results from the event log on every server; on a Backup & Replication server also each job's schedule, last result and restore points, backup copy jobs, repository free space and licence/support expiry.
-  - *Synology Active Backup for Business:* agent service, connection to the NAS (port 5510), and the last success and failure read from the agent's log.
+  - *Veeam:* job results from the event log on every server; on a Backup & Replication server also each job's schedule (manual-only jobs are not flagged), last result and restore points, backup copy jobs that have stopped, repository free space and licence expiry (60 days ahead).
+  - *Synology Active Backup for Business:* agent service, the start and finish of each backup run from the agent log (`backup-job.cpp … in backup routine, has_fail_volume`), failed runs, runs that never finished, and NAS connection errors. The expected interval is learned from past runs, so weekly schedules are not flagged as missed.
   - *Synology Drive Client:* whether it is running (it only runs while a user is signed in) and errors after its last success.
   - *OneDrive:* per user, which folders are in OneDrive (Known Folder Move) and when it last synced, flagged when a user signs in but OneDrive has stopped.
   - Windows Server Backup, backup tasks, VSS writers, backup and VSS errors, Hyper-V checkpoints and replication.
@@ -26,15 +26,25 @@ It needs nothing installed on the server beyond .NET Framework 4.5+ and Windows 
 - **Software support:** installed Office, Exchange, SQL Server, SharePoint, Acrobat, Java, Python 2 and QuickBooks versions that are out of support or within a year of it.
 - **Windows 10/11 used as a server:** sleep and hibernate on AC power, automatic sign-in (and a password stored in the registry), UAC, paused or deferred Windows Update, fast startup, Home edition, LTSC support dates, and Windows 11 hardware readiness (TPM 2.0, Secure Boot).
 
+### How findings are rated
+
+| Rating | Meaning |
+| --- | --- |
+| **Critical** | Needs a fix ticket. Listed first on the cover page and in the email under *Needs a ticket*, together with any manual check a technician marked *Issue found*. |
+| **Warning** | Noted for the record; fixed during normal maintenance. No ticket. |
+| **Best practice** | Hardening and hygiene recommendations (for example krbtgt age, lockout policy, NTLM level, BitLocker, LLMNR). No ticket. |
+
+To move a rule between tiers, edit `BestPracticeKeys` / `TicketKeys` in `src\Analyzer.cs` (or the severity where the finding is added).
+
 ### Auto-verified manual checks
 
 When the evidence is there, the app answers manual checks itself and marks the note **Auto-verified**:
-antivirus detections (Defender), last successful backup and unresolved failures (Veeam events and console, Windows Server Backup),
+antivirus detections (Defender), last successful backup and unresolved failures (Veeam events and console, Synology Active Backup, Windows Server Backup),
 hardware health (vendor tools, or N/A on a VM), OS support entitlement (an activated ESU licence) and internet exposure (when enabled).
 A technician can change any of them, and the technician's answer always wins.
 For NinjaOne and Huntress the app adds the local agent state as a hint, because open alerts are only visible in the console.
-Synology Active Backup, Synology Drive and OneDrive results, and Veeam backup copy jobs, are added as hints to the backup checks rather than answered,
-because retention and restore points live on the NAS or in the cloud console.
+Synology Drive and OneDrive results, and Veeam backup copy jobs, are added as hints to the backup checks rather than answered.
+Restore tests are not part of the checklist.
 
 ### Compared with last month
 
@@ -124,5 +134,5 @@ The first time the renamed app runs on a server, it moves `C:\ProgramData\WinFix
 - Missing data is never counted as a pass. Checks that fail or time out are listed under *Collection coverage* at the end of the PDF.
 - SMTP port 465 (implicit TLS) is not supported by .NET's mail client. Use 587/STARTTLS or a port-25 relay.
 - The exe is unsigned, and it starts `powershell.exe -ExecutionPolicy Bypass` to run the embedded collector. EDR tools (including Huntress) may flag this. Sign the exe, or allow-list its hash, before a wide rollout.
-- Synology Active Backup and Drive Client outcomes are read from their local log text, best effort. The NAS console is the source of truth.
+- Synology Active Backup results come from the agent's local log (about five days of rotated `log.txt_N` files plus older runs if still present). The NAS console is the source of truth for retention.
 - The PDF uses the built-in Helvetica fonts (Western European characters). Other characters print as `?`.

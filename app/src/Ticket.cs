@@ -96,29 +96,35 @@ namespace PolarniteAudit
                 sb.Append("<div style=\"background:#F9FAFB;border-left:4px solid #2563EB;border-radius:6px;padding:10px 14px;margin:12px 0\"><div style=\"font-size:11px;font-weight:bold;color:#6B7280;letter-spacing:.7px\">TECHNICIAN NOTES</div>")
                   .Append(J.HtmlEncode(d.Summary.Trim())).Append("</div>");
 
-            // Summary only: every critical, then warnings up to 10 rows; the PDF has the rest.
-            var all = a.Findings.Where(f => f.Severity == Severity.Critical || f.Severity == Severity.Warning).ToList();
-            var priority = all.Where(f => f.Severity == Severity.Critical).Concat(all.Where(f => f.Severity == Severity.Warning).Take(Math.Max(0, 10 - a.Count(Severity.Critical)))).ToList();
-            int more = all.Count - priority.Count;
-            sb.Append("<h3 style=\"font-size:16px;margin:18px 0 6px\">Findings needing attention</h3>");
-            if (priority.Count == 0) sb.Append("<p style=\"color:#15803D\">No critical issues or warnings from the automated checks.</p>");
+            // Every critical (needs a ticket), then warnings up to 10 rows; best practice only as a count. The PDF has the rest.
+            var critical = a.Findings.Where(f => f.Severity == Severity.Critical).ToList();
+            var manualIssues = items.Where(i => d.Answer(i.Id).Status == ManualCatalog.Issue && !d.Answer(i.Id).AutoSet).ToList(); // auto-filled issues already appear as findings
+            var warnings = a.Findings.Where(f => f.Severity == Severity.Warning).ToList();
+            sb.Append("<h3 style=\"font-size:16px;margin:18px 0 6px\">Needs a ticket</h3>");
+            if (critical.Count == 0 && manualIssues.Count == 0) sb.Append("<p style=\"color:#15803D\">Nothing needs a fix ticket this month.</p>");
             else
             {
                 sb.Append("<table role=\"presentation\" width=\"100%\" cellpadding=\"0\" cellspacing=\"0\" style=\"border-collapse:collapse\">");
-                foreach (Finding f in priority)
-                {
-                    string note = d.FindingNotes.ContainsKey(f.Key) ? d.FindingNotes[f.Key] : "";
-                    sb.Append("<tr><td style=\"padding:8px 10px 8px 0;border-bottom:1px solid #E5E7EB;vertical-align:top;width:96px\">").Append(Chip(Sev.Label(f.Severity), f.Severity))
-                      .Append("</td><td style=\"padding:8px 0;border-bottom:1px solid #E5E7EB\"><b>").Append(J.HtmlEncode(f.Title)).Append("</b>");
-                    if (f.IsNew) sb.Append(" ").Append(Chip("New", Severity.Info));
-                    if (f.Detail.Length > 0) sb.Append("<br><span style=\"color:#6B7280;font-size:13px\">").Append(J.HtmlEncode(f.Detail)).Append("</span>");
-                    if (!string.IsNullOrWhiteSpace(note)) sb.Append("<br><i style=\"color:#2563EB;font-size:13px\">Technician: ").Append(J.HtmlEncode(note.Trim())).Append("</i>");
-                    sb.Append("</td></tr>");
-                }
+                foreach (Finding f in critical) FindingRow(sb, d, f);
+                foreach (ManualItemDef item in manualIssues)
+                    sb.Append("<tr><td style=\"padding:8px 10px 8px 0;border-bottom:1px solid #E5E7EB;vertical-align:top;width:96px\">").Append(Chip("Manual", Severity.Critical))
+                      .Append("</td><td style=\"padding:8px 0;border-bottom:1px solid #E5E7EB\"><b>").Append(J.HtmlEncode(item.Title)).Append("</b><br><span style=\"color:#6B7280;font-size:13px\">")
+                      .Append(J.HtmlEncode(d.Answer(item.Id).Notes.Trim())).Append("</span></td></tr>");
                 sb.Append("</table>");
-                if (more > 0)
-                    sb.Append("<p style=\"color:#6B7280;font-size:13px;margin:8px 0 0\">+ ").Append(J.HtmlEncode(J.Plural(more, "more warning", "more warnings"))).Append(" in the attached report.</p>");
             }
+            sb.Append("<h3 style=\"font-size:16px;margin:18px 0 6px\">Warnings (noted, no ticket)</h3>");
+            if (warnings.Count == 0) sb.Append("<p style=\"color:#15803D\">No warnings.</p>");
+            else
+            {
+                sb.Append("<table role=\"presentation\" width=\"100%\" cellpadding=\"0\" cellspacing=\"0\" style=\"border-collapse:collapse\">");
+                foreach (Finding f in warnings.Take(10)) FindingRow(sb, d, f);
+                sb.Append("</table>");
+                if (warnings.Count > 10)
+                    sb.Append("<p style=\"color:#6B7280;font-size:13px;margin:8px 0 0\">+ ").Append(J.HtmlEncode(J.Plural(warnings.Count - 10, "more warning", "more warnings"))).Append(" in the attached report.</p>");
+            }
+            int practice = a.Count(Severity.Info);
+            if (practice > 0)
+                sb.Append("<p style=\"color:#6B7280;font-size:13px;margin:10px 0 0\">").Append(J.HtmlEncode(J.Plural(practice, "best-practice recommendation is", "best-practice recommendations are"))).Append(" listed in the attached report (no ticket needed).</p>");
 
             sb.Append("<h3 style=\"font-size:16px;margin:18px 0 6px\">Manual verification</h3>");
             sb.Append("<table role=\"presentation\" width=\"100%\" cellpadding=\"0\" cellspacing=\"0\" style=\"border-collapse:collapse\">");
@@ -139,13 +145,24 @@ namespace PolarniteAudit
             return sb.ToString();
         }
 
+        private static void FindingRow(StringBuilder sb, DraftState d, Finding f)
+        {
+            string note = d.FindingNotes.ContainsKey(f.Key) ? d.FindingNotes[f.Key] : "";
+            sb.Append("<tr><td style=\"padding:8px 10px 8px 0;border-bottom:1px solid #E5E7EB;vertical-align:top;width:96px\">").Append(Chip(Sev.Label(f.Severity), f.Severity))
+              .Append("</td><td style=\"padding:8px 0;border-bottom:1px solid #E5E7EB\"><b>").Append(J.HtmlEncode(f.Title)).Append("</b>");
+            if (f.IsNew) sb.Append(" ").Append(Chip("New", Severity.Info));
+            if (f.Detail.Length > 0) sb.Append("<br><span style=\"color:#6B7280;font-size:13px\">").Append(J.HtmlEncode(f.Detail)).Append("</span>");
+            if (!string.IsNullOrWhiteSpace(note)) sb.Append("<br><i style=\"color:#2563EB;font-size:13px\">Technician: ").Append(J.HtmlEncode(note.Trim())).Append("</i>");
+            sb.Append("</td></tr>");
+        }
+
         public static string Text(AppSettings s, AuditAnalysis a, DraftState d, string pdfName)
         {
             var items = ManualCatalog.For(a);
             var sb = new StringBuilder();
             sb.AppendLine(s.CompanyName.ToUpperInvariant() + " MONTHLY SERVER AUDIT");
             sb.AppendLine(a.ServerName + " | " + d.Tenant + " | " + a.MonthLabel);
-            sb.AppendLine("Overall: " + ReportPdf.OverallLabel(ReportPdf.Overall(a, d)) + " | Critical " + a.Count(Severity.Critical) + " | Warnings " + a.Count(Severity.Warning) + " | Passed " + a.Count(Severity.Pass));
+            sb.AppendLine("Overall: " + ReportPdf.OverallLabel(ReportPdf.Overall(a, d)) + " | Critical (ticket) " + a.Count(Severity.Critical) + " | Warnings " + a.Count(Severity.Warning) + " | Best practice " + a.Count(Severity.Info) + " | Passed " + a.Count(Severity.Pass));
             sb.AppendLine(a.OsName + (string.IsNullOrEmpty(a.OsSupportText) ? "" : " - " + a.OsSupportText));
             sb.AppendLine("Audited " + J.FormatDateTime(a.AuditTime) + " by " + d.Technician);
             if (a.PreviousAuditTime.HasValue)
@@ -153,9 +170,14 @@ namespace PolarniteAudit
                               ", warnings " + a.PreviousWarning + " -> " + a.Count(Severity.Warning) + ", " + a.Resolved.Count + " resolved, " + a.Findings.Count(f => f.IsNew) + " new");
             if (!string.IsNullOrWhiteSpace(d.Summary)) { sb.AppendLine(); sb.AppendLine("TECHNICIAN NOTES"); sb.AppendLine(d.Summary.Trim()); }
             sb.AppendLine();
-            sb.AppendLine("FINDINGS NEEDING ATTENTION");
-            var priority = a.Findings.Where(f => f.Severity == Severity.Critical || f.Severity == Severity.Warning).ToList();
-            if (priority.Count == 0) sb.AppendLine("  None.");
+            var manualIssues = items.Where(i => d.Answer(i.Id).Status == ManualCatalog.Issue && !d.Answer(i.Id).AutoSet).ToList(); // auto-filled issues already appear as findings
+            foreach (Severity tier in new[] { Severity.Critical, Severity.Warning })
+            {
+            sb.AppendLine(tier == Severity.Critical ? "NEEDS A TICKET" : "WARNINGS (NOTED, NO TICKET)");
+            var priority = a.Findings.Where(f => f.Severity == tier).ToList();
+            if (priority.Count == 0 && (tier != Severity.Critical || manualIssues.Count == 0)) sb.AppendLine("  None.");
+            if (tier == Severity.Critical)
+                foreach (ManualItemDef item in manualIssues) sb.AppendLine("  [MANUAL CHECK] " + item.Title + " - " + d.Answer(item.Id).Notes.Trim());
             foreach (Finding f in priority)
             {
                 sb.AppendLine("  [" + Sev.Label(f.Severity).ToUpperInvariant() + "] " + f.Title + (f.IsNew ? " (new)" : ""));
@@ -164,6 +186,8 @@ namespace PolarniteAudit
                 if (d.FindingNotes.TryGetValue(f.Key, out note) && !string.IsNullOrWhiteSpace(note)) sb.AppendLine("      Technician: " + note.Trim());
             }
             sb.AppendLine();
+            }
+            if (a.Count(Severity.Info) > 0) { sb.AppendLine(J.Plural(a.Count(Severity.Info), "best-practice recommendation", "best-practice recommendations") + " in the attached report."); sb.AppendLine(); }
             sb.AppendLine("MANUAL VERIFICATION");
             foreach (ManualItemDef item in items)
             {

@@ -4,6 +4,10 @@ Detailed behaviour, limits and version notes for `Export-WinFixAudit.ps1`, `Star
 `Export-WinFixDiskDiagnostic.ps1` and `Export-WinFixBackupDiagnostic.ps1`. Moved from the main README.
 For a summary of every tool, see the [README](../README.md).
 
+## Collector 1.15
+
+`SynologyActiveBackup` now reads backup runs from the agent's own lines instead of keyword matching: `ConvertFrom-AuditAbbLogLine` classifies `backup-job.cpp` "Prepare snapshot job" (start), `in backup routine, has_fail_volume 'N'` (finished; N > 0 means failed volumes), backup ERROR lines and NAS connection ERROR lines, taking the year from the log file's time. It reads the newest 40 `log.txt[_N]` files (skipping the tray app's `log-ui`). `VeeamServerJobs` adds `RunManually`. Both were checked on live servers (Active Backup agent 3.1.2 on Server 2012 R2 / PowerShell 4.0; Veeam B&R 12.2 on Windows 10).
+
 ## Collector 1.14: Windows 10/11 servers and backup products
 
 | Check | What is collected | Notes |

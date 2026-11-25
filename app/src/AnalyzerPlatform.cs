@@ -71,6 +71,14 @@ namespace PolarniteAudit
                 }
                 catch (ArgumentOutOfRangeException) { time = null; }
             }
+            if (!time.HasValue)
+            {
+                Match sys = Regex.Match(text ?? "", @"^(?<mon>[A-Z][a-z]{2}) +(?<dy>\d{1,2}) (?<hms>\d{2}:\d{2}:\d{2})");
+                DateTime parsed;
+                if (sys.Success && DateTime.TryParseExact(sys.Groups["mon"].Value + " " + sys.Groups["dy"].Value + " " + DateTime.Now.Year + " " + sys.Groups["hms"].Value,
+                        "MMM d yyyy HH:mm:ss", CultureInfo.InvariantCulture, DateTimeStyles.None, out parsed))
+                    time = parsed > DateTime.Now.AddDays(2) ? parsed.AddYears(-1) : parsed;
+            }
             string clean = Regex.Replace(text ?? "", @"(?i)\b(no|0|zero)\s+(errors?|failures?|warnings?)\b", "");
             if (Regex.IsMatch(clean, @"(?i)\b(fail(ed|ure|s)?|error|abort(ed)?|cancel(l)?ed|partial(ly)?\s+(complete|success))")) outcome = "Failure";
             else if (Regex.IsMatch(clean, @"(?i)\b(succe(ss|eded|ssful(ly)?)|completed?|finished)\b")) outcome = "Success";
@@ -261,45 +269,7 @@ namespace PolarniteAudit
         {
             CheckResult abb = C("SynologyActiveBackup");
             object sum = abb.Data.FirstOrDefault(d => J.Str(d, "RecordType") == "Summary");
-            if (abb.Ok && sum != null && J.Bool(sum, "Installed") == true)
-            {
-                var t = new TableBlock("Synology Active Backup for Business (agent on this computer)", new[] { "Item", "Status", "Detail" }, new[] { 2.2, 1.5, 4.3 });
-                var services = J.List(J.Get(sum, "Services"));
-                bool running = services.Any(s => J.Str(s, "State") == "Running");
-                if (services.Count > 0)
-                    t.Add("Agent service", new Cell(running ? "Running" : "Stopped", running ? Severity.Pass : Severity.Critical), string.Join(", ", services.Select(s => J.Str(s, "DisplayName")).ToArray()));
-                var conns = J.List(J.Get(sum, "NasConnections")).Select(x => J.Str(x, "RemoteAddress")).Where(x => x.Length > 0).Distinct().ToList();
-                t.Add("NAS connection", new Cell(conns.Count > 0 ? "Connected" : "Not connected", conns.Count > 0 ? Severity.Pass : Severity.Info),
-                    conns.Count > 0 ? string.Join(", ", conns.ToArray()) + " on port 5510" : "No open connection to a NAS on port 5510 when the audit ran.");
-
-                var logs = abb.Data.Where(d => J.Str(d, "RecordType") == "Log").ToList();
-                DateTime? newestLog = logs.Select(l => J.Date(l, "LastWriteTime")).Where(d => d.HasValue).OrderByDescending(d => d).FirstOrDefault();
-                var lines = logs.SelectMany(l => J.List(J.Get(l, "Lines"))).ToList();
-                object lastOk = lines.Where(l => J.Str(l, "Outcome") == "Success" && J.Date(l, "Time").HasValue).OrderByDescending(l => J.Date(l, "Time")).FirstOrDefault();
-                object lastBad = lines.Where(l => J.Str(l, "Outcome") == "Failure" && J.Date(l, "Time").HasValue).OrderByDescending(l => J.Date(l, "Time")).FirstOrDefault();
-                DateTime? okTime = J.Date(lastOk, "Time"), badTime = J.Date(lastBad, "Time");
-                t.Add("Agent log written", new Cell(AgeText(newestLog), Severity.Info), J.FormatDateTime(newestLog));
-                t.Add("Last success", new Cell(AgeText(okTime), !okTime.HasValue || DaysSince(okTime) > 2 ? Severity.Warning : Severity.Pass), okTime.HasValue ? J.FormatDateTime(okTime) + " (from the agent log)" : "No success found in the newest agent logs");
-                if (badTime.HasValue) t.Add("Last failure", new Cell(AgeText(badTime), (!okTime.HasValue || badTime > okTime) ? Severity.Warning : Severity.Info), J.Shorten(J.Str(lastBad, "Text"), 140));
-                BackupBlock(t);
-
-                if (badTime.HasValue && (!okTime.HasValue || badTime > okTime) && DaysSince(badTime) <= 7)
-                    Add("abb-failed", Severity.Warning, "Backups", "Synology Active Backup: the latest backup in the agent log failed",
-                        J.Shorten(J.Str(lastBad, "Text"), 200) + " Check the task in Active Backup for Business on the NAS.");
-                else if (okTime.HasValue && DaysSince(okTime) > 2)
-                    Add("abb-age", Severity.Warning, "Backups", "Synology Active Backup: last success in the agent log was " + DaysSince(okTime) + " days ago",
-                        "Last success " + J.FormatDateTime(okTime) + ". Confirm the task schedule and the NAS connection in Active Backup for Business.");
-                else if (okTime.HasValue)
-                    Add("abb-ok", Severity.Pass, "Backups", "Synology Active Backup agent logged a successful backup " + J.FormatDateTime(okTime), "");
-                else if (running && newestLog.HasValue && DaysSince(newestLog) > 3)
-                    Add("abb-idle", Severity.Warning, "Backups", "Synology Active Backup agent has not logged activity in " + DaysSince(newestLog) + " days",
-                        "The service is running but no backup appears to have run. Check the device in Active Backup for Business on the NAS.");
-                var parts = new List<string> { "Synology Active Backup agent " + (running ? "running" : "not running") };
-                if (okTime.HasValue) parts.Add("last success in agent log " + J.FormatDateTime(okTime));
-                if (badTime.HasValue) parts.Add("last failure " + J.FormatDateTime(badTime));
-                if (conns.Count > 0) parts.Add("connected to NAS " + conns[0]);
-                Hint("backup_last_success", string.Join(", ", parts.ToArray()) + ". Confirm the task result and retention in Active Backup for Business.");
-            }
+            if (abb.Ok && sum != null && J.Bool(sum, "Installed") == true) ActiveBackup(abb, sum);
 
             // Synology Drive Client (per-user file backup and sync).
             object inv = C("SynologyDriveInventory").First;
@@ -331,6 +301,98 @@ namespace PolarniteAudit
             Hint("backup_last_success", "Synology Drive Client " + (driveRunning ? "running" : "not running") + (driveOk.HasValue ? ", last success in log " + J.FormatDateTime(driveOk) : "") + ".");
         }
 
+        private string abbLine;          // for the backup manual checks
+        private bool abbHealthy = true, abbFailureOpen;
+
+        /// <summary>
+        /// Active Backup for Business agent: backup runs are read from backup-job.cpp lines
+        /// ("Prepare snapshot job" ... "in backup routine, has_fail_volume 'N'"). The expected
+        /// interval comes from the gaps between past successes, so weekly schedules are not flagged.
+        /// </summary>
+        private void ActiveBackup(CheckResult abb, object sum)
+        {
+            var t = new TableBlock("Synology Active Backup for Business (agent on this computer)", new[] { "Item", "Status", "Detail" }, new[] { 2.2, 1.5, 4.3 });
+            var services = J.List(J.Get(sum, "Services"));
+            bool running = services.Any(s => J.Str(s, "State") == "Running");
+            if (services.Count > 0)
+                t.Add("Agent service", new Cell(running ? "Running" : "Stopped", running ? Severity.Pass : Severity.Critical), string.Join(", ", services.Select(s => J.Str(s, "DisplayName")).ToArray()));
+
+            var events = abb.Data.Where(d => J.Str(d, "RecordType") == "Event" && J.Date(d, "Time").HasValue).ToList();
+            Func<string, List<DateTime>> times = kind => events.Where(e => J.Str(e, "Kind") == kind).Select(e => J.Date(e, "Time").Value).OrderBy(x => x).ToList();
+            var ok = times("Success");
+            var failed = events.Where(e => J.Str(e, "Kind") == "FailedVolumes").OrderBy(e => J.Date(e, "Time")).ToList();
+            var starts = times("Start");
+            var errors = events.Where(e => J.Str(e, "Kind") == "BackupError").OrderBy(e => J.Date(e, "Time")).ToList();
+            DateTime? lastOk = ok.Count > 0 ? ok[ok.Count - 1] : (DateTime?)null;
+            DateTime? lastFail = failed.Count > 0 ? J.Date(failed[failed.Count - 1], "Time") : null;
+            DateTime? lastStart = starts.Count > 0 ? starts[starts.Count - 1] : (DateTime?)null;
+            DateTime? lastErr = errors.Count > 0 ? J.Date(errors[errors.Count - 1], "Time") : null;
+            DateTime? oldest = J.Date(sum, "OldestLogTime"), newestLog = J.Date(sum, "NewestLogTime");
+
+            // Usual interval between successful backups (median gap between distinct days).
+            var days = ok.Select(x => x.Date).Distinct().ToList();
+            var gaps = new List<double>();
+            for (int i = 1; i < days.Count; i++) gaps.Add((days[i] - days[i - 1]).TotalDays);
+            gaps.Sort();
+            double usual = gaps.Count > 0 ? gaps[gaps.Count / 2] : 0;
+            double allowed = gaps.Count > 0 ? Math.Max(2, usual * 1.5 + 1) : 8;
+            string cadence = usual >= 1 ? "usually every " + (usual == 1 ? "day" : usual == 7 ? "week" : Math.Round(usual) + " days") : "";
+
+            int connErrors = abb.Data.Where(d => J.Str(d, "RecordType") == "ConnectionErrors" && DaysSince(J.Date(d, "Day")) <= 7).Sum(d => (int)(J.Num(d, "Count") ?? 0));
+            var conns = J.List(J.Get(sum, "NasConnections")).Select(x => J.Str(x, "RemoteAddress")).Where(x => x.Length > 0).Distinct().ToList();
+
+            bool failOpen = lastFail.HasValue && (!lastOk.HasValue || lastFail > lastOk);
+            int age = DaysSince(lastOk);
+            t.Add("Last successful backup", new Cell(AgeText(lastOk), !lastOk.HasValue || age > allowed ? Severity.Critical : Severity.Pass),
+                lastOk.HasValue ? J.FormatDateTime(lastOk) + (cadence.Length > 0 ? " (" + cadence + ")" : "") : "None in the agent logs" + (oldest.HasValue ? " since " + J.FormatDate(oldest) : ""));
+            if (lastFail.HasValue)
+                t.Add("Last failed backup", new Cell(AgeText(lastFail), failOpen ? Severity.Critical : Severity.Info), J.Shorten(J.Str(failed[failed.Count - 1], "Text"), 140));
+            if (lastStart.HasValue && (!lastOk.HasValue || lastStart > lastOk))
+                t.Add("Backup in progress or stopped", new Cell(AgeText(lastStart), DaysSince(lastStart) >= 1 ? Severity.Warning : Severity.Info), "Started " + J.FormatDateTime(lastStart) + " with no finish line yet");
+            t.Add("Successful backups in logs", J.Plural(ok.Count, "run", "runs"), oldest.HasValue ? "Logs cover " + J.FormatDate(oldest) + " to " + J.FormatDate(newestLog) : "");
+            t.Add("NAS connection", new Cell(conns.Count > 0 ? "Connected" : connErrors > 0 ? "Errors" : "Idle", conns.Count > 0 ? Severity.Pass : connErrors > 0 ? Severity.Warning : Severity.Info),
+                (conns.Count > 0 ? string.Join(", ", conns.ToArray()) + " on port 5510. " : "") + (connErrors > 0 ? J.Plural(connErrors, "connection error", "connection errors") + " in the last 7 days." : ""));
+            BackupBlock(t);
+
+            var summary = new List<string>();
+            if (failOpen)
+            {
+                Add("abb-failed", Severity.Critical, "Backups", "Synology Active Backup: the last backup failed",
+                    "Run at " + J.FormatDateTime(lastFail) + " reported failed volumes" + (lastOk.HasValue ? "; last success " + J.FormatDateTime(lastOk) : "") + ". Check the task log in Active Backup for Business on the NAS.");
+                summary.Add("last run " + J.FormatDateTime(lastFail) + " failed");
+            }
+            else if (!lastOk.HasValue)
+            {
+                bool longEnough = oldest.HasValue && DaysSince(oldest) >= allowed;
+                Add("abb-none", longEnough ? Severity.Critical : Severity.Warning, "Backups", "Synology Active Backup: no successful backup in the agent logs",
+                    (oldest.HasValue ? "The logs go back to " + J.FormatDate(oldest) + ". " : "") + "Check the device and its schedule in Active Backup for Business on the NAS.");
+                summary.Add("no successful run in the agent logs");
+            }
+            else if (age > allowed)
+            {
+                Add("abb-age", Severity.Critical, "Backups", "Synology Active Backup: no successful backup in " + age + " days",
+                    "Last success " + J.FormatDateTime(lastOk) + (cadence.Length > 0 ? "; it normally runs " + cadence.Replace("usually ", "") : "") + ". Check the task and NAS connection in Active Backup for Business.");
+                summary.Add("last success " + J.FormatDateTime(lastOk) + " (" + age + " days ago)");
+            }
+            else
+            {
+                Add("abb-ok", Severity.Pass, "Backups", "Synology Active Backup succeeded " + J.FormatDateTime(lastOk) + (cadence.Length > 0 ? " (" + cadence + ")" : ""), "");
+                summary.Add("last success " + J.FormatDateTime(lastOk) + (cadence.Length > 0 ? ", " + cadence : ""));
+            }
+            if (lastStart.HasValue && (!lastOk.HasValue || lastStart > lastOk) && !failOpen && DaysSince(lastStart) >= 1)
+                Add("abb-unfinished", Severity.Warning, "Backups", "Synology Active Backup: the run started " + J.FormatDateTime(lastStart) + " never finished",
+                    "No finish line followed it in the agent log. It may have been cancelled or lost its NAS connection.");
+            if (lastErr.HasValue && lastOk.HasValue && lastErr > lastOk && !failOpen)
+                Add("abb-errors", Severity.Warning, "Backups", "Synology Active Backup logged errors after its last success", J.Shorten(J.Str(errors[errors.Count - 1], "Text"), 200));
+            if (connErrors > 0)
+                Add("abb-connection", Severity.Warning, "Backups", "Synology Active Backup agent lost its NAS connection " + J.Plural(connErrors, "time", "times") + " this week",
+                    "Connection errors to the NAS in the last 7 days. Usually network or NAS restarts; check if backups were affected.");
+
+            abbHealthy = !failOpen && lastOk.HasValue && age <= allowed;
+            abbFailureOpen = failOpen;
+            abbLine = "Synology Active Backup " + string.Join(", ", summary.ToArray()) + " (agent log)";
+        }
+
         // ------------------------------------------------------------ Veeam Backup & Replication console
 
         private void VeeamConsole()
@@ -345,20 +407,24 @@ namespace PolarniteAudit
                 string name = J.Str(j, "Name"), type = J.Str(j, "TypeText"), jobType = J.Str(j, "JobType"), result = J.Str(j, "LastResult");
                 if (type.Length == 0) type = jobType;
                 bool copy = Regex.IsMatch(jobType + " " + type, "BackupSync|Copy", RegexOptions.IgnoreCase);
-                bool enabled = J.Bool(j, "ScheduleEnabled") == true;
+                bool manual = J.Bool(j, "RunManually") == true;
+                bool enabled = J.Bool(j, "ScheduleEnabled") == true && !manual;
                 DateTime? lastEnd = J.Date(j, "LastEnd"), newest = J.Date(j, "NewestRestorePoint");
                 if (lastEnd.HasValue && lastEnd.Value.Year < 2000) lastEnd = null;
                 Severity sev = result == "Failed" ? Severity.Critical : result == "Warning" ? Severity.Warning : result == "Success" ? Severity.Pass : Severity.Unknown;
                 double? points = J.Num(j, "RestorePoints");
-                table.Add(name, type, new Cell(enabled ? "Enabled" : "Disabled", enabled ? Severity.Pass : Severity.Warning), new Cell(result.Length > 0 ? result : "—", sev),
+                table.Add(name, type, new Cell(manual ? "Manual" : enabled ? "Scheduled" : "Disabled", manual ? Severity.Info : enabled ? Severity.Pass : Severity.Warning), new Cell(result.Length > 0 ? result : "—", sev),
                     J.FormatDateTime(lastEnd), points.HasValue ? points.Value + (newest.HasValue ? ", newest " + J.FormatDate(newest) : "") : "");
                 if (copy) copies.Add(name + (result.Length > 0 ? " (" + result.ToLowerInvariant() + ")" : ""));
                 if (Regex.IsMatch(J.Str(j, "Repository"), "cloud|wasabi|s3|azure|offsite|b2|backblaze|immutable|hardened", RegexOptions.IgnoreCase))
                     copies.Add(name + " to repository " + J.Str(j, "Repository"));
 
-                if (!enabled && !copy)
+                if (copy && J.Bool(j, "ScheduleEnabled") == true && newest.HasValue && DaysSince(newest) > 7)
+                    Add("veeam-copy-age-" + name, Severity.Warning, "Backups", "Veeam backup copy \"" + name + "\" has no copy newer than " + DaysSince(newest) + " days",
+                        "Newest copy " + J.FormatDateTime(newest) + ". Expected if its source job only runs manually; otherwise the copy has stopped. Check the job in the Veeam console.");
+                if (!enabled && !copy && !manual)
                     Add("veeam-disabled-" + name, Severity.Warning, "Backups", "Veeam job \"" + name + "\" is not scheduled", "The job's schedule is disabled, so it only runs manually.");
-                if (veeamJobs.Any(v => string.Equals(v.Job, name, StringComparison.OrdinalIgnoreCase))) continue; // already judged from event 190
+                if (manual || veeamJobs.Any(v => string.Equals(v.Job, name, StringComparison.OrdinalIgnoreCase))) continue; // manual, or already judged from event 190
                 if (result != "Success" && result != "Warning" && result != "Failed") continue;
                 DateTime? lastSuccess = result == "Success" ? (lastEnd ?? newest) : newest;
                 veeamJobs.Add(new JobSummary { Product = "Veeam B&R", Job = name, LastResult = result, LastRun = lastEnd, LastSuccess = lastSuccess, Runs = 1, Failed = result == "Failed" ? 1 : 0 });
@@ -392,7 +458,7 @@ namespace PolarniteAudit
                 DateTime? exp = J.Date(lic, "ExpirationDate"), support = J.Date(lic, "SupportExpirationDate");
                 int days = exp.HasValue ? (int)Math.Floor((exp.Value - now).TotalDays) : int.MaxValue;
                 if (exp.HasValue && days < 0) Add("veeam-license", Severity.Critical, "Backups", "Veeam licence expired " + J.FormatDate(exp), "Jobs stop running when the licence expires. Renew it in the Veeam portal.");
-                else if (exp.HasValue && days <= 30) Add("veeam-license", Severity.Warning, "Backups", "Veeam licence expires in " + J.Plural(days, "day", "days"), "Expires " + J.FormatDate(exp) + ". Renew it before jobs stop.");
+                else if (exp.HasValue && days <= 60) Add("veeam-license", Severity.Warning, "Backups", "Veeam licence expires in " + J.Plural(days, "day", "days"), "Expires " + J.FormatDate(exp) + ". Renew it before jobs stop.");
                 if (support.HasValue && support.Value < now) Add("veeam-support", Severity.Warning, "Backups", "Veeam support contract expired " + J.FormatDate(support), "Without support the server cannot be updated to new Veeam releases.");
             }
         }

@@ -482,7 +482,7 @@ namespace PolarniteAudit
                     lvSnapshot.Items.Add(item);
                 }
                 lblCounts.Text = analysis.Count(Severity.Critical) + " critical   ·   " + analysis.Count(Severity.Warning) + " warnings   ·   " +
-                                 analysis.Count(Severity.Info) + " info   ·   " + analysis.Count(Severity.Pass) + " passed" +
+                                 analysis.Count(Severity.Info) + " best practice   ·   " + analysis.Count(Severity.Pass) + " passed" +
                                  (analysis.Coverage.Rows.Count > 0 ? "   ·   " + analysis.Coverage.Rows.Count + " checks without data" : "");
                 FillFindings();
                 FillManual();

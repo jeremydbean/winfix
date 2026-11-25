@@ -223,8 +223,8 @@ namespace PolarniteAudit
             int issues = items.Count(i => d.Answer(i.Id).Status == ManualCatalog.Issue);
             var cards = new[]
             {
-                new { Value = a.Count(Severity.Critical).ToString(CultureInfo.InvariantCulture), Label = "Critical", Sub = a.PreviousCritical >= 0 ? "was " + a.PreviousCritical + " last audit" : "need action now", Sev = Severity.Critical },
-                new { Value = a.Count(Severity.Warning).ToString(CultureInfo.InvariantCulture), Label = "Warnings", Sub = a.PreviousWarning >= 0 ? "was " + a.PreviousWarning + " last audit" : "review this month", Sev = Severity.Warning },
+                new { Value = a.Count(Severity.Critical).ToString(CultureInfo.InvariantCulture), Label = "Critical", Sub = "need a ticket" + (a.PreviousCritical >= 0 ? " · was " + a.PreviousCritical : ""), Sev = Severity.Critical },
+                new { Value = a.Count(Severity.Warning).ToString(CultureInfo.InvariantCulture), Label = "Warnings", Sub = "noted, no ticket" + (a.PreviousWarning >= 0 ? " · was " + a.PreviousWarning : ""), Sev = Severity.Warning },
                 new { Value = a.Count(Severity.Pass).ToString(CultureInfo.InvariantCulture), Label = "Passed", Sub = "checks healthy", Sev = Severity.Pass },
                 new { Value = answered + "/" + items.Count, Label = "Manual checks", Sub = issues > 0 ? J.Plural(issues, "issue", "issues") + " noted" : "verified by technician", Sev = Severity.Info },
             };
@@ -262,21 +262,26 @@ namespace PolarniteAudit
             }
             y += boxH + 22;
 
-            // Priority actions
-            var priority = a.Findings.Where(f => f.Severity == Severity.Critical || f.Severity == Severity.Warning).Take(7).ToList();
-            var manualIssues = items.Where(i => d.Answer(i.Id).Status == ManualCatalog.Issue).ToList();
-            if (priority.Count > 0 || manualIssues.Count > 0)
+            // Needs a ticket: every critical finding and every manual check marked "Issue found".
+            var ticket = a.Findings.Where(f => f.Severity == Severity.Critical).ToList();
+            var manualIssues = items.Where(i => d.Answer(i.Id).Status == ManualCatalog.Issue && !d.Answer(i.Id).AutoSet).ToList(); // auto-filled issues already appear as findings
+            Ensure(60);
+            pdf.Text(M, y + 10, "Needs a ticket", PdfFont.Bold, 12.5, Ink);
+            y += 24;
+            if (ticket.Count == 0 && manualIssues.Count == 0)
+                Paragraph("Nothing needs a fix ticket this month.", PdfFont.Regular, 9.6, 13, Ink, M, CW);
+            int n = 0;
+            foreach (Finding f in ticket.Take(10)) PriorityRow(++n, f.Severity, f.Title, f.Detail);
+            foreach (var i in manualIssues) PriorityRow(++n, Severity.Critical, i.Title, d.Answer(i.Id).Notes);
+            if (ticket.Count > 10) { y += 2; Paragraph("+ " + J.Plural(ticket.Count - 10, "more critical item", "more critical items") + " in Findings.", PdfFont.Italic, 8.8, 12, Muted, M + 26, CW - 26); }
+            int warnings = a.Count(Severity.Warning), practice = a.Count(Severity.Info);
+            if (warnings + practice > 0)
             {
-                Ensure(60);
-                pdf.Text(M, y + 10, "Priority actions", PdfFont.Bold, 12.5, Ink);
-                y += 24;
-                int n = 0;
-                foreach (Finding f in priority) PriorityRow(++n, f.Severity, f.Title, f.Detail);
-                foreach (var i in manualIssues) PriorityRow(++n, Severity.Warning, i.Title, d.Answer(i.Id).Notes);
-                int remaining = a.Findings.Count(f => f.Severity == Severity.Critical || f.Severity == Severity.Warning) - priority.Count;
-                if (remaining > 0) { y += 2; Paragraph("+ " + J.Plural(remaining, "more item", "more items") + " in Findings.", PdfFont.Italic, 8.8, 12, Muted, M + 26, CW - 26); }
-                y += 12;
+                y += 4;
+                Paragraph(J.Plural(warnings, "warning", "warnings") + " and " + J.Plural(practice, "best-practice recommendation", "best-practice recommendations") +
+                    " are listed under Findings. They are noted for the record and do not need a ticket.", PdfFont.Italic, 8.8, 12, Muted, M, CW);
             }
+            y += 12;
 
             // Snapshot
             Ensure(80);
@@ -289,10 +294,11 @@ namespace PolarniteAudit
         {
             int crit = a.Count(Severity.Critical), warn = a.Count(Severity.Warning), pass = a.Count(Severity.Pass);
             string s = a.ServerName + (string.IsNullOrEmpty(a.OsName) ? "" : " (" + a.OsName + ")") + " was audited on " + J.FormatDate(a.AuditTime) + ". ";
-            s += "The automated checks found " + J.Plural(crit, "critical issue", "critical issues") + " and " + J.Plural(warn, "warning", "warnings") + ", with " + pass + " checks passing. ";
+            s += "The automated checks found " + J.Plural(crit, "critical issue", "critical issues") + " that need a ticket, " + J.Plural(warn, "warning", "warnings") + " to note and " +
+                 J.Plural(a.Count(Severity.Info), "best-practice recommendation", "best-practice recommendations") + ", with " + pass + " checks passing. ";
             var critical = a.Findings.Where(f => f.Severity == Severity.Critical).Select(f => f.Title).Take(3).ToList();
             if (crit > 0) s += "Most urgent: " + string.Join("; ", critical.ToArray()) + ". ";
-            else if (warn > 0) s += "There are no critical issues; the warnings below should be addressed during normal maintenance. ";
+            else if (warn > 0) s += "Nothing needs a ticket; the warnings are noted for normal maintenance. ";
             else s += "No issues requiring action were found. ";
             if (a.PreviousAuditTime.HasValue)
                 s += "Since the last audit (" + J.FormatDate(a.PreviousAuditTime) + "), " + J.Plural(a.Resolved.Count, "issue was", "issues were") + " resolved and " +
@@ -332,7 +338,17 @@ namespace PolarniteAudit
             SectionHeading("Findings", issues.Count == 0
                 ? "No issues were found by the automated checks."
                 : J.Plural(issues.Count, "item", "items") + " from the automated checks, most severe first. Technician notes are shown in blue.");
-            foreach (Finding f in issues) FindingCard(f);
+            Severity? group = null;
+            foreach (Finding f in issues)
+            {
+                if (group != f.Severity)
+                {
+                    group = f.Severity;
+                    y += 4;
+                    SubHeading(f.Severity == Severity.Critical ? "Critical: open a ticket" : f.Severity == Severity.Warning ? "Warnings: noted, no ticket" : f.Severity == Severity.Info ? "Best practice: recommendations" : "Not checked");
+                }
+                FindingCard(f);
+            }
 
             var passed = a.Findings.Where(f => f.Severity == Severity.Pass).ToList();
             if (passed.Count > 0)

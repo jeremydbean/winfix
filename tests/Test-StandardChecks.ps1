@@ -114,6 +114,23 @@ foreach ($case in $lineCases) {
     if (-not $case.Day -and $r.Time) { throw "Log line without a date produced a time: $($case.Text)" }
 }
 
+# Real Synology Active Backup for Business agent lines (agent 3.1.2, Windows Server 2012 R2, PowerShell 4).
+$fileTime = [datetime]'2026-11-25 15:30'
+$abbCases = @(
+    @{ Text="Nov 21 03:59:27 -0500 [INFO] backup-job.cpp (1418): in backup routine, has_fail_volume '0', miss_custome_volume '0', system_volume_excluded '0'"; Kind='Success'; Day=21 },
+    @{ Text="Nov 21 03:00:09 -0500 [INFO] backup-job.cpp (995): Prepare snapshot job"; Kind='Start'; Day=21 },
+    @{ Text="Nov 14 03:48:47 -0500 [INFO] backup-job.cpp (1418): in backup routine, has_fail_volume '1', miss_custome_volume '0', system_volume_excluded '0'"; Kind='FailedVolumes'; Day=14 },
+    @{ Text="Nov 20 15:17:53 -0500 [ERROR] protocol-client.cpp (195): Failed to receive message header. (code: -2)"; Kind='ConnectionError'; Day=20 },
+    @{ Text="Dec 30 23:00:00 -0500 [INFO] backup-job.cpp (1418): in backup routine, has_fail_volume '0'"; Kind='Success'; Day=30; Year=2025 }
+)
+foreach ($case in $abbCases) {
+    $r = ConvertFrom-AuditAbbLogLine -Text $case.Text -FileTime $fileTime
+    if (-not $r -or $r.Kind -ne $case.Kind -or $r.Time.Day -ne $case.Day) { throw "ABB line not parsed as $($case.Kind): $($case.Text)" }
+    if ($case.Year -and $r.Time.Year -ne $case.Year) { throw 'ABB line from last December must get the previous year.' }
+}
+$noise = 'Nov 23 17:03:13 -0500 [INFO] auth-handler.cpp (550): send request ''{"_agent": {"version": {"build": "5059", "major": 3, "mini": 1, "minor": 2}}, "action": "success"}'''
+if (ConvertFrom-AuditAbbLogLine -Text $noise -FileTime $fileTime) { throw 'Status-ping lines must not count as backup results.' }
+
 foreach ($name in @('DefenderThreats', 'BackupJobResults', 'AgentActivity', 'CertificateExpiry', 'Activation', 'LAPS', 'SecurityHardening',
         'KeyServices', 'HardwareVendorHealth', 'HardwareEvents', 'ADHygiene', 'DCDiag', 'ReplicationSummary', 'ExternalExposure',
         'ClientPlatform', 'SynologyActiveBackup', 'VeeamServerJobs', 'OneDriveActivity', 'ServerRoles')) {
@@ -128,4 +145,4 @@ if (-not $veeam -or $veeam.Clauses[0].Item2.Extent.Text -notmatch 'VeeamServerJo
 $client = $ast.Find({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq '$checks.ClientPlatform' }, $true)
 if ($client.Extent.Text -match "Get-ItemProperty[^
 ]*'DefaultPassword'") { throw 'ClientPlatform must not read the auto sign-in password value.' }
-Write-Host 'PASS: OpenManage/ssacli/Veeam/powercfg/log-line parsers and collector 1.13/1.14 check registration.'
+Write-Host 'PASS: OpenManage/ssacli/Veeam/powercfg/log-line/Active Backup parsers and collector 1.13-1.15 check registration.'

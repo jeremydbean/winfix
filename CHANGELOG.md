@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-11-25 — collector 1.15: checked against real Veeam and Synology servers
+- Synology Active Backup for Business: the agent rotates `log.txt_0 … log.txt_N` and writes `Nov 21 03:59:27 -0500` timestamps without a year; most lines are once-a-minute status calls. The collector now reads backup runs from `backup-job.cpp` lines (start, `in backup routine, has_fail_volume 'N'`), backup ERROR lines and NAS connection errors (`ConvertFrom-AuditAbbLogLine`), across the newest 40 log files. The app learns the usual interval from past runs (weekly schedules are not flagged) and auto-answers the backup checks.
+- Veeam Backup & Replication 12.2: confirmed `Get-VBRJob`, restore points, repositories and licence on a live server. Jobs set to run manually are no longer flagged as stale; backup copy jobs with no new copy in 7 days are a warning; licence expiry warns 60 days ahead.
+- Findings are rated **Critical** (needs a fix ticket), **Warning** (noted, no ticket) or **Best practice** (no ticket). The report cover and email list everything that needs a ticket first. Hygiene items such as krbtgt age, lockout policy, NTLM level, BitLocker and Print Spooler on a DC are now Best practice.
+- Removed the "Test restore performed" manual check.
+
 ## 2026-11-25 — collector 1.14 and app renamed to Polarnite Server Audit Tool
 - The app is now `app/dist/PolarniteServerAuditTool.exe` ("Polarnite Server Audit Tool"). On first run it moves `C:\ProgramData\WinFixAudit` to `C:\ProgramData\PolarniteServerAudit` and replaces the `\WinFix\Monthly Server Audit` task with `\Polarnite\Monthly Server Audit`. The test override variable is now `POLARNITE_AUDIT_DATA`.
 - Windows 10/11 used as a server: new `ClientPlatform` check (sleep/hibernate on AC, fast startup, automatic sign-in with the stored-password flag read by value name only, UAC, paused/deferred updates, TPM spec version). `ServerRoles` uses optional features on client Windows. The app adds LTSC support dates, Extended Security Updates licence detection (auto-answers the OS entitlement check), Home edition and Windows 11 readiness.

@@ -507,13 +507,21 @@ namespace PolarniteAudit
                 lines.Add("Windows Server Backup last success " + J.FormatDateTime(wsbLastSuccess));
                 if (!wsbLastSuccess.HasValue || DaysSince(wsbLastSuccess) > 2) backupOk = false;
             }
+            if (abbLine != null)
+            {
+                lines.Add(abbLine);
+                if (!abbHealthy) backupOk = false;
+            }
             if (lines.Count > 0)
             {
-                Auto("backup_last_success", backupOk ? ManualCatalog.Pass : ManualCatalog.Issue, string.Join("; ", lines.ToArray()) + ". Confirm offsite copies in the console.");
-                if (veeamJobs.Count > 0)
-                    Auto("backup_failures", failuresOpen ? ManualCatalog.Issue : ManualCatalog.Pass, failuresOpen
-                        ? "a Veeam job's most recent run failed (" + string.Join(", ", veeamJobs.Where(j => j.LastResult == "Failed").Select(j => j.Job).ToArray()) + ")."
-                        : (failedRuns == 0 ? "no failed Veeam runs in 30 days." : failedRuns + " failed Veeam run(s) in 30 days, each followed by a successful run."));
+                Auto("backup_last_success", backupOk ? ManualCatalog.Pass : ManualCatalog.Issue, string.Join("; ", lines.ToArray()) + ".");
+                var open = new List<string>();
+                if (failuresOpen) open.Add("Veeam " + string.Join(", ", veeamJobs.Where(j => j.LastResult == "Failed").Select(j => "\"" + j.Job + "\"").ToArray()) + " failed on its last run");
+                if (abbFailureOpen) open.Add("Synology Active Backup's last run failed");
+                if (veeamJobs.Count > 0 || abbLine != null)
+                    Auto("backup_failures", open.Count > 0 ? ManualCatalog.Issue : ManualCatalog.Pass, open.Count > 0
+                        ? string.Join("; ", open.ToArray()) + "."
+                        : (veeamJobs.Count > 0 && failedRuns > 0 ? failedRuns + " failed Veeam run(s) in 30 days, each followed by a successful run." : "the latest run of every backup job succeeded."));
             }
 
             // Hardware: vendor tools, or virtual machine.

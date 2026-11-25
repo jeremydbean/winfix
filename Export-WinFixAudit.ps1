@@ -568,7 +568,7 @@ function Save-AuditCheckpoint {
     if ($script:checkpointPath) {
         $tempPath = $script:checkpointPath + '.tmp'
         try {
-            $snapshot = [ordered]@{ SchemaVersion='1.14'; AuditId=$script:auditId; Incomplete=$true
+            $snapshot = [ordered]@{ SchemaVersion='1.15'; AuditId=$script:auditId; Incomplete=$true
                 SavedAt=(Get-Date).ToString('o'); ClientName=$ClientName; Location=$Location; Elevated=$elevated
                 Checks=$script:checks; DeepAuditRequested=[bool]$DeepAudit; ExportWarnings=@($script:checkpointWarnings) }
             $checkpointJson = ConvertTo-AuditJson -InputObject $snapshot
@@ -822,6 +822,27 @@ function ConvertFrom-AuditBackupLogLine {
     elseif ($clean -match '(?i)\b(succe(ss|eded|ssful(ly)?)|completed?|finished)\b') { $outcome='Success' }
     [pscustomobject]@{ Time=$time; Outcome=$outcome }
 }
+function ConvertFrom-AuditAbbLogLine {
+    # Synology Active Backup for Business agent log line, for example
+    #   Nov 21 03:59:27 -0500 [INFO] backup-job.cpp (1418): in backup routine, has_fail_volume '0', ...
+    # The agent writes no year, so it is taken from the log file's last write time.
+    # Returns $null for lines that say nothing about backups (most lines are once-a-minute status calls).
+    param([string]$Text, [datetime]$FileTime)
+    if ([string]$Text -notmatch '^(?<mon>[A-Z][a-z]{2}) +(?<dy>\d{1,2}) (?<hms>\d{2}:\d{2}:\d{2})(?: [+-]\d{4})? \[(?<lvl>\w+)\] (?<src>[\w.-]+)') { return }
+    $mon=$Matches.mon; $dy=$Matches.dy; $hms=$Matches.hms; $lvl=$Matches.lvl; $src=$Matches.src
+    $kind=$null
+    if ($Text -match "in backup routine, has_fail_volume '(\d+)'") { $kind=$(if ($Matches[1] -eq '0') { 'Success' } else { 'FailedVolumes' }) }
+    elseif ($src -eq 'backup-job.cpp' -and $Text -match 'Prepare snapshot job') { $kind='Start' }
+    elseif ($lvl -eq 'ERROR' -and $src -match '^(backup|snapshot|volume|cbt)') { $kind='BackupError' }
+    elseif ($lvl -eq 'ERROR' -and $src -match '^(protocol-client|conn-finder|server-requester|auth-handler)\.') { $kind='ConnectionError' }
+    if (-not $kind) { return }
+    $time=$null
+    try { $time=[datetime]::ParseExact(('{0} {1} {2} {3}' -f $mon, $dy, $FileTime.Year, $hms), 'MMM d yyyy HH:mm:ss', [Globalization.CultureInfo]::InvariantCulture) } catch { return }
+    if ($time -gt $FileTime.AddDays(2)) { $time=$time.AddYears(-1) }
+    $detail=$null
+    if ($kind -eq 'FailedVolumes' -or $kind -eq 'BackupError') { $detail=([string]$Text).Substring(0, [math]::Min(300, ([string]$Text).Length)) }
+    [pscustomobject]@{ Time=$time; Kind=$kind; Source=$src; Text=$detail }
+}
 function Assert-AuditLocalMetadataPath {
     param([string]$Path)
     $provider=$null; $drive=$null
@@ -1015,7 +1036,7 @@ $OutputDirectory = Initialize-AuditOutputDirectory -Path $OutputDirectory
 $prefix = 'WinFixAudit-' + $env:COMPUTERNAME + '-' + $started.ToString('yyyyMMdd-HHmmss')
 $script:checkpointPath = Join-Path $OutputDirectory "$prefix-PARTIAL.json"
 $BackupPattern = 'Synology (Drive|Active Backup)|cloud.?drive|Veeam|Acronis|Macrium|Datto|Carbonite|Veritas|CrashPlan|\bCove\b|Axcient|Rubrik|Backup|StorageCraft|ShadowProtect|Arcserve|MSP360|CloudBerry|Druva|Commvault|NAKIVO|Retrospect|UrBackup|Duplicati|Duplicacy|Restic|rclone|IDrive|Backblaze|GoodSync|SyncBack|EaseUS|AOMEI|OneDrive'
-Write-Host "WinFix audit 1.14. Completed checks are saved to $script:checkpointPath"
+Write-Host "WinFix audit 1.15. Completed checks are saved to $script:checkpointPath"
 if (-not $elevated) { Write-Warning 'Run ISE as Administrator for the fullest audit.' }
 Save-AuditCheckpoint
 $checks.System = Invoke-AuditCheck System {
@@ -1820,11 +1841,10 @@ $checks.ClientPlatform = Invoke-AuditCheck ClientPlatform -TimeoutSeconds 90 -Co
         TpmSpecVersion=$tpmSpec
         Coverage='Registry and powercfg values only. Power values are seconds (0 = never) for the active power plan. The auto sign-in password is detected by value name only and never read.' }
 }
-$checks.SynologyActiveBackup = Invoke-AuditCheck SynologyActiveBackup -TimeoutSeconds 90 -Context @{
-    TailCode=${function:Read-AuditVeeamLog}.ToString(); LineCode=${function:ConvertFrom-AuditBackupLogLine}.ToString()
+$checks.SynologyActiveBackup = Invoke-AuditCheck SynologyActiveBackup -TimeoutSeconds 120 -Context @{
+    LineCode=${function:ConvertFrom-AuditAbbLogLine}.ToString()
 } -Collect {
-    Set-Item Function:Read-AuditVeeamLog ([scriptblock]::Create($TailCode))
-    Set-Item Function:ConvertFrom-AuditBackupLogLine ([scriptblock]::Create($LineCode))
+    Set-Item Function:ConvertFrom-AuditAbbLogLine ([scriptblock]::Create($LineCode))
     $services=@(Get-CimInstance Win32_Service | Where-Object { "$($_.Name) $($_.DisplayName)" -match '(?i)active ?backup' })
     $roots=New-Object 'Collections.Generic.List[string]'
     foreach ($s in $services) {
@@ -1832,45 +1852,56 @@ $checks.SynologyActiveBackup = Invoke-AuditCheck SynologyActiveBackup -TimeoutSe
         if ($exe -match '^\s*"([^"]+)"') { $exe=$Matches[1] } elseif ($exe -match '^\s*(\S+\.exe)') { $exe=$Matches[1] } else { $exe=$null }
         if ($exe) {
             $dir=Split-Path -Parent $exe
-            if ($dir) { $roots.Add($dir); if ((Split-Path -Leaf $dir) -match '^(bin|x64|x86)$') { $roots.Add((Split-Path -Parent $dir)) } }
+            if ($dir) { $roots.Add($dir); if ((Split-Path -Leaf $dir) -match '^(bin|x64|x86|service)$') { $roots.Add((Split-Path -Parent $dir)) } }
         }
     }
     $bases=@($env:ProgramData, $env:ProgramFiles, ${env:ProgramFiles(x86)},
         (Join-Path $env:SystemRoot 'System32\config\systemprofile\AppData\Local'), (Join-Path $env:SystemRoot 'System32\config\systemprofile\AppData\Roaming'))
     foreach ($base in $bases) {
         if (-not $base -or -not [IO.Directory]::Exists($base)) { continue }
-        foreach ($d in @(Get-ChildItem -LiteralPath $base -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -match '(?i)synology|active ?backup' })) {
+        foreach ($d in @(Get-ChildItem -LiteralPath $base -ErrorAction SilentlyContinue | Where-Object { $_.PSIsContainer -and $_.Name -match '(?i)synology|active ?backup' })) {
             if ($d.Name -match '(?i)active ?backup') { $roots.Add($d.FullName) }
-            foreach ($child in @(Get-ChildItem -LiteralPath $d.FullName -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -match '(?i)active ?backup' })) { $roots.Add($child.FullName) }
+            foreach ($child in @(Get-ChildItem -LiteralPath $d.FullName -ErrorAction SilentlyContinue | Where-Object { $_.PSIsContainer -and $_.Name -match '(?i)active ?backup' })) { $roots.Add($child.FullName) }
         }
     }
     $uniqueRoots=@($roots | Where-Object { $_ } | Sort-Object -Unique | Select-Object -First 6)
     if (-not $services.Count -and -not $uniqueRoots.Count) {
         [pscustomobject]@{ RecordType='Summary'; Installed=$false; Coverage='No Active Backup for Business agent service or folder found.' }; return
     }
+    # Agent logs rotate as log.txt, log.txt_0, log.txt_1 ... (about 1 MB each). The log-ui folder is the tray app.
     $logs=New-Object 'Collections.Generic.List[object]'; $scanned=0
     foreach ($root in $uniqueRoots) {
         try {
             foreach ($f in [IO.Directory]::EnumerateFiles($root, '*', [IO.SearchOption]::AllDirectories)) {
                 $scanned++; if ($scanned -gt 3000) { break }
-                if ($f -match '(?i)\.(log|txt)(\.\d+)?$') { $logs.Add((New-Object IO.FileInfo $f)) }
+                if ($f -match '(?i)\\log-ui\\') { continue }
+                if ($f -match '(?i)\.(log|txt)([._]\d+)?$') { $logs.Add((New-Object IO.FileInfo $f)) }
             }
         } catch { }
+    }
+    $recent=@($logs | Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 40)
+    $events=New-Object 'Collections.Generic.List[object]'; $unreadable=0
+    foreach ($f in $recent) {
+        try {
+            foreach ($hit in @(Select-String -LiteralPath $f.FullName -Pattern 'backup-job\.cpp|in backup routine|\[ERROR\]' -ErrorAction Stop)) {
+                $e=ConvertFrom-AuditAbbLogLine -Text $hit.Line -FileTime $f.LastWriteTime
+                if ($e) { $events.Add($e) }
+            }
+        } catch { $unreadable++ }
     }
     $connections=@()
     try { $connections=@(Get-NetTCPConnection -State Established -RemotePort 5510 -ErrorAction Stop | Select-Object -First 5 RemoteAddress, RemotePort, OwningProcess) } catch { }
     [pscustomobject]@{ RecordType='Summary'; Installed=$true
         Services=@($services | Select-Object Name, DisplayName, State, StartMode); Roots=$uniqueRoots
-        LogFilesFound=$logs.Count; FilesScanned=$scanned; FileScanTruncated=($scanned -gt 3000); NasConnections=$connections
-        Coverage='Agent-side evidence: service state, the newest agent log files with outcome lines parsed best-effort, and established connections on TCP 5510 (the agent''s NAS port). Task status, retention and restore points are in Active Backup for Business on the NAS.' }
-    foreach ($f in @($logs | Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 3)) {
-        $r=Read-AuditVeeamLog -Path $f.FullName -MaxLines 40 -MatchPattern '(?i)\b(backup|fail(ed|ure)?|error|succe(ss|eded|ssful)|completed?|finished|cancel(l?ed)?|partial|abort(ed)?)\b'
-        $lines=@(foreach ($l in @($r.Lines)) {
-            if ($l.Text -match '(?i)password|passwd|token|authorization|bearer|cookie|credential') { continue }
-            $p=ConvertFrom-AuditBackupLogLine $l.Text
-            [pscustomobject]@{ Text=$l.Text; Time=$p.Time; Outcome=$p.Outcome }
-        })
-        [pscustomobject]@{ RecordType='Log'; Path=$f.FullName; LastWriteTime=$f.LastWriteTime; Length=$f.Length; Status=$r.Status; Lines=$lines }
+        LogFilesFound=$logs.Count; LogFilesRead=$recent.Count; LogFilesUnreadable=$unreadable; FilesScanned=$scanned; FileScanTruncated=($scanned -gt 3000)
+        NewestLogTime=$(if ($recent.Count) { $recent[0].LastWriteTime }); OldestLogTime=$(if ($recent.Count) { $recent[-1].LastWriteTime })
+        NasConnections=$connections
+        Coverage='Agent-side evidence: service state, backup start/finish lines from backup-job.cpp ("in backup routine, has_fail_volume") and ERROR lines from the newest 40 agent log files, and established connections on TCP 5510. Retention and restore points are in Active Backup for Business on the NAS.' }
+    foreach ($e in @($events | Where-Object { $_.Kind -ne 'ConnectionError' } | Sort-Object Time | Select-Object -Last 150)) {
+        [pscustomobject]@{ RecordType='Event'; Time=$e.Time; Kind=$e.Kind; Source=$e.Source; Text=$e.Text }
+    }
+    foreach ($g in @($events | Where-Object { $_.Kind -eq 'ConnectionError' } | Group-Object { $_.Time.ToString('yyyy-MM-dd') })) {
+        [pscustomobject]@{ RecordType='ConnectionErrors'; Day=[datetime]::ParseExact($g.Name, 'yyyy-MM-dd', [Globalization.CultureInfo]::InvariantCulture); Count=$g.Count }
     }
 }
 if (Test-Path 'HKLM:\SOFTWARE\Veeam\Veeam Backup and Replication') {
@@ -1889,8 +1920,9 @@ if (Test-Path 'HKLM:\SOFTWARE\Veeam\Veeam Backup and Replication') {
                 if ($b) { $rp=@(Get-VBRRestorePoint -Backup $b -WarningAction SilentlyContinue); $points=$rp.Count; $newest=($rp | Sort-Object CreationTime -Descending | Select-Object -First 1).CreationTime }
             } catch { }
             $result=$null; try { $result=[string]$job.GetLastResult() } catch { }
+            $manual=$null; try { $manual=[bool]$job.Options.JobOptions.RunManually } catch { }
             [pscustomobject]@{ RecordType='Job'; Name=$job.Name; JobType=[string]$job.JobType; TypeText=[string]$job.TypeToString
-                ScheduleEnabled=[bool]$job.IsScheduleEnabled; LastResult=$result
+                ScheduleEnabled=[bool]$job.IsScheduleEnabled; RunManually=$manual; LastResult=$result
                 LastStart=$(if ($last) { $last.CreationTime }); LastEnd=$(if ($last) { $last.EndTime })
                 Repository=$repo; RestorePoints=$points; NewestRestorePoint=$newest }
         }
@@ -2188,7 +2220,7 @@ $checks.ExternalEvidence = Invoke-AuditCheck ExternalEvidence -Context @{
     Read-ExternalEvidence -Path $EvidencePath -Template $Template
 }
 $report = [ordered]@{
-    SchemaVersion = '1.14'; AuditId = $script:auditId; Incomplete = $false; ClientName = $ClientName; Location = $Location
+    SchemaVersion = '1.15'; AuditId = $script:auditId; Incomplete = $false; ClientName = $ClientName; Location = $Location
     StartedAt = $started.ToString('o'); CompletedAt = (Get-Date).ToString('o'); Elevated = $elevated
     PowerShellVersion = $PSVersionTable.PSVersion.ToString(); Checks = $checks
     ExportWarnings = @($script:checkpointWarnings)
