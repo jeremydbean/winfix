@@ -1,5 +1,8 @@
 # Changelog
 
+## 2026-11-25 - fix: NinjaOne fields read as empty
+- ninjarmm-cli writes straight to the console unless given --direct-out, so the app captured nothing and reported the smtp2go fields as empty although NinjaOne had values (confirmed on FLF-SERVER). The app now calls it with --direct-out and retries without it for older agents.
+
 ## 2026-11-25 - SMTP login checked before sending
 - With SMTP2GO the app no longer tries to send without a username and password (the server answered 'relay access denied'). Submit and the status next to it now say what is missing and why: no NinjaOne agent on this computer, the field is empty, or it could not be read. Empty field values are re-read after a minute and on Submit, so values filled in NinjaOne are picked up without restarting. Login failures from the server get a plain explanation. New --mail-check <file> reports whether email is ready without sending.
 

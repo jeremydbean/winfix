@@ -70,29 +70,51 @@ namespace PolarniteAudit
             if (!AgentPresent) { why = "the NinjaOne agent is not installed on this computer, so the NinjaOne field " + name + " can't be read"; return ""; }
             try
             {
-                var psi = new ProcessStartInfo(CliPath, "get " + name)
+                // ninjarmm-cli writes to the console (WriteConsoleW) unless told otherwise, so captured output is
+                // empty; --direct-out makes it use stdout. Agents too old for that option get a plain retry.
+                int exit; string text, err;
+                if (!Run("--direct-out get " + name, out exit, out text, out err)) { why = "reading the NinjaOne field " + name + " timed out"; return ""; }
+                if (exit != 0 && !IsFieldError(text))
                 {
-                    UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true
-                };
-                using (Process p = Process.Start(psi))
-                {
-                    var stdout = p.StandardOutput.ReadToEndAsync();
-                    var stderr = p.StandardError.ReadToEndAsync();
-                    if (!p.WaitForExit(15000)) { try { p.Kill(); } catch { } Log.Write("NinjaOne field " + name + ": ninjarmm-cli timed out."); why = "reading the NinjaOne field " + name + " timed out"; return ""; }
-                    string text = (stdout.Result ?? "").Trim();
-                    if (p.ExitCode != 0 || text.StartsWith("Access to requested", StringComparison.OrdinalIgnoreCase) || text.StartsWith("Error", StringComparison.OrdinalIgnoreCase))
-                    {
-                        string detail = (text.Length > 0 ? text : (stderr.Result ?? "").Trim()).Split('\n')[0].Trim();
-                        if (detail.Length > 120) detail = detail.Substring(0, 120);
-                        Log.Write("NinjaOne field " + name + " not read (exit " + p.ExitCode + "): " + detail);
-                        why = "the NinjaOne field " + name + " couldn't be read" + (detail.Length > 0 ? " (" + detail + ")" : " (exit code " + p.ExitCode + ")");
-                        return "";
-                    }
-                    if (text.Length == 0) why = "the NinjaOne field " + name + " is empty in NinjaOne (Dashboard > Custom > Default fields)";
-                    return text;
+                    if (!Run("get " + name, out exit, out text, out err)) { why = "reading the NinjaOne field " + name + " timed out"; return ""; }
                 }
+                if (exit != 0 || IsFieldError(text))
+                {
+                    string detail = (text.Length > 0 ? text : err).Split('\n')[0].Trim();
+                    if (detail.Length > 120) detail = detail.Substring(0, 120);
+                    Log.Write("NinjaOne field " + name + " not read (exit " + exit + "): " + detail);
+                    why = "the NinjaOne field " + name + " couldn't be read" + (detail.Length > 0 ? " (" + detail + ")" : " (exit code " + exit + ")");
+                    return "";
+                }
+                if (text.Length == 0) why = "the NinjaOne field " + name + " is empty in NinjaOne (Dashboard > Custom > Default fields)";
+                return text;
             }
             catch (Exception ex) { Log.Write("NinjaOne field " + name + ": " + ex.Message); why = "the NinjaOne field " + name + " couldn't be read (" + ex.Message + ")"; return ""; }
+        }
+
+        private static bool IsFieldError(string text)
+        {
+            return text.StartsWith("Access to requested", StringComparison.OrdinalIgnoreCase) || text.StartsWith("Error", StringComparison.OrdinalIgnoreCase);
+        }
+
+        /// <summary>Runs ninjarmm-cli; false when it timed out.</summary>
+        private static bool Run(string arguments, out int exit, out string stdout, out string stderr)
+        {
+            exit = -1; stdout = ""; stderr = "";
+            var psi = new ProcessStartInfo(CliPath, arguments)
+            {
+                UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true
+            };
+            using (Process p = Process.Start(psi))
+            {
+                var o = p.StandardOutput.ReadToEndAsync();
+                var e = p.StandardError.ReadToEndAsync();
+                if (!p.WaitForExit(15000)) { try { p.Kill(); } catch { } Log.Write("ninjarmm-cli " + arguments.Split(' ')[0] + " timed out."); return false; }
+                exit = p.ExitCode;
+                stdout = (o.Result ?? "").Trim();
+                stderr = (e.Result ?? "").Trim();
+                return true;
+            }
         }
 
         /// <summary>Which shared settings came from NinjaOne, for the Settings window.</summary>
