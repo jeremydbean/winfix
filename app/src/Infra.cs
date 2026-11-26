@@ -127,6 +127,8 @@ namespace PolarniteAudit
         public string ToAddress = "support@polarnite.com";
         public string CompanyName = "Polarnite";
         public string DefaultTenant = "";
+        public string NinjaHost = Ninja.DefaultHost;
+        public string NinjaClientId = Ninja.DefaultClientId;
         public string ExpectedAgents = "Ninja, Huntress";
         public string SubjectTemplate = "Monthly Server Audit - {tenant} - {server} - {month}";
         public bool DeepAudit = false;
@@ -177,6 +179,8 @@ namespace PolarniteAudit
             s.ToAddress = Or(J.Str(o, "ToAddress"), s.ToAddress);
             s.CompanyName = Or(J.Str(o, "CompanyName"), s.CompanyName);
             s.DefaultTenant = J.Str(o, "DefaultTenant");
+            s.NinjaHost = Or(J.Str(o, "NinjaHost"), s.NinjaHost);
+            s.NinjaClientId = Or(J.Str(o, "NinjaClientId"), s.NinjaClientId);
             if (J.Get(o, "ExpectedAgents") != null) s.ExpectedAgents = J.Str(o, "ExpectedAgents");
             s.SubjectTemplate = Or(J.Str(o, "SubjectTemplate"), s.SubjectTemplate);
             s.DeepAudit = J.Bool(o, "DeepAudit") ?? false;
@@ -196,7 +200,7 @@ namespace PolarniteAudit
             {
                 { "SmtpHost", SmtpHost }, { "SmtpPort", SmtpPort }, { "SmtpStartTls", SmtpStartTls }, { "SmtpUser", SmtpUser },
                 { "SmtpPasswordProtected", SmtpPasswordProtected }, { "FromAddress", FromAddress }, { "FromName", FromName },
-                { "ToAddress", ToAddress }, { "CompanyName", CompanyName }, { "DefaultTenant", DefaultTenant },
+                { "ToAddress", ToAddress }, { "CompanyName", CompanyName }, { "DefaultTenant", DefaultTenant }, { "NinjaHost", NinjaHost }, { "NinjaClientId", NinjaClientId },
                 { "ExpectedAgents", ExpectedAgents }, { "SubjectTemplate", SubjectTemplate }, { "DeepAudit", DeepAudit },
                 { "OnlineUpdateScan", OnlineUpdateScan }, { "ExternalExposureCheck", ExternalExposureCheck }, { "ScheduleDay", ScheduleDay }, { "ScheduleTime", ScheduleTime },
                 { "KeepRunsMonths", KeepRunsMonths }, { "LastTechnician", LastTechnician }
@@ -256,7 +260,7 @@ namespace PolarniteAudit
             DraftState last = LoadLastAnswers();
             // Client name: a name a technician typed last month, else the Entra tenant, else last month's, the Settings default or the AD domain.
             if (last != null && last.TenantSource == "Technician" && !string.IsNullOrEmpty(last.Tenant)) { d.Tenant = last.Tenant; d.TenantSource = "Technician"; }
-            else if (!string.IsNullOrEmpty(a.EntraTenant)) { d.Tenant = a.EntraTenant; d.TenantSource = a.TenantSource; }
+            else if (!string.IsNullOrEmpty(a.ClientName)) { d.Tenant = a.ClientName; d.TenantSource = a.ClientNameSource; }
             else d.Tenant = !string.IsNullOrEmpty(last == null ? "" : last.Tenant) ? last.Tenant : (!string.IsNullOrEmpty(s.DefaultTenant) ? s.DefaultTenant : a.DefaultTenant);
             d.Technician = s.LastTechnician;
             if (last != null)

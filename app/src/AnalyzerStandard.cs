@@ -491,6 +491,10 @@ namespace PolarniteAudit
                 else Auto("av_detections", ManualCatalog.Pass, "no Microsoft Defender detections in the last 30 days.");
             }
 
+            // Antivirus managed through NinjaOne (for example Bitdefender), when Defender did not answer it.
+            if (ninjaAvLine != null && !a.AutoAnswers.ContainsKey("av_detections"))
+                Auto("av_detections", ninjaAvOk ? ManualCatalog.Pass : ManualCatalog.Issue, ninjaAvLine + ".");
+
             // Backups: Veeam job events and Windows Server Backup.
             var lines = new List<string>();
             bool backupOk = true, failuresOpen = false;

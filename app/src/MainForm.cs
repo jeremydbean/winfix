@@ -30,7 +30,8 @@ namespace PolarniteAudit
 
         private Label lblServer, lblSub, lblPill, lblBanner, lblProgress, lblReady, lblSubject, lblCounts, lblOverrides;
         private Button btnResetOverrides;
-        private Button btnRun, btnCancel, btnOpen, btnSettings, btnUpdate, btnPreview, btnSubmit;
+        private Button btnRun, btnCancel, btnOpen, btnSettings, btnUpdate, btnNinja, btnPreview, btnSubmit;
+        private CancellationTokenSource ninjaCts;
         private CheckBox chkDeep, chkOnline, chkShowPassed;
         private TabControl tabs;
         private TabPage tabOverview, tabFindings, tabManual, tabLog;
@@ -163,7 +164,9 @@ namespace PolarniteAudit
             chkDeep = new CheckBox { Text = "Deep audit (DC / server roles)", AutoSize = true, Margin = new Padding(18, 13, 4, 4) };
             chkOnline = new CheckBox { Text = "Online update scan", AutoSize = true, Margin = new Padding(8, 13, 4, 4) };
             btnUpdate = NewButton("Check for updates", false);
-            toolbar.Controls.AddRange(new Control[] { btnRun, btnCancel, btnOpen, btnSettings, btnUpdate, chkDeep, chkOnline });
+            btnNinja = NewButton("NinjaOne…", false);
+            toolbar.Controls.AddRange(new Control[] { btnRun, btnCancel, btnOpen, btnNinja, btnSettings, btnUpdate, chkDeep, chkOnline });
+            tips.SetToolTip(btnNinja, "Sign in to NinjaOne and pull this server's alerts, patches, antivirus, organization and warranty into the audit. Read-only; the sign-in lasts until the app closes.");
             tips.SetToolTip(btnUpdate, "This build: " + Updater.CurrentBuiltText + ". Downloads the newest version from GitHub and restarts the app.");
             tips.SetToolTip(chkDeep, "Adds AD, DNS, DHCP, certificate and storage-usage checks. Takes several minutes longer.");
             tips.SetToolTip(chkOnline, "Contacts Windows Update / WSUS for a current missing-updates list (90 s limit). Nothing is installed.");
@@ -206,6 +209,7 @@ namespace PolarniteAudit
             btnOpen.Click += (s, e) => OpenReport();
             btnSettings.Click += (s, e) => OpenSettings();
             btnUpdate.Click += (s, e) => UpdateApp();
+            btnNinja.Click += (s, e) => PullNinja(true);
             btnPreview.Click += (s, e) => PreviewPdf();
             btnSubmit.Click += (s, e) => Submit();
             UpdateEnabled();
@@ -563,6 +567,56 @@ namespace PolarniteAudit
             if (!draft.IsSubmitted) draft.ApplyAuto(analysis);
             SaveDraft();
             Populate();
+            if (persist && Ninja.SignedIn) BeginInvoke(new Action(() => PullNinja(false)));
+        }
+
+        // ------------------------------------------------------------ NinjaOne
+
+        /// <summary>Signs in if needed, then pulls this server's NinjaOne data into the audit.</summary>
+        private async void PullNinja(bool interactive)
+        {
+            if (ninjaCts != null) { ninjaCts.Cancel(); return; }   // second click while signing in = cancel
+            if (report == null || analysis == null)
+            {
+                if (interactive) MessageBox.Show(this, "Run or open an audit first.", AppInfo.Name, MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+            if (busy) return;
+            string before = lblProgress.Text;
+            ninjaCts = new CancellationTokenSource();
+            CancellationToken ct = ninjaCts.Token;
+            btnNinja.Text = "Cancel NinjaOne";
+            Action<string> status = m => { if (!IsDisposed) BeginInvoke(new Action(() => lblProgress.Text = m)); };
+            try
+            {
+                if (!Ninja.SignedIn)
+                {
+                    if (!interactive) return;
+                    string host = settings.NinjaHost, client = settings.NinjaClientId;
+                    await Task.Run(() => Ninja.SignIn(host, client, ct, status));
+                    Activate();
+                }
+                string name = analysis.ServerName;
+                string serial = J.Str(report.Check("MachineIdentity").Data.FirstOrDefault(d => J.Get(d, "SerialNumber") != null), "SerialNumber");
+                Dictionary<string, object> data = await Task.Run(() => Ninja.Fetch(name, serial, status));
+                JsonFile.Write(Ninja.SidecarPath(report.Path), data);
+                Reanalyze();
+                bool matched = J.Bool(data, "Matched") == true;
+                lblProgress.Text = matched ? "NinjaOne data added (" + J.Str(data, "MatchedBy") + ")." : "NinjaOne: " + J.Str(data, "MatchNote");
+                if (interactive && !matched) MessageBox.Show(this, J.Str(data, "MatchNote"), AppInfo.Name, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
+            catch (OperationCanceledException) { lblProgress.Text = before; }
+            catch (Exception ex)
+            {
+                Log.Write("NinjaOne: " + ex);
+                lblProgress.Text = before;
+                if (interactive) MessageBox.Show(this, "NinjaOne: " + ex.Message, AppInfo.Name, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
+            finally
+            {
+                ninjaCts.Dispose(); ninjaCts = null;
+                if (!IsDisposed) btnNinja.Text = Ninja.SignedIn ? "Refresh NinjaOne" : "NinjaOne…";
+            }
         }
 
         private void Changed()
@@ -670,6 +724,7 @@ namespace PolarniteAudit
         private void Reanalyze()
         {
             if (report == null) return;
+            report = AuditReport.Load(report.Path);   // picks up NinjaOne data saved next to it
             int row = gridFindings.FirstDisplayedScrollingRowIndex;
             analysis = Workflow.Analyze(report, settings);
             if (draft != null && !draft.IsSubmitted) draft.ApplyAuto(analysis);

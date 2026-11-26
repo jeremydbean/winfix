@@ -55,6 +55,7 @@ namespace PolarniteAudit
             {
                 if (mode == "--scheduled") return Workflow.RunScheduled();
                 if (mode == "--update") return Updater.UpdateFromCommandLine();
+                if (mode == "--ninja-test" && args.Length >= 3) return NinjaTest(args[1], args[2], args.Length >= 4 ? args[3] : "");
                 if (mode == "--render" && args.Length >= 3) return Render(args[1], args[2], args.Length >= 4 ? args[3] : null);
                 Application.EnableVisualStyles();
                 Application.SetCompatibleTextRenderingDefault(false);
@@ -92,6 +93,16 @@ namespace PolarniteAudit
                 if (mode == "") MessageBox.Show(ex.ToString(), AppInfo.Name, MessageBoxButtons.OK, MessageBoxIcon.Error);
                 return 1;
             }
+        }
+
+        /// <summary>Test: sign in through the browser, pull one device's NinjaOne data and write it as JSON.</summary>
+        private static int NinjaTest(string computerName, string outFile, string serial)
+        {
+            AppSettings s = AppSettings.Load();
+            Ninja.SignIn(s.NinjaHost, s.NinjaClientId, CancellationToken.None, m => Log.Write("NinjaOne test: " + m));
+            var data = Ninja.Fetch(computerName, serial, m => Log.Write("NinjaOne test: " + m));
+            JsonFile.Write(outFile, data);
+            return J.Bool(data, "Matched") == true ? 0 : 3;
         }
 
         /// <summary>Fills a draft the way a technician would, for test output.</summary>

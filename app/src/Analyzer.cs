@@ -51,6 +51,7 @@ namespace PolarniteAudit
             an.Accounts();
             an.Events();
             an.StandardChecks();
+            an.NinjaOne();
             an.AutoVerify();
             an.Retier();
             an.ApplyOverrides(OverrideStore.Load());

@@ -126,6 +126,7 @@ namespace PolarniteAudit
         public DateTime? StartedAt;
         public DateTime? CompletedAt;
         public bool DeepAudit;
+        public object Ninja;   // NinjaOne data saved next to the report (.ninja.json), or null
 
         public static AuditReport Load(string path)
         {
@@ -142,6 +143,12 @@ namespace PolarniteAudit
             r.StartedAt = J.Date(root, "StartedAt");
             r.CompletedAt = J.Date(root, "CompletedAt") ?? J.Date(root, "SavedAt");
             r.DeepAudit = J.Bool(root, "DeepAuditRequested") ?? false;
+            string ninja = PolarniteAudit.Ninja.SidecarPath(path);
+            if (File.Exists(ninja))
+            {
+                try { r.Ninja = J.Parse(File.ReadAllText(ninja, Encoding.UTF8)); }
+                catch (Exception ex) { Log.Write("Could not read " + ninja + ": " + ex.Message); }
+            }
             return r;
         }
 
@@ -178,6 +185,11 @@ namespace PolarniteAudit
         public bool PartOfDomain;
         public string EntraTenant = "";
         public string TenantSource = "";   // "Entra join" or "Microsoft 365 sign-in"
+        public string NinjaOrganization = "";
+
+        /// <summary>Client name for the ticket: the NinjaOne organization, else the Entra tenant.</summary>
+        public string ClientName { get { return NinjaOrganization.Length > 0 ? NinjaOrganization : EntraTenant; } }
+        public string ClientNameSource { get { return NinjaOrganization.Length > 0 ? "NinjaOne" : TenantSource; } }
         public string OsName = "";
         public string OsSupportText = "";
         public Severity OsSupportSeverity = Severity.Unknown;
@@ -208,7 +220,7 @@ namespace PolarniteAudit
         {
             get
             {
-                if (!string.IsNullOrEmpty(EntraTenant)) return EntraTenant;
+                if (!string.IsNullOrEmpty(ClientName)) return ClientName;
                 if (PartOfDomain && !string.IsNullOrEmpty(DomainName)) return DomainName;
                 return "";
             }
@@ -371,7 +383,7 @@ namespace PolarniteAudit
         public void ApplyAuto(AuditAnalysis a)
         {
             // The client name follows the Entra tenant unless a technician typed one.
-            if (TenantSource != "Technician" && !string.IsNullOrEmpty(a.EntraTenant)) { Tenant = a.EntraTenant; TenantSource = a.TenantSource; }
+            if (TenantSource != "Technician" && !string.IsNullOrEmpty(a.ClientName)) { Tenant = a.ClientName; TenantSource = a.ClientNameSource; }
             foreach (ManualItemDef item in ManualCatalog.Items)
             {
                 ManualAnswer ans = Answer(item.Id);

@@ -36,6 +36,17 @@ It needs nothing installed on the server beyond .NET Framework 4.5+ and Windows 
 
 To move a rule between tiers, edit `BestPracticeKeys` / `TicketKeys` in `src\Analyzer.cs` (or the severity where the finding is added).
 
+### NinjaOne
+
+**NinjaOne…** (toolbar) opens the NinjaOne sign-in in a browser. The technician signs in with their own NinjaOne account; the app then finds this server in NinjaOne (by name, confirmed by serial number) and adds a *NinjaOne* section to the audit:
+
+- the NinjaOne **organization** becomes the client name (unless a technician typed one);
+- **open alerts**, OS patches that **failed** or are waiting, and **antivirus** status and threats (for example Bitdefender managed by NinjaOne);
+- online status, last contact, policy, location and **warranty** dates.
+
+It also answers the *RMM (NinjaOne)* manual check, and the antivirus check when Defender is not the active antivirus. The data is saved next to the audit (`<report>.ninja.json`) so it stays with the ticket; after signing in once, later audits in the same session pull it automatically.
+
+The sign-in uses the read-only **Polarnite Server Audit Tool** client app in NinjaOne (Administration > Apps > API: Native platform, Monitoring scope, authorization code with PKCE). Its client ID is public and built in; no secret is stored, and the sign-in ends when the app closes, so a client's server never holds credentials that could read other clients' NinjaOne data. Scheduled runs do not pull NinjaOne data. The host and client ID can be changed in Settings.
 ### Overriding a result
 
 Every finding on the **Findings** tab has a **RATING** dropdown: Critical, Warning, Best practice, Pass or **Accepted** (shown in the report as accepted by the technician, and not counted). For example, set *Huntress agent is not installed* to Accepted for a client without a Huntress licence. The technician note on that row is used as the reason. Overrides are saved per server in `state\overrides.json` and apply to every future audit of that server; **Reset overrides** removes them. To stop requiring an agent everywhere, change *Required agents* in Settings instead.

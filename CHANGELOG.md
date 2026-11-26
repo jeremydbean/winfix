@@ -1,5 +1,8 @@
 # Changelog
 
+## 2026-11-25 - NinjaOne integration
+- NinjaOne button: technician signs in through the browser (Native client app, Monitoring scope, PKCE; token in memory only). The app matches this server by name and serial number and adds the NinjaOne organization as client name, open alerts, failed and pending OS patches, antivirus status and threats, online status, policy and warranty. Answers the RMM check and, without Defender, the antivirus check. Data is saved as <report>.ninja.json.
+
 ## 2026-11-25 - Polarnite branding
 - Polarnite logo on the app header and PDF cover, the round badge on PDF page headers and as the exe icon. The PDF writer now supports images with transparency. Assets and the script that makes them are in app/assets.
 

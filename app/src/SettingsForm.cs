@@ -8,6 +8,7 @@ namespace PolarniteAudit
     internal sealed class SettingsForm : Form
     {
         private readonly AppSettings original;
+        private TextBox txtNinjaHost, txtNinjaClient;
         private TextBox txtCompany, txtTo, txtFrom, txtFromName, txtHost, txtUser, txtPassword, txtSubject, txtTenant, txtAgents, txtTime;
         private NumericUpDown numPort, numDay;
         private CheckBox chkTls, chkClearPassword, chkDeep, chkOnline, chkExposure;
@@ -60,6 +61,9 @@ namespace PolarniteAudit
             grid.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 170));
             grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
 
+            Heading("NinjaOne");
+            Row("NinjaOne host", txtNinjaHost = new TextBox(), "API host for your NinjaOne region, for example app.ninjarmm.com.");
+            Row("Client app ID", txtNinjaClient = new TextBox(), "Client ID of the read-only Native app in NinjaOne (Administration > Apps > API). Technicians sign in with their own NinjaOne account; no secret is stored.");
             Heading("Ticket");
             Row("Send tickets to", txtTo = new TextBox(), "Helpdesk mailbox that turns emails into tickets.");
             Row("Company name", txtCompany = new TextBox(), "Shown on the PDF cover and footer.");
@@ -142,6 +146,8 @@ namespace PolarniteAudit
             txtCompany.Text = s.CompanyName;
             txtSubject.Text = s.SubjectTemplate;
             txtTenant.Text = s.DefaultTenant;
+            txtNinjaHost.Text = s.NinjaHost;
+            txtNinjaClient.Text = s.NinjaClientId;
             txtAgents.Text = s.ExpectedAgents;
             txtFrom.Text = s.FromAddress;
             txtFromName.Text = s.FromName;
@@ -165,6 +171,8 @@ namespace PolarniteAudit
             s.CompanyName = txtCompany.Text.Trim();
             s.SubjectTemplate = txtSubject.Text.Trim();
             s.DefaultTenant = txtTenant.Text.Trim();
+            s.NinjaHost = txtNinjaHost.Text.Trim().Length > 0 ? txtNinjaHost.Text.Trim() : Ninja.DefaultHost;
+            s.NinjaClientId = txtNinjaClient.Text.Trim().Length > 0 ? txtNinjaClient.Text.Trim() : Ninja.DefaultClientId;
             s.ExpectedAgents = txtAgents.Text.Trim();
             s.FromAddress = txtFrom.Text.Trim();
             s.FromName = txtFromName.Text.Trim();
