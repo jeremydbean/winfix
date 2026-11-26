@@ -212,11 +212,20 @@ namespace PolarniteAudit
             };
             string orgId = J.Str(device, "organizationId");
             if (orgId.Length > 0) step("Organization", "organization", () => Get("/v2/organization/" + orgId));
+            object org = result.ContainsKey("Organization") ? result["Organization"] : null;
+            object location = J.List(J.Get(org, "locations")).FirstOrDefault(l => J.Str(l, "id") == J.Str(device, "locationId"));
+            if (location != null) result["Location"] = J.Str(location, "name");
+            // Effective policy: the device's own override, else the organization's policy for its role, else the role default.
+            string policyId = J.Str(device, "policyId");
+            if (policyId.Length == 0) policyId = J.Str(J.List(J.Get(org, "policies")).FirstOrDefault(p => J.Str(p, "nodeRoleId") == J.Str(device, "nodeRoleId")), "policyId");
+            if (policyId.Length == 0) policyId = J.Str(device, "rolePolicyId");
+            if (policyId.Length > 0)
+                step("Policy", "policy", () => J.Str(J.List(Get("/v2/policies")).FirstOrDefault(p => J.Str(p, "id") == policyId), "name"));
+            step("References", "warranty", () => J.Get(J.List(Get("/v2/devices-detailed?df=" + Uri.EscapeDataString("id=" + id) + "&pageSize=1")).FirstOrDefault(), "references"));
             step("Alerts", "alerts", () => Get("/v2/device/" + id + "/alerts"));
             step("OsPatches", "OS patches", () => Get("/v2/device/" + id + "/os-patches"));
             step("AntivirusStatus", "antivirus status", () => J.Get(Get("/v2/queries/antivirus-status?df=" + Uri.EscapeDataString("id=" + id) + "&pageSize=20"), "results"));
             step("AntivirusThreats", "antivirus threats", () => J.Get(Get("/v2/queries/antivirus-threats?df=" + Uri.EscapeDataString("id=" + id) + "&pageSize=100"), "results"));
-            step("DashboardUrl", "dashboard link", () => J.Get(Get("/v2/device/" + id + "/dashboard-url"), "url"));
             return result;
         }
 

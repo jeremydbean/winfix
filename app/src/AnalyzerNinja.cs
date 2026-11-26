@@ -33,18 +33,21 @@ namespace PolarniteAudit
             if (orgName.Length > 0) { a.NinjaOrganization = orgName; a.Snapshot.Add("NinjaOne organization", orgName); }
 
             var kv = new KeyValueBlock();
+            object refs = J.Get(n, "References") ?? J.Get(dev, "references");
             kv.Add("Device", J.Str(dev, "displayName").Length > 0 ? J.Str(dev, "displayName") : J.Str(dev, "systemName"));
             kv.Add("Matched by", J.Str(n, "MatchedBy"));
             kv.Add("Organization", orgName);
-            kv.Add("Location", J.Str(J.Get(dev, "references", "location"), "name"));
-            kv.Add("Policy", J.Str(J.Get(dev, "references", "policy"), "name"));
+            string location = J.Str(n, "Location").Length > 0 ? J.Str(n, "Location") : J.Str(J.Get(refs, "location"), "name");
+            string policy = J.Str(n, "Policy").Length > 0 ? J.Str(n, "Policy") : J.Str(J.Get(refs, "policy"), "name");
+            kv.Add("Location", location);
+            kv.Add("Policy", policy);
             bool offline = J.Bool(dev, "offline") == true;
             DateTime? lastContact = Ninja.Time(J.Get(dev, "lastContact"));
             kv.Add("Agent status", (offline ? "Offline" : "Online") + (lastContact.HasValue ? ", last contact " + J.FormatDateTime(lastContact) : ""));
             DateTime? boot = Ninja.Time(J.Get(dev, "os", "lastBootTime"));
             if (boot.HasValue) kv.Add("Last boot (NinjaOne)", J.FormatDateTime(boot));
             if (J.Bool(J.Get(dev, "os"), "needsReboot") == true) kv.Add("Reboot", "NinjaOne reports a reboot is needed");
-            object warranty = J.Get(dev, "references", "warranty");
+            object warranty = J.Get(refs, "warranty");
             DateTime? warrantyEnd = Ninja.Time(J.Get(warranty, "endDate"));
             if (warrantyEnd.HasValue) kv.Add("Warranty ends", J.FormatDate(warrantyEnd));
             string maintenance = J.Str(J.Get(dev, "maintenance"), "status");
@@ -68,9 +71,12 @@ namespace PolarniteAudit
             foreach (object al in alerts)
             {
                 string sev = J.Str(al, "severity").ToUpperInvariant();
-                string title = J.Str(al, "subject").Length > 0 ? J.Str(al, "subject") : J.Str(al, "message");
-                if (J.Str(al, "conditionName").Length > 0 && title.IndexOf(J.Str(al, "conditionName"), StringComparison.OrdinalIgnoreCase) < 0) title = J.Str(al, "conditionName") + ": " + title;
-                alertTable.Add(J.Shorten(title, 160), new Cell(sev.Length > 0 ? sev : "—", sev == "CRITICAL" || sev == "MAJOR" ? Severity.Critical : sev == "MODERATE" ? Severity.Warning : Severity.Info),
+                if (sev == "NONE") sev = "";
+                // conditionName is the readable alert name; message has the detail (subject is often empty).
+                string title = J.Str(al, "conditionName").Length > 0 ? J.Str(al, "conditionName") : J.Str(al, "subject").Length > 0 ? J.Str(al, "subject") : J.Str(al, "message");
+                string message = J.Str(al, "message");
+                if (message.Length > 0 && message != title) title += ": " + message;
+                alertTable.Add(J.Shorten(title, 160), new Cell(sev.Length > 0 ? sev : "Alert", sev == "CRITICAL" || sev == "MAJOR" ? Severity.Critical : sev == "MODERATE" ? Severity.Warning : Severity.Info),
                     J.FormatDateTime(Ninja.Time(J.Get(al, "createTime"))));
             }
             sec.Blocks.Add(alertTable);
@@ -143,7 +149,6 @@ namespace PolarniteAudit
             if (offline) issues.Add("device offline");
             if (alerts.Count > 0) issues.Add(J.Plural(alerts.Count, "open alert", "open alerts"));
             if (failed.Count > 0) issues.Add(J.Plural(failed.Count, "failed patch", "failed patches"));
-            string policy = J.Str(J.Get(dev, "references", "policy"), "name");
             Auto("rmm_health", issues.Count > 0 ? ManualCatalog.Issue : ManualCatalog.Pass,
                 "NinjaOne: " + (issues.Count > 0 ? string.Join(", ", issues.ToArray()) : "online, no open alerts, no failed patches") +
                 (policy.Length > 0 ? "; policy " + policy : "") + ".");
