@@ -1,5 +1,8 @@
 # Changelog
 
+## 2026-11-25 - default From address
+- The ticket email is sent from jeremy@polarnite.com unless Settings or the NinjaOne field smtp2goFromAddress says otherwise.
+
 ## 2026-11-25 - nothing required before submitting a ticket
 - Submit ticket no longer waits on manual checks, notes, client name or technician. Unanswered checks are sent as Not checked; an empty client name falls back to the NinjaOne organization, Entra tenant, domain or server name, and an empty technician to the Windows user name. Only missing email settings stop a ticket. The status next to Submit shows how many optional items are empty.
 

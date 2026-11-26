@@ -55,7 +55,7 @@ The app reads these NinjaOne **device custom fields** (normal text fields, set o
 
 | Field | Used for |
 | --- | --- |
-| `smtp2goUsername`, `smtp2goPassword`, `smtp2goFromAddress` | Sending the ticket email (SMTP2GO; host `mail.smtp2go.com`, port 2525 with TLS are the app defaults) |
+| `smtp2goUsername`, `smtp2goPassword`, `smtp2goFromAddress` | Sending the ticket email (SMTP2GO; host `mail.smtp2go.com`, port 2525 with TLS and From `jeremy@polarnite.com` are the app defaults, so `smtp2goFromAddress` is optional) |
 | `ninjaApiClientId`, `ninjaApiClientSecret` | NinjaOne API key (an *API Services* client app with the Monitoring scope and Client credentials grant): NinjaOne data is pulled without anyone signing in, including in scheduled runs |
 
 The fields are named after the service, so other tools can use them too. They are plain text, so any NinjaOne technician can see the values, and anyone with administrator rights on a server can read them through the agent. **Settings** shows which values came from NinjaOne. (Secure fields can't be used: NinjaOne only releases those to its own automation scripts.)

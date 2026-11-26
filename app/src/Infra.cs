@@ -122,7 +122,7 @@ namespace PolarniteAudit
         public bool SmtpStartTls = true;
         public string SmtpUser = "";
         public string SmtpPasswordProtected = "";
-        public string FromAddress = "";
+        public string FromAddress = "jeremy@polarnite.com";
         public string FromName = "Polarnite Server Audit";
         public string ToAddress = "support@polarnite.com";
         public string CompanyName = "Polarnite";
@@ -179,7 +179,7 @@ namespace PolarniteAudit
             s.SmtpStartTls = J.Bool(o, "SmtpStartTls") ?? true;
             s.SmtpUser = J.Str(o, "SmtpUser");
             s.SmtpPasswordProtected = J.Str(o, "SmtpPasswordProtected");
-            s.FromAddress = J.Str(o, "FromAddress");
+            s.FromAddress = Or(J.Str(o, "FromAddress"), s.FromAddress);
             s.FromName = Or(J.Str(o, "FromName"), s.FromName);
             s.ToAddress = Or(J.Str(o, "ToAddress"), s.ToAddress);
             s.CompanyName = Or(J.Str(o, "CompanyName"), s.CompanyName);
