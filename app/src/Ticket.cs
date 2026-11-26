@@ -279,9 +279,10 @@ namespace PolarniteAudit
         /// <summary>Validates, builds the PDF, emails it and marks the draft submitted.</summary>
         public static string Submit(AppSettings s, AuditAnalysis a, DraftState d, string pickupDirectory)
         {
-            var problems = d.Validate(a);
-            if (string.IsNullOrEmpty(pickupDirectory)) problems.AddRange(s.ValidateMail());
-            if (problems.Count > 0) throw new InvalidOperationException("The ticket is not ready:\n\n• " + string.Join("\n• ", problems.ToArray()));
+            // Only the email settings can stop a ticket; everything a technician fills in is optional.
+            var problems = string.IsNullOrEmpty(pickupDirectory) ? s.ValidateMail() : new List<string>();
+            if (problems.Count > 0) throw new InvalidOperationException("The ticket can't be emailed yet:\n\n• " + string.Join("\n• ", problems.ToArray()));
+            d.FillDefaults(a);
 
             string submittedAt = DateTime.Now.ToString("o", CultureInfo.InvariantCulture);
             string previous = d.SubmittedAt;

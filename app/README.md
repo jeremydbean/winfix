@@ -93,9 +93,9 @@ critical/warning counts, new and resolved findings, a disk-full forecast per dri
    - Optional: **Internet exposure check**. It sends the site's public IP to ipify.org and Shodan InternetDB, so it is off by default.
 3. **Run audit** (3–10 minutes). Progress shows in *Collection log*.
 4. Review **Findings**. You can add a technician note to any finding; notes appear in the PDF and the email.
-5. Complete **Manual checks**. Required items must be answered, and *Issue found* needs a note.
+5. Complete **Manual checks** as far as you want. Nothing is required: unanswered items are sent as *Not checked*, an empty client name falls back to the NinjaOne organization, Entra tenant, domain or server name, and an empty technician to your Windows user name. Only missing email settings stop a ticket.
 6. Check **Overview**: tenant/client name, technician, server role and summary notes. The client name is filled in from the Entra tenant the machine is joined to; if it isn't joined, from the Microsoft 365 tenant its users are signed in to (OneDrive work accounts); otherwise last month's name, the Settings default or the AD domain. A name a technician types is kept in later months.
-7. **Preview PDF** if you like, then **Submit ticket**. The button shows how many items are left until the ticket is complete.
+7. **Preview PDF** if you like, then **Submit ticket**. The status next to it shows how many optional items are still empty.
 
 ### Updating the app
 

@@ -174,6 +174,12 @@ namespace PolarniteAudit
             string pdf = Workflow.Submit(s, a, d, Path.Combine(outDir, "mail"));
             sb.AppendLine("PDF: " + pdf);
             sb.AppendLine("Draft status after submit: " + d.Status + " to " + d.SubmittedTo);
+
+            // Nothing filled in at all must still submit; defaults fill the client name and technician.
+            DraftState blank = DraftStore.NewDraft(reportCopy, a, s, "Manual");
+            blank.Tenant = ""; blank.Technician = "";
+            string blankPdf = Workflow.Submit(s, a, blank, Path.Combine(outDir, "mail-blank"));
+            sb.AppendLine("Blank draft submit: " + blank.Status + " | client " + blank.Tenant + " | technician " + blank.Technician + " | " + Path.GetFileName(blankPdf));
             File.WriteAllText(Path.Combine(outDir, "render-result.txt"), sb.ToString(), Encoding.UTF8);
             return 0;
         }

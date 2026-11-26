@@ -1,5 +1,8 @@
 # Changelog
 
+## 2026-11-25 - nothing required before submitting a ticket
+- Submit ticket no longer waits on manual checks, notes, client name or technician. Unanswered checks are sent as Not checked; an empty client name falls back to the NinjaOne organization, Entra tenant, domain or server name, and an empty technician to the Windows user name. Only missing email settings stop a ticket. The status next to Submit shows how many optional items are empty.
+
 ## 2026-11-25 - shared SMTP2GO and NinjaOne API settings from NinjaOne fields
 - The app reads the NinjaOne text fields smtp2goUsername, smtp2goPassword, smtp2goFromAddress, ninjaApiClientId and ninjaApiClientSecret through ninjarmm-cli (checked on FLF-SERVER from a non-NinjaOne process). Values there override Settings. With an API key in the fields, NinjaOne data is pulled without a sign-in. SMTP defaults are now mail.smtp2go.com:2525 with TLS.
 

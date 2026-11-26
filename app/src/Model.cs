@@ -411,20 +411,28 @@ namespace PolarniteAudit
             }
         }
 
-        /// <summary>Returns the problems that block submission; empty when complete.</summary>
+        /// <summary>
+        /// Items not filled in yet. Informational only: nothing here blocks submitting the ticket.
+        /// Empty names are filled by FillDefaults; unanswered checks are sent as "Not checked".
+        /// </summary>
+        /// <summary>Fills an empty client or technician name so the ticket is never blocked on them.</summary>
+        public void FillDefaults(AuditAnalysis a)
+        {
+            if (string.IsNullOrWhiteSpace(Tenant))
+                Tenant = !string.IsNullOrEmpty(a.DefaultTenant) ? a.DefaultTenant : (!string.IsNullOrEmpty(a.DomainName) ? a.DomainName : a.ServerName);
+            if (string.IsNullOrWhiteSpace(Technician)) Technician = Environment.UserName;
+        }
+
         public List<string> Validate(AuditAnalysis a)
         {
             var problems = new List<string>();
-            if (string.IsNullOrWhiteSpace(Tenant)) problems.Add("Enter the tenant / client name (Overview tab).");
-            if (string.IsNullOrWhiteSpace(Technician)) problems.Add("Enter the technician name (Overview tab).");
+            if (string.IsNullOrWhiteSpace(Tenant)) problems.Add("Client name is empty (the server's organization, domain or name will be used).");
+            if (string.IsNullOrWhiteSpace(Technician)) problems.Add("Technician is empty (your Windows user name will be used).");
             foreach (var item in ManualCatalog.For(a))
             {
                 ManualAnswer ans = Answer(item.Id);
                 if (item.Required && ans.Status == ManualCatalog.NotChecked)
-                    problems.Add("Manual check not answered: " + item.Title);
-                bool needsNote = ans.Status == ManualCatalog.Issue || (item.Required && ans.Status == ManualCatalog.NotApplicable);
-                if (needsNote && string.IsNullOrWhiteSpace(ans.Notes))
-                    problems.Add("Add a note explaining \"" + ans.Status + "\" for: " + item.Title);
+                    problems.Add("Not checked: " + item.Title);
             }
             return problems;
         }

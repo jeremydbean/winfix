@@ -389,7 +389,7 @@ namespace PolarniteAudit
             var hint = new Label
             {
                 Dock = DockStyle.Top, AutoSize = false, Height = 40, ForeColor = MutedText, Padding = new Padding(2, 0, 0, 8),
-                Text = "Things the server can't fully report on itself. Items marked \"Auto-verified\" were answered from collected evidence; change them if the console says otherwise. Required items must be answered, and \"Issue found\" needs a note, before the ticket can be submitted."
+                Text = "Things the server can't fully report on itself. Items marked \"Auto-verified\" were answered from collected evidence; change them if the console says otherwise. Everything here is optional: unanswered items are sent as \"Not checked\"."
             };
             tabManual.Controls.Add(gridManual);
             tabManual.Controls.Add(hint);
@@ -823,19 +823,19 @@ namespace PolarniteAudit
         private void UpdateReadiness()
         {
             if (analysis == null || draft == null) { lblReady.Text = ""; return; }
-            var problems = draft.Validate(analysis);
-            problems.AddRange(settings.ValidateMail());
-            if (problems.Count == 0)
+            var open = draft.Validate(analysis);
+            var mail = settings.ValidateMail();
+            if (mail.Count > 0)
             {
-                lblReady.Text = draft.IsSubmitted ? "Submitted" : "✓ Ready to submit";
-                lblReady.ForeColor = Color.FromArgb(21, 128, 61);
-                tips.SetToolTip(lblReady, "");
+                lblReady.Text = "Email not set up";
+                lblReady.ForeColor = Color.FromArgb(180, 83, 9);
+                tips.SetToolTip(lblReady, "• " + string.Join("\n• ", mail.ToArray()));
             }
             else
             {
-                lblReady.Text = J.Plural(problems.Count, "item", "items") + " left before submitting";
-                lblReady.ForeColor = Color.FromArgb(180, 83, 9);
-                tips.SetToolTip(lblReady, "• " + string.Join("\n• ", problems.ToArray()));
+                lblReady.Text = draft.IsSubmitted ? "Submitted" : "✓ Ready to submit" + (open.Count > 0 ? " (" + J.Plural(open.Count, "item", "items") + " not filled in)" : "");
+                lblReady.ForeColor = Color.FromArgb(21, 128, 61);
+                tips.SetToolTip(lblReady, open.Count > 0 ? "Optional; the ticket can be sent as is:\n• " + string.Join("\n• ", open.ToArray()) : "");
             }
             UpdatePill();
         }
@@ -970,15 +970,14 @@ namespace PolarniteAudit
         {
             if (analysis == null || draft == null) return;
             SaveDraft();
-            var problems = draft.Validate(analysis);
-            problems.AddRange(settings.ValidateMail());
-            if (problems.Count > 0)
+            // Nothing the technician fills in is required; only missing email settings stop sending.
+            var mail = settings.ValidateMail();
+            if (mail.Count > 0)
             {
-                MessageBox.Show(this, "Finish these before submitting:\n\n• " + string.Join("\n• ", problems.ToArray()), "Not ready to submit", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                if (problems.Any(p => p.StartsWith("Manual check") || p.StartsWith("Add a note"))) tabs.SelectedTab = tabManual;
-                else if (problems.Any(p => p.Contains("Overview"))) tabs.SelectedTab = tabOverview;
+                MessageBox.Show(this, "The ticket can't be emailed until these are set (Settings, or the smtp2go fields in NinjaOne):\n\n• " + string.Join("\n• ", mail.ToArray()), "Email not set up", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return;
             }
+            draft.FillDefaults(analysis);
             if (draft.IsSubmitted && MessageBox.Show(this, "This audit was already submitted to " + draft.SubmittedTo + ". Send it again?", "Submit ticket", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes)
                 return;
             string subject = TicketComposer.Subject(settings, analysis, draft);
