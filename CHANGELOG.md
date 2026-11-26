@@ -1,5 +1,8 @@
 # Changelog
 
+## 2026-11-25 - SMTP login checked before sending
+- With SMTP2GO the app no longer tries to send without a username and password (the server answered 'relay access denied'). Submit and the status next to it now say what is missing and why: no NinjaOne agent on this computer, the field is empty, or it could not be read. Empty field values are re-read after a minute and on Submit, so values filled in NinjaOne are picked up without restarting. Login failures from the server get a plain explanation. New --mail-check <file> reports whether email is ready without sending.
+
 ## 2026-11-25 - default From address
 - The ticket email is sent from jeremy@polarnite.com unless Settings or the NinjaOne field smtp2goFromAddress says otherwise.
 

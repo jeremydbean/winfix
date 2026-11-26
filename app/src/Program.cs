@@ -58,6 +58,7 @@ namespace PolarniteAudit
                 if (mode == "--ninja-test" && args.Length >= 3) return NinjaTest(args[1], args[2], args.Length >= 4 ? args[3] : "");
                 if (mode == "--ninja-resume-test" && args.Length >= 3) return NinjaResumeTest(args[1], args[2]);
                 if (mode == "--render" && args.Length >= 3) return Render(args[1], args[2], args.Length >= 4 ? args[3] : null);
+                if (mode == "--mail-check" && args.Length >= 2) return MailCheck(args[1]);
                 Application.EnableVisualStyles();
                 Application.SetCompatibleTextRenderingDefault(false);
                 if (mode == "--screenshot" && args.Length >= 3) return Screenshot(args[1], args[2], args.Length >= 4 ? args[3] : null);
@@ -182,6 +183,22 @@ namespace PolarniteAudit
             sb.AppendLine("Blank draft submit: " + blank.Status + " | client " + blank.Tenant + " | technician " + blank.Technician + " | " + Path.GetFileName(blankPdf));
             File.WriteAllText(Path.Combine(outDir, "render-result.txt"), sb.ToString(), Encoding.UTF8);
             return 0;
+        }
+
+        /// <summary>Writes whether the ticket email can be sent from this computer (no values, nothing sent). Exit 0 = ready.</summary>
+        private static int MailCheck(string outFile)
+        {
+            AppSettings s = AppSettings.Load();
+            var p = s.ValidateMail();
+            var sb = new StringBuilder();
+            sb.AppendLine("SMTP server: " + s.SmtpHost + ":" + s.SmtpPort + (s.SmtpStartTls ? " (TLS)" : ""));
+            sb.AppendLine("From: " + s.EffectiveFromAddress + " | To: " + s.ToAddress);
+            sb.AppendLine("NinjaOne agent: " + (NinjaFields.AgentPresent ? "found" : "not found"));
+            sb.AppendLine("SMTP username: " + (NinjaFields.Value(NinjaFields.SmtpUser).Length > 0 ? "from NinjaOne" : s.SmtpUser.Length > 0 ? "from Settings" : "missing"));
+            sb.AppendLine("SMTP password: " + (NinjaFields.Value(NinjaFields.SmtpPassword).Length > 0 ? "from NinjaOne" : s.SmtpPassword.Length > 0 ? "from Settings" : "missing"));
+            sb.AppendLine(p.Count == 0 ? "Ready to send." : "Not ready:\r\n- " + string.Join("\r\n- ", p.ToArray()));
+            File.WriteAllText(outFile, sb.ToString(), Encoding.UTF8);
+            return p.Count == 0 ? 0 : 1;
         }
 
         private static int Screenshot(string reportPath, string outDir, string size)

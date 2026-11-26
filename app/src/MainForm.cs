@@ -971,6 +971,7 @@ namespace PolarniteAudit
             if (analysis == null || draft == null) return;
             SaveDraft();
             // Nothing the technician fills in is required; only missing email settings stop sending.
+            NinjaFields.Refresh();
             var mail = settings.ValidateMail();
             if (mail.Count > 0)
             {

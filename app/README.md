@@ -59,6 +59,14 @@ The app reads these NinjaOne **device custom fields** (normal text fields, set o
 | `ninjaApiClientId`, `ninjaApiClientSecret` | NinjaOne API key (an *API Services* client app with the Monitoring scope and Client credentials grant): NinjaOne data is pulled without anyone signing in, including in scheduled runs |
 
 The fields are named after the service, so other tools can use them too. They are plain text, so any NinjaOne technician can see the values, and anyone with administrator rights on a server can read them through the agent. **Settings** shows which values came from NinjaOne. (Secure fields can't be used: NinjaOne only releases those to its own automation scripts.)
+
+The SMTP2GO login comes only from these fields (or Settings), read through the agent on the computer the app runs on. Signing in to NinjaOne in the app does not provide it, and a computer without the NinjaOne agent needs the username and password in Settings. The status next to **Submit ticket** shows *Email not set up* when they are missing, with the reason. To check a server without sending anything (for example from a NinjaOne script):
+
+```powershell
+& 'C:\Path\PolarniteServerAuditTool.exe' --mail-check C:\Windows\Temp\mail-check.txt; Get-Content C:\Windows\Temp\mail-check.txt
+```
+
+It lists where the username and password came from (never the values) and exits 0 when the ticket can be sent.
 ### Overriding a result
 
 Every finding on the **Findings** tab has a **RATING** dropdown: Critical, Warning, Best practice, Pass or **Accepted** (shown in the report as accepted by the technician, and not counted). For example, set *Huntress agent is not installed* to Accepted for a client without a Huntress licence. The technician note on that row is used as the reason. Overrides are saved per server in `state\overrides.json` and apply to every future audit of that server; **Reset overrides** removes them. To stop requiring an agent everywhere, change *Required agents* in Settings instead.

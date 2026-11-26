@@ -19,6 +19,8 @@ namespace PolarniteAudit
         public const string ApiClientSecret = "ninjaApiClientSecret";
 
         private static readonly Dictionary<string, string> cache = new Dictionary<string, string>(StringComparer.Ordinal);
+        private static readonly Dictionary<string, DateTime> emptySince = new Dictionary<string, DateTime>(StringComparer.Ordinal);
+        private static readonly Dictionary<string, string> reasons = new Dictionary<string, string>(StringComparer.Ordinal);
         private static readonly object gate = new object();
 
         /// <summary>ninjarmm-cli.exe; POLARNITE_NINJA_CLI points elsewhere for tests.</summary>
@@ -40,19 +42,32 @@ namespace PolarniteAudit
             lock (gate)
             {
                 string v;
-                if (cache.TryGetValue(name, out v)) return v;
-                v = Read(name);
+                DateTime at;
+                // Empty results are re-read after a minute, so a value filled in NinjaOne is picked up without restarting.
+                if (cache.TryGetValue(name, out v) && (v.Length > 0 || (emptySince.TryGetValue(name, out at) && DateTime.UtcNow - at < TimeSpan.FromMinutes(1)))) return v;
+                string why;
+                v = Read(name, out why);
                 cache[name] = v;
+                reasons[name] = why;
+                if (v.Length == 0) emptySince[name] = DateTime.UtcNow;
                 return v;
             }
         }
 
         /// <summary>Forgets cached values (for example after a technician changed them in NinjaOne).</summary>
-        public static void Refresh() { lock (gate) cache.Clear(); }
+        public static void Refresh() { lock (gate) { cache.Clear(); emptySince.Clear(); reasons.Clear(); } }
 
-        private static string Read(string name)
+        /// <summary>Why a field came back empty, for error messages ("" when it has a value).</summary>
+        public static string Why(string name)
         {
-            if (!AgentPresent) return "";
+            if (Value(name).Length > 0) return "";
+            lock (gate) { string r; return reasons.TryGetValue(name, out r) ? r : ""; }
+        }
+
+        private static string Read(string name, out string why)
+        {
+            why = "";
+            if (!AgentPresent) { why = "the NinjaOne agent is not installed on this computer, so the NinjaOne field " + name + " can't be read"; return ""; }
             try
             {
                 var psi = new ProcessStartInfo(CliPath, "get " + name)
@@ -63,17 +78,21 @@ namespace PolarniteAudit
                 {
                     var stdout = p.StandardOutput.ReadToEndAsync();
                     var stderr = p.StandardError.ReadToEndAsync();
-                    if (!p.WaitForExit(15000)) { try { p.Kill(); } catch { } Log.Write("NinjaOne field " + name + ": ninjarmm-cli timed out."); return ""; }
+                    if (!p.WaitForExit(15000)) { try { p.Kill(); } catch { } Log.Write("NinjaOne field " + name + ": ninjarmm-cli timed out."); why = "reading the NinjaOne field " + name + " timed out"; return ""; }
                     string text = (stdout.Result ?? "").Trim();
                     if (p.ExitCode != 0 || text.StartsWith("Access to requested", StringComparison.OrdinalIgnoreCase) || text.StartsWith("Error", StringComparison.OrdinalIgnoreCase))
                     {
-                        if (text.Length > 0 || (stderr.Result ?? "").Trim().Length > 0) Log.Write("NinjaOne field " + name + " not read (exit " + p.ExitCode + ").");
+                        string detail = (text.Length > 0 ? text : (stderr.Result ?? "").Trim()).Split('\n')[0].Trim();
+                        if (detail.Length > 120) detail = detail.Substring(0, 120);
+                        Log.Write("NinjaOne field " + name + " not read (exit " + p.ExitCode + "): " + detail);
+                        why = "the NinjaOne field " + name + " couldn't be read" + (detail.Length > 0 ? " (" + detail + ")" : " (exit code " + p.ExitCode + ")");
                         return "";
                     }
+                    if (text.Length == 0) why = "the NinjaOne field " + name + " is empty in NinjaOne (Dashboard > Custom > Default fields)";
                     return text;
                 }
             }
-            catch (Exception ex) { Log.Write("NinjaOne field " + name + ": " + ex.Message); return ""; }
+            catch (Exception ex) { Log.Write("NinjaOne field " + name + ": " + ex.Message); why = "the NinjaOne field " + name + " couldn't be read (" + ex.Message + ")"; return ""; }
         }
 
         /// <summary>Which shared settings came from NinjaOne, for the Settings window.</summary>

@@ -219,6 +219,12 @@ namespace PolarniteAudit
             if (SmtpPort == 465 || SmtpPort == 8465 || SmtpPort == 443) p.Add("Port " + SmtpPort + " (SSL-only) is not supported. Use 2525, 587 or 25 with TLS.");
             if (!IsEmail(EffectiveFromAddress)) p.Add("From address is not a valid email address (Settings or the NinjaOne field " + NinjaFields.SmtpFrom + ").");
             if (!IsEmail(ToAddress)) p.Add("Ticket address is not a valid email address (Settings).");
+            // SMTP2GO never relays without a login; other servers (an internal relay) may.
+            if (NeedsLogin)
+            {
+                if (string.IsNullOrWhiteSpace(EffectiveSmtpUser)) p.Add("No SMTP username: " + Reason(NinjaFields.SmtpUser, SmtpUser) + ".");
+                if (string.IsNullOrEmpty(EffectiveSmtpPassword)) p.Add("No SMTP password: " + Reason(NinjaFields.SmtpPassword, SmtpPassword) + ".");
+            }
             return p;
         }
 
@@ -228,6 +234,14 @@ namespace PolarniteAudit
         }
 
         private static string Or(string a, string b) { return string.IsNullOrEmpty(a) ? b : a; }
+
+        public bool NeedsLogin { get { return (SmtpHost ?? "").IndexOf("smtp2go", StringComparison.OrdinalIgnoreCase) >= 0; } }
+
+        private static string Reason(string field, string local)
+        {
+            string why = NinjaFields.Why(field);
+            return (why.Length > 0 ? why : "the NinjaOne field " + field + " is empty") + (string.IsNullOrEmpty(local) ? ", and none is entered in Settings" : "");
+        }
     }
 
     internal static class DraftStore
@@ -559,7 +573,15 @@ namespace PolarniteAudit
                             client.Credentials = new NetworkCredential(user.Trim(), s.EffectiveSmtpPassword);
                         }
                     }
-                    client.Send(msg);
+                    try { client.Send(msg); }
+                    catch (SmtpException ex)
+                    {
+                        string m = ex.Message + " " + (ex.InnerException != null ? ex.InnerException.Message : "");
+                        if (m.IndexOf("relay", StringComparison.OrdinalIgnoreCase) >= 0 || m.IndexOf("authenticat", StringComparison.OrdinalIgnoreCase) >= 0 || m.IndexOf("5.7.", StringComparison.Ordinal) >= 0)
+                            throw new InvalidOperationException("The mail server (" + s.SmtpHost + ") refused the login or did not get one. " +
+                                (string.IsNullOrWhiteSpace(s.EffectiveSmtpUser) ? "No SMTP username was found on this computer." : "Check the SMTP2GO username and password (NinjaOne fields " + NinjaFields.SmtpUser + " / " + NinjaFields.SmtpPassword + ", or Settings), and that " + s.EffectiveFromAddress + " is a verified sender in SMTP2GO."), ex);
+                        throw;
+                    }
                 }
             }
         }
