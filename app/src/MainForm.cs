@@ -567,7 +567,7 @@ namespace PolarniteAudit
             if (!draft.IsSubmitted) draft.ApplyAuto(analysis);
             SaveDraft();
             Populate();
-            if (persist && (Ninja.SignedIn || Ninja.RememberedUntil.HasValue)) BeginInvoke(new Action(() => PullNinja(false)));
+            if (persist && (Ninja.SignedIn || Ninja.RememberedUntil.HasValue || Ninja.HasServiceKey)) BeginInvoke(new Action(() => PullNinja(false)));
         }
 
         // ------------------------------------------------------------ NinjaOne
@@ -617,7 +617,7 @@ namespace PolarniteAudit
             finally
             {
                 ninjaCts.Dispose(); ninjaCts = null;
-                if (!IsDisposed) btnNinja.Text = Ninja.SignedIn || Ninja.RememberedUntil.HasValue ? "Refresh NinjaOne" : "NinjaOne…";
+                if (!IsDisposed) btnNinja.Text = Ninja.SignedIn || Ninja.RememberedUntil.HasValue || Ninja.HasServiceKey ? "Refresh NinjaOne" : "NinjaOne…";
             }
         }
 

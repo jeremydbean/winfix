@@ -61,6 +61,9 @@ namespace PolarniteAudit
             grid.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 170));
             grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
 
+            Heading("Shared settings from NinjaOne");
+            var lblFields = new Label { AutoSize = true, MaximumSize = new Size(420, 0), ForeColor = MainForm.MutedText, Margin = new Padding(0, 4, 0, 4), Text = NinjaFields.Summary() };
+            Row("NinjaOne fields", lblFields, "Device custom fields " + NinjaFields.SmtpUser + ", " + NinjaFields.SmtpPassword + ", " + NinjaFields.SmtpFrom + ", " + NinjaFields.ApiClientId + " and " + NinjaFields.ApiClientSecret + " (set once at system level in NinjaOne).");
             Heading("NinjaOne");
             Row("NinjaOne host", txtNinjaHost = new TextBox(), "API host for your NinjaOne region, for example app.ninjarmm.com.");
             Row("Client app ID", txtNinjaClient = new TextBox(), "Client ID of the read-only Native app in NinjaOne (Administration > Apps > API). Technicians sign in with their own NinjaOne account; no secret is stored.");

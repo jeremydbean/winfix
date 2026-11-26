@@ -77,10 +77,37 @@ namespace PolarniteAudit
             Log.Write("NinjaOne sign-in on this server forgotten.");
         }
 
-        /// <summary>Uses the remembered sign-in, if any and not older than 30 days. Returns true when signed in.</summary>
+        /// <summary>True when NinjaOne fields on this server hold an API client ID and secret.</summary>
+        public static bool HasServiceKey
+        {
+            get { return NinjaFields.Value(NinjaFields.ApiClientId).Length > 0 && NinjaFields.Value(NinjaFields.ApiClientSecret).Length > 0; }
+        }
+
+        /// <summary>Signs in with the API key from the NinjaOne fields (client credentials, read-only Monitoring scope).</summary>
+        private static bool TryServiceKey()
+        {
+            if (!HasServiceKey) return false;
+            string host = AppSettings.Load().NinjaHost;
+            if (string.IsNullOrWhiteSpace(host)) host = DefaultHost;
+            try
+            {
+                object tok = Post("https://" + host + "/ws/oauth/token", "grant_type=client_credentials&client_id=" + Uri.EscapeDataString(NinjaFields.Value(NinjaFields.ApiClientId)) +
+                    "&client_secret=" + Uri.EscapeDataString(NinjaFields.Value(NinjaFields.ApiClientSecret)) + "&scope=monitoring");
+                string access = J.Str(tok, "access_token");
+                if (access.Length == 0) throw new InvalidOperationException("no access token returned");
+                token = access; tokenHost = host;
+                tokenExpiresUtc = DateTime.UtcNow.AddSeconds(J.Num(tok, "expires_in") ?? 3600);
+                Log.Write("Signed in to NinjaOne with the API key from the NinjaOne fields.");
+                return true;
+            }
+            catch (Exception ex) { Log.Write("NinjaOne API key from the fields did not work: " + ex.Message); return false; }
+        }
+
+        /// <summary>Signs in without a browser: the API key from the NinjaOne fields, else a remembered sign-in (30 days).</summary>
         public static bool TryResume()
         {
             if (SignedIn) return true;
+            if (TryServiceKey()) return true;
             object o = SafeRead();
             if (o == null) return false;
             DateTime? until = J.Date(o, "RememberedUntilUtc");

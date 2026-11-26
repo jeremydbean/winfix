@@ -1,5 +1,8 @@
 # Changelog
 
+## 2026-11-25 - shared SMTP2GO and NinjaOne API settings from NinjaOne fields
+- The app reads the NinjaOne text fields smtp2goUsername, smtp2goPassword, smtp2goFromAddress, ninjaApiClientId and ninjaApiClientSecret through ninjarmm-cli (checked on FLF-SERVER from a non-NinjaOne process). Values there override Settings. With an API key in the fields, NinjaOne data is pulled without a sign-in. SMTP defaults are now mail.smtp2go.com:2525 with TLS.
+
 ## 2026-11-25 - remember the NinjaOne sign-in (opt-in, 30 days)
 - The NinjaOne sign-in prompt has a 'Remember my sign-in on this server for 30 days' checkbox (off by default). The refresh token is DPAPI-encrypted for the machine; later audits and scheduled runs pull NinjaOne data without a sign-in. Settings > NinjaOne shows it and has Forget. The NinjaOne client app now allows the Refresh token grant.
 

@@ -49,6 +49,16 @@ It also answers the *RMM (NinjaOne)* manual check, and the antivirus check when 
 The sign-in uses the read-only **Polarnite Server Audit Tool** client app in NinjaOne (Administration > Apps > API: Native platform, Monitoring scope, authorization code with PKCE). Its client ID is public and built in; no secret is stored, and the sign-in ends when the app closes, so a client's server never holds credentials that could read other clients' NinjaOne data. The host and client ID can be changed in Settings.
 
 **Remember my sign-in on this server for 30 days** (a checkbox on the sign-in prompt, off by default): the app keeps a NinjaOne refresh token, encrypted for that machine (DPAPI) in the Administrators/SYSTEM-only data folder, so later audits on that server and its scheduled runs pull NinjaOne data without a sign-in. After 30 days, or if the token is revoked, it is deleted and the next pull asks again. While it is kept, an administrator on that server could use it to read NinjaOne data (read-only, all organizations). **Settings > NinjaOne > Forget** deletes it; NinjaOne > Administration > Apps > API > OAuth tokens revokes it. Without it, scheduled runs do not pull NinjaOne data.
+### Shared settings from NinjaOne
+
+The app reads these NinjaOne **device custom fields** (normal text fields, set once under **Dashboard > Custom > Default fields**, which applies to every device; an organization or device value overrides it) through the NinjaOne agent's `ninjarmm-cli` on the server. A value set there overrides the same setting in **Settings**:
+
+| Field | Used for |
+| --- | --- |
+| `smtp2goUsername`, `smtp2goPassword`, `smtp2goFromAddress` | Sending the ticket email (SMTP2GO; host `mail.smtp2go.com`, port 2525 with TLS are the app defaults) |
+| `ninjaApiClientId`, `ninjaApiClientSecret` | NinjaOne API key (an *API Services* client app with the Monitoring scope and Client credentials grant): NinjaOne data is pulled without anyone signing in, including in scheduled runs |
+
+The fields are named after the service, so other tools can use them too. They are plain text, so any NinjaOne technician can see the values, and anyone with administrator rights on a server can read them through the agent. **Settings** shows which values came from NinjaOne. (Secure fields can't be used: NinjaOne only releases those to its own automation scripts.)
 ### Overriding a result
 
 Every finding on the **Findings** tab has a **RATING** dropdown: Critical, Warning, Best practice, Pass or **Accepted** (shown in the report as accepted by the technician, and not counted). For example, set *Huntress agent is not installed* to Accepted for a client without a Huntress licence. The technician note on that row is used as the reason. Overrides are saved per server in `state\overrides.json` and apply to every future audit of that server; **Reset overrides** removes them. To stop requiring an agent everywhere, change *Required agents* in Settings instead.

@@ -117,8 +117,8 @@ namespace PolarniteAudit
 
     internal sealed class AppSettings
     {
-        public string SmtpHost = "";
-        public int SmtpPort = 587;
+        public string SmtpHost = "mail.smtp2go.com";
+        public int SmtpPort = 2525;
         public bool SmtpStartTls = true;
         public string SmtpUser = "";
         public string SmtpPasswordProtected = "";
@@ -162,6 +162,11 @@ namespace PolarniteAudit
             }
         }
 
+        // Shared values from NinjaOne custom fields win over the local Settings values.
+        public string EffectiveSmtpUser { get { string v = NinjaFields.Value(NinjaFields.SmtpUser); return v.Length > 0 ? v : SmtpUser; } }
+        public string EffectiveSmtpPassword { get { string v = NinjaFields.Value(NinjaFields.SmtpPassword); return v.Length > 0 ? v : SmtpPassword; } }
+        public string EffectiveFromAddress { get { string v = NinjaFields.Value(NinjaFields.SmtpFrom); return v.Length > 0 ? v : FromAddress; } }
+
         public static AppSettings Load()
         {
             var s = new AppSettings();
@@ -169,8 +174,8 @@ namespace PolarniteAudit
             try { o = JsonFile.Read(AppPaths.SettingsFile); }
             catch (Exception ex) { Log.Write("Settings unreadable, using defaults: " + ex.Message); return s; }
             if (o == null) return s;
-            s.SmtpHost = J.Str(o, "SmtpHost");
-            s.SmtpPort = (int)(J.Num(o, "SmtpPort") ?? 587);
+            s.SmtpHost = Or(J.Str(o, "SmtpHost"), s.SmtpHost);
+            s.SmtpPort = (int)(J.Num(o, "SmtpPort") ?? s.SmtpPort);
             s.SmtpStartTls = J.Bool(o, "SmtpStartTls") ?? true;
             s.SmtpUser = J.Str(o, "SmtpUser");
             s.SmtpPasswordProtected = J.Str(o, "SmtpPasswordProtected");
@@ -211,8 +216,8 @@ namespace PolarniteAudit
         {
             var p = new List<string>();
             if (string.IsNullOrWhiteSpace(SmtpHost)) p.Add("SMTP server is not set (Settings).");
-            if (SmtpPort == 465) p.Add("Port 465 (implicit TLS) is not supported. Use 587 with STARTTLS, or 25.");
-            if (!IsEmail(FromAddress)) p.Add("From address is not a valid email address (Settings).");
+            if (SmtpPort == 465 || SmtpPort == 8465 || SmtpPort == 443) p.Add("Port " + SmtpPort + " (SSL-only) is not supported. Use 2525, 587 or 25 with TLS.");
+            if (!IsEmail(EffectiveFromAddress)) p.Add("From address is not a valid email address (Settings or the NinjaOne field " + NinjaFields.SmtpFrom + ").");
             if (!IsEmail(ToAddress)) p.Add("Ticket address is not a valid email address (Settings).");
             return p;
         }
@@ -523,7 +528,7 @@ namespace PolarniteAudit
             ServicePointManager.SecurityProtocol |= (SecurityProtocolType)3072; // TLS 1.2 on .NET 4.5 / Server 2012 R2
             using (var msg = new MailMessage())
             {
-                msg.From = new MailAddress(s.FromAddress.Trim(), string.IsNullOrWhiteSpace(s.FromName) ? null : s.FromName.Trim());
+                msg.From = new MailAddress(s.EffectiveFromAddress.Trim(), string.IsNullOrWhiteSpace(s.FromName) ? null : s.FromName.Trim());
                 msg.To.Add(new MailAddress(s.ToAddress.Trim()));
                 msg.Subject = subject;
                 msg.SubjectEncoding = Encoding.UTF8;
@@ -547,10 +552,11 @@ namespace PolarniteAudit
                         client.Port = s.SmtpPort;
                         client.EnableSsl = s.SmtpStartTls;
                         client.DeliveryMethod = SmtpDeliveryMethod.Network;
-                        if (!string.IsNullOrWhiteSpace(s.SmtpUser))
+                        string user = s.EffectiveSmtpUser;
+                        if (!string.IsNullOrWhiteSpace(user))
                         {
                             client.UseDefaultCredentials = false;
-                            client.Credentials = new NetworkCredential(s.SmtpUser.Trim(), s.SmtpPassword);
+                            client.Credentials = new NetworkCredential(user.Trim(), s.EffectiveSmtpPassword);
                         }
                     }
                     client.Send(msg);
