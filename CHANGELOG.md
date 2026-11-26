@@ -1,5 +1,8 @@
 # Changelog
 
+## 2026-11-25 - remember the NinjaOne sign-in (opt-in, 30 days)
+- The NinjaOne sign-in prompt has a 'Remember my sign-in on this server for 30 days' checkbox (off by default). The refresh token is DPAPI-encrypted for the machine; later audits and scheduled runs pull NinjaOne data without a sign-in. Settings > NinjaOne shows it and has Forget. The NinjaOne client app now allows the Refresh token grant.
+
 ## 2026-11-25 - NinjaOne integration
 - NinjaOne button: technician signs in through the browser (Native client app, Monitoring scope, PKCE; token in memory only). The app matches this server by name and serial number and adds the NinjaOne organization as client name, open alerts, failed and pending OS patches, antivirus status and threats, online status, policy and warranty. Answers the RMM check and, without Defender, the antivirus check. Data is saved as <report>.ninja.json.
 

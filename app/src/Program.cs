@@ -56,6 +56,7 @@ namespace PolarniteAudit
                 if (mode == "--scheduled") return Workflow.RunScheduled();
                 if (mode == "--update") return Updater.UpdateFromCommandLine();
                 if (mode == "--ninja-test" && args.Length >= 3) return NinjaTest(args[1], args[2], args.Length >= 4 ? args[3] : "");
+                if (mode == "--ninja-resume-test" && args.Length >= 3) return NinjaResumeTest(args[1], args[2]);
                 if (mode == "--render" && args.Length >= 3) return Render(args[1], args[2], args.Length >= 4 ? args[3] : null);
                 Application.EnableVisualStyles();
                 Application.SetCompatibleTextRenderingDefault(false);
@@ -99,8 +100,17 @@ namespace PolarniteAudit
         private static int NinjaTest(string computerName, string outFile, string serial)
         {
             AppSettings s = AppSettings.Load();
-            Ninja.SignIn(s.NinjaHost, s.NinjaClientId, CancellationToken.None, m => Log.Write("NinjaOne test: " + m));
+            Ninja.SignIn(s.NinjaHost, s.NinjaClientId, Environment.GetEnvironmentVariable("POLARNITE_NINJA_REMEMBER") == "1", CancellationToken.None, m => Log.Write("NinjaOne test: " + m));
             var data = Ninja.Fetch(computerName, serial, m => Log.Write("NinjaOne test: " + m));
+            JsonFile.Write(outFile, data);
+            return J.Bool(data, "Matched") == true ? 0 : 3;
+        }
+
+        /// <summary>Test: pull with the remembered sign-in only (no browser). Exit 0 matched, 3 not matched, 4 no usable sign-in.</summary>
+        private static int NinjaResumeTest(string computerName, string outFile)
+        {
+            if (!Ninja.TryResume()) return 4;
+            var data = Ninja.Fetch(computerName, "", m => Log.Write("NinjaOne resume test: " + m));
             JsonFile.Write(outFile, data);
             return J.Bool(data, "Matched") == true ? 0 : 3;
         }

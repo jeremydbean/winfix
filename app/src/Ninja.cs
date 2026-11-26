@@ -15,8 +15,10 @@ namespace PolarniteAudit
 {
     /// <summary>
     /// NinjaOne integration. A technician signs in through the browser (OAuth authorization code + PKCE,
-    /// a "Native" client app with the read-only Monitoring scope). The access token lives only in this
-    /// process: nothing that could read other clients' NinjaOne data is stored on the server.
+    /// a "Native" client app with the read-only Monitoring scope). By default the access token lives only
+    /// in this process. If the technician ticks "Remember", a refresh token is kept for at most 30 days,
+    /// encrypted for this machine (DPAPI) in the Administrators/SYSTEM-only data folder, so later audits
+    /// and scheduled runs can pull NinjaOne data without a sign-in. "Forget" in Settings deletes it.
     /// </summary>
     internal static class Ninja
     {
@@ -30,6 +32,83 @@ namespace PolarniteAudit
 
         public static void SignOut() { token = null; tokenHost = null; }
 
+        // ------------------------------------------------------------ remembered sign-in (opt-in, 30 days)
+
+        public const int RememberDays = 30;
+        private static readonly byte[] Entropy = Encoding.UTF8.GetBytes("PolarniteAudit-NinjaOne-v1");
+        private static string RememberFile { get { return Path.Combine(AppPaths.StateDir, "ninja-signin.json"); } }
+
+        /// <summary>When the remembered sign-in on this server expires, or null when none is kept.</summary>
+        public static DateTime? RememberedUntil
+        {
+            get
+            {
+                object o = SafeRead();
+                DateTime? until = J.Date(o, "RememberedUntilUtc");
+                return until.HasValue && until.Value.ToUniversalTime() > DateTime.UtcNow ? until.Value.ToLocalTime() : (DateTime?)null;
+            }
+        }
+
+        public static string RememberedBy { get { return J.Str(SafeRead(), "SignedInBy"); } }
+
+        private static object SafeRead()
+        {
+            try { return File.Exists(RememberFile) ? JsonFile.Read(RememberFile) : null; }
+            catch (Exception ex) { Log.Write("NinjaOne remembered sign-in unreadable: " + ex.Message); return null; }
+        }
+
+        private static void Remember(string host, string clientId, string refreshToken, DateTime untilUtc, string by)
+        {
+            string protectedToken = Convert.ToBase64String(ProtectedData.Protect(Encoding.UTF8.GetBytes(refreshToken), Entropy, DataProtectionScope.LocalMachine));
+            AppPaths.EnsureRoot();
+            JsonFile.Write(RememberFile, new Dictionary<string, object>
+            {
+                { "Host", host }, { "ClientId", clientId }, { "RefreshTokenProtected", protectedToken },
+                { "RememberedUntilUtc", untilUtc.ToString("o", CultureInfo.InvariantCulture) }, { "SignedInBy", by ?? "" }
+            });
+        }
+
+        /// <summary>Deletes the remembered sign-in on this server and signs out.</summary>
+        public static void Forget()
+        {
+            try { if (File.Exists(RememberFile)) File.Delete(RememberFile); }
+            catch (Exception ex) { Log.Write("Could not delete the NinjaOne sign-in: " + ex.Message); }
+            SignOut();
+            Log.Write("NinjaOne sign-in on this server forgotten.");
+        }
+
+        /// <summary>Uses the remembered sign-in, if any and not older than 30 days. Returns true when signed in.</summary>
+        public static bool TryResume()
+        {
+            if (SignedIn) return true;
+            object o = SafeRead();
+            if (o == null) return false;
+            DateTime? until = J.Date(o, "RememberedUntilUtc");
+            if (!until.HasValue || until.Value.ToUniversalTime() <= DateTime.UtcNow) { Forget(); return false; }
+            string host = J.Str(o, "Host"), clientId = J.Str(o, "ClientId"), refresh;
+            try { refresh = Encoding.UTF8.GetString(ProtectedData.Unprotect(Convert.FromBase64String(J.Str(o, "RefreshTokenProtected")), Entropy, DataProtectionScope.LocalMachine)); }
+            catch (Exception ex) { Log.Write("NinjaOne sign-in could not be decrypted: " + ex.Message); Forget(); return false; }
+            try
+            {
+                object tok = Post("https://" + host + "/ws/oauth/token", "grant_type=refresh_token&client_id=" + Uri.EscapeDataString(clientId) + "&refresh_token=" + Uri.EscapeDataString(refresh));
+                string access = J.Str(tok, "access_token");
+                if (access.Length == 0) throw new InvalidOperationException("no access token returned");
+                token = access; tokenHost = host;
+                tokenExpiresUtc = DateTime.UtcNow.AddSeconds(J.Num(tok, "expires_in") ?? 3600);
+                string rotated = J.Str(tok, "refresh_token");
+                if (rotated.Length > 0 && rotated != refresh) Remember(host, clientId, rotated, until.Value.ToUniversalTime(), J.Str(o, "SignedInBy"));
+                Log.Write("Resumed the remembered NinjaOne sign-in (until " + until.Value.ToLocalTime().ToString("d MMM yyyy", CultureInfo.InvariantCulture) + ").");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                // Revoked in NinjaOne, expired, or the app's refresh-token grant was turned off.
+                Log.Write("Remembered NinjaOne sign-in no longer works (" + ex.Message + "); it has been removed.");
+                Forget();
+                return false;
+            }
+        }
+
         private static string Base64Url(byte[] b) { return Convert.ToBase64String(b).TrimEnd('=').Replace('+', '-').Replace('/', '_'); }
 
         private static string RandomToken(int bytes)
@@ -41,6 +120,11 @@ namespace PolarniteAudit
 
         /// <summary>Opens the NinjaOne sign-in page in the browser and waits (up to 5 minutes) for the redirect back to this app.</summary>
         public static void SignIn(string host, string clientId, CancellationToken ct, Action<string> status)
+        {
+            SignIn(host, clientId, false, ct, status);
+        }
+
+        public static void SignIn(string host, string clientId, bool remember, CancellationToken ct, Action<string> status)
         {
             host = string.IsNullOrWhiteSpace(host) ? DefaultHost : host.Trim();
             clientId = string.IsNullOrWhiteSpace(clientId) ? DefaultClientId : clientId.Trim();
@@ -54,7 +138,7 @@ namespace PolarniteAudit
                 int port = ((IPEndPoint)listener.LocalEndpoint).Port;
                 string redirect = "http://127.0.0.1:" + port + "/";
                 string url = "https://" + host + "/ws/oauth/authorize?response_type=code&client_id=" + Uri.EscapeDataString(clientId) +
-                             "&redirect_uri=" + Uri.EscapeDataString(redirect) + "&scope=monitoring&state=" + state +
+                             "&redirect_uri=" + Uri.EscapeDataString(redirect) + "&scope=" + (remember ? "monitoring%20offline_access" : "monitoring") + "&state=" + state +
                              "&code_challenge=" + challenge + "&code_challenge_method=S256";
                 try { Process.Start(new ProcessStartInfo(url) { UseShellExecute = true }); }
                 catch (Exception ex) { throw new InvalidOperationException("Could not open a browser for the NinjaOne sign-in (" + ex.Message + "). Open this address manually:\n" + url); }
@@ -97,6 +181,13 @@ namespace PolarniteAudit
                 tokenHost = host;
                 tokenExpiresUtc = DateTime.UtcNow.AddSeconds(J.Num(tok, "expires_in") ?? 3600);
                 Log.Write("Signed in to NinjaOne (" + host + ").");
+                if (remember)
+                {
+                    string refresh = J.Str(tok, "refresh_token");
+                    if (refresh.Length == 0) throw new InvalidOperationException("Signed in, but NinjaOne did not allow the sign-in to be remembered. Turn on the 'Refresh token' grant type for this client app in NinjaOne (Administration > Apps > API).");
+                    Remember(host, clientId, refresh, DateTime.UtcNow.AddDays(RememberDays), Environment.UserName);
+                    Log.Write("NinjaOne sign-in remembered on this server for " + RememberDays + " days by " + Environment.UserName + ".");
+                }
             }
             finally { listener.Stop(); }
         }

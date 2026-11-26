@@ -567,7 +567,7 @@ namespace PolarniteAudit
             if (!draft.IsSubmitted) draft.ApplyAuto(analysis);
             SaveDraft();
             Populate();
-            if (persist && Ninja.SignedIn) BeginInvoke(new Action(() => PullNinja(false)));
+            if (persist && (Ninja.SignedIn || Ninja.RememberedUntil.HasValue)) BeginInvoke(new Action(() => PullNinja(false)));
         }
 
         // ------------------------------------------------------------ NinjaOne
@@ -589,11 +589,13 @@ namespace PolarniteAudit
             Action<string> status = m => { if (!IsDisposed) BeginInvoke(new Action(() => lblProgress.Text = m)); };
             try
             {
-                if (!Ninja.SignedIn)
+                if (!Ninja.SignedIn && !await Task.Run(() => Ninja.TryResume()))
                 {
                     if (!interactive) return;
+                    bool remember;
+                    if (!AskNinjaSignIn(out remember)) return;
                     string host = settings.NinjaHost, client = settings.NinjaClientId;
-                    await Task.Run(() => Ninja.SignIn(host, client, ct, status));
+                    await Task.Run(() => Ninja.SignIn(host, client, remember, ct, status));
                     Activate();
                 }
                 string name = analysis.ServerName;
@@ -615,7 +617,29 @@ namespace PolarniteAudit
             finally
             {
                 ninjaCts.Dispose(); ninjaCts = null;
-                if (!IsDisposed) btnNinja.Text = Ninja.SignedIn ? "Refresh NinjaOne" : "NinjaOne…";
+                if (!IsDisposed) btnNinja.Text = Ninja.SignedIn || Ninja.RememberedUntil.HasValue ? "Refresh NinjaOne" : "NinjaOne…";
+            }
+        }
+
+        /// <summary>Asks before opening the NinjaOne sign-in, with the opt-in "remember for 30 days" box.</summary>
+        private bool AskNinjaSignIn(out bool remember)
+        {
+            remember = false;
+            using (var dlg = new Form { Text = "Sign in to NinjaOne", FormBorderStyle = FormBorderStyle.FixedDialog, MaximizeBox = false, MinimizeBox = false,
+                                        StartPosition = FormStartPosition.CenterParent, AutoScaleMode = AutoScaleMode.Dpi, Font = Font, ClientSize = new Size(470, 210), BackColor = Color.White })
+            {
+                var text = new Label { Location = new Point(18, 16), Size = new Size(434, 54),
+                    Text = "Your browser opens the NinjaOne sign-in. Sign in with your own NinjaOne account; the app then reads this server's alerts, patches, antivirus and organization (read-only)." };
+                var chk = new CheckBox { Location = new Point(18, 78), AutoSize = true, Text = "Remember my sign-in on this server for " + Ninja.RememberDays + " days" };
+                var note = new Label { Location = new Point(36, 102), Size = new Size(416, 50), ForeColor = MutedText,
+                    Text = "Later audits and scheduled runs then pull NinjaOne data without a sign-in. Anyone with administrator rights on this server could use it to read NinjaOne data until it expires. Remove it any time with Forget in Settings." };
+                var ok = new Button { Text = "Sign in", DialogResult = DialogResult.OK, Location = new Point(276, 166), Size = new Size(86, 30) };
+                var cancel = new Button { Text = "Cancel", DialogResult = DialogResult.Cancel, Location = new Point(368, 166), Size = new Size(86, 30) };
+                dlg.Controls.AddRange(new Control[] { text, chk, note, ok, cancel });
+                dlg.AcceptButton = ok; dlg.CancelButton = cancel;
+                if (dlg.ShowDialog(this) != DialogResult.OK) return false;
+                remember = chk.Checked;
+                return true;
             }
         }
 

@@ -234,6 +234,7 @@ namespace PolarniteAudit
                 Log.Write("Scheduled audit starting.");
                 string report = CollectorRunner.Run(new CollectorOptions { DeepAudit = s.DeepAudit, OnlineUpdateScan = s.OnlineUpdateScan, ExternalExposureCheck = s.ExternalExposureCheck },
                     line => { }, System.Threading.CancellationToken.None);
+                PullNinjaIfRemembered(report);
                 AuditAnalysis a = Analyze(AuditReport.Load(report), s);
                 DraftState existing = DraftStore.Load();
                 DraftState d;
@@ -256,6 +257,23 @@ namespace PolarniteAudit
                 Log.Write("Scheduled audit failed: " + ex);
                 return 1;
             }
+        }
+
+        /// <summary>Adds NinjaOne data to a report when a technician chose to remember the sign-in on this server.</summary>
+        public static bool PullNinjaIfRemembered(string reportPath)
+        {
+            try
+            {
+                if (!Ninja.TryResume()) return false;
+                AuditReport rep = AuditReport.Load(reportPath);
+                AuditAnalysis basic = Analyzer.Run(rep, new string[0]);
+                string serial = J.Str(rep.Check("MachineIdentity").Data.FirstOrDefault(x => J.Get(x, "SerialNumber") != null), "SerialNumber");
+                var data = Ninja.Fetch(basic.ServerName, serial, null);
+                JsonFile.Write(Ninja.SidecarPath(reportPath), data);
+                Log.Write("NinjaOne data added to " + reportPath + (J.Bool(data, "Matched") == true ? "" : " (" + J.Str(data, "MatchNote") + ")"));
+                return true;
+            }
+            catch (Exception ex) { Log.Write("NinjaOne pull failed: " + ex.Message); return false; }
         }
 
         /// <summary>Validates, builds the PDF, emails it and marks the draft submitted.</summary>

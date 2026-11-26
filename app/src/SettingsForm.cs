@@ -64,6 +64,14 @@ namespace PolarniteAudit
             Heading("NinjaOne");
             Row("NinjaOne host", txtNinjaHost = new TextBox(), "API host for your NinjaOne region, for example app.ninjarmm.com.");
             Row("Client app ID", txtNinjaClient = new TextBox(), "Client ID of the read-only Native app in NinjaOne (Administration > Apps > API). Technicians sign in with their own NinjaOne account; no secret is stored.");
+            var ninjaRow = new FlowLayoutPanel { AutoSize = true, WrapContents = false };
+            DateTime? until = Ninja.RememberedUntil;
+            var lblNinja = new Label { AutoSize = true, Margin = new Padding(0, 6, 10, 0), ForeColor = MainForm.MutedText,
+                Text = until.HasValue ? "Remembered until " + until.Value.ToString("d MMM yyyy", System.Globalization.CultureInfo.InvariantCulture) + (Ninja.RememberedBy.Length > 0 ? " (" + Ninja.RememberedBy + ")" : "") : "Not remembered on this server" };
+            var btnForget = new Button { Text = "Forget", AutoSize = true, Enabled = until.HasValue };
+            btnForget.Click += (s, e) => { Ninja.Forget(); lblNinja.Text = "Not remembered on this server"; btnForget.Enabled = false; };
+            ninjaRow.Controls.Add(lblNinja); ninjaRow.Controls.Add(btnForget);
+            Row("Saved sign-in", ninjaRow, "Set by ticking 'Remember' when signing in to NinjaOne. Forget deletes it from this server; you can also revoke it in NinjaOne under Administration > Apps > API > OAuth tokens.");
             Heading("Ticket");
             Row("Send tickets to", txtTo = new TextBox(), "Helpdesk mailbox that turns emails into tickets.");
             Row("Company name", txtCompany = new TextBox(), "Shown on the PDF cover and footer.");
